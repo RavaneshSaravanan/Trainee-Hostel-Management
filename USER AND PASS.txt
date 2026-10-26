@@ -1,0 +1,24 @@
+============================================================
+TRAINEE HOSTEL MANAGEMENT SYSTEM - VERIFIED CREDENTIALS
+============================================================
+
+1. Super Admin Account:
+   Username : superadmin
+   Password : superadmin123
+   Role     : superadmin (Full access to all modules including Reports)
+   Email    : superadmin@hostel.com
+   Mobile   : 9876543210
+
+2. Warden Account:
+   Username : warden
+   Password : warden123
+   Role     : warden (Access to daily operations, Reports strictly blocked)
+   Email    : warden@hostel.com
+   Mobile   : 9876543211
+
+3. Backup Admin Account:
+   Username : admin
+   Password : admin123
+   Role     : superadmin
+   Email    : admin@hostel.com
+   Mobile   : 9876543212
