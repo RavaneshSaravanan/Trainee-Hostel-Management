@@ -24,7 +24,7 @@ export async function connectDB() {
     const conn = await mongoose.connect(uri, options);
     const host = conn.connection.host || 'unknown';
     const dbName = conn.connection.name || 'trainee-hostel';
-    console.log(`[Database] MongoDB Connected: ${host}/${dbName} (${isAtlas ? 'MongoDB Atlas' : 'Local MongoDB'})`);
+    console.log(`[Database] MongoDB Connected Successfully: ${host}/${dbName} (${isAtlas ? 'MongoDB Atlas' : 'Local MongoDB'})`);
     return conn;
   } catch (error) {
     // If local MongoDB is not running and no Atlas URI is provided, fall back to embedded MongoDB for testing/offline dev
@@ -38,7 +38,7 @@ export async function connectDB() {
         serverSelectionTimeoutMS: 5000,
         autoIndex: true,
       });
-      console.log(`[Database] Embedded MongoDB Connected: ${conn.connection.host}/${conn.connection.name}`);
+      console.log(`[Database] Embedded MongoDB Connected Successfully: ${conn.connection.host}/${conn.connection.name}`);
       return conn;
     }
 
