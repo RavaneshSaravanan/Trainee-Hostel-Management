@@ -1,12 +1,14 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { QRCodeCanvas } from 'qrcode.react';
 import { useStore } from '../store.jsx';
 import { SHIFTS, HOSTEL_STATUSES } from '../data/constants.js';
 import { Avatar, Badge, Card, Icon, Table } from '../components/ui.jsx';
 import { ApproveModal, ChangeRoomModal, RoomOccupantsModal } from '../components/RoomModals.jsx';
+import VerticalIdCard from '../components/VerticalIdCard.jsx';
 import { fmtDate } from '../utils/dates.js';
 import { occupantsOf } from '../utils/summary.js';
 import { isComplete, missingDetails } from '../utils/details.js';
+import { getToken } from '../utils/api.js';
 
 // Printable sheet of QR cards (one per trainee) — stick them on ID cards / room doors.
 function QrSheet({ list, onClose }) {
@@ -31,9 +33,10 @@ function QrSheet({ list, onClose }) {
 }
 
 function Master({ initialQ, initialDetails }) {
-  const { db, navigate, config } = useStore();
+  const { db, navigate, config, notify, isSuper, deleteTrainee } = useStore();
   const [details, setDetails] = useState(initialDetails || '');
   const [sheet, setSheet] = useState(false);
+  const [cardTrainee, setCardTrainee] = useState(null);
   const [q, setQ] = useState(initialQ || '');
   const [hostel, setHostel] = useState('');
   const [status, setStatus] = useState('');
@@ -70,6 +73,7 @@ function Master({ initialQ, initialDetails }) {
       </div>
       <Table
         headers={['Photo', 'Trainee ID', 'Name', 'Details', 'Hostel ID', 'Hostel', 'Room', 'Shift', 'Hostel Status', 'QR', '']}
+        empty="No trainees found in database."
         rowClass={(i) => (isComplete(list[i], config.customFields) ? 'row-ok' : 'row-pending')}
         rows={list.map((t) => [
           <Avatar trainee={t} />,
@@ -78,10 +82,34 @@ function Master({ initialQ, initialDetails }) {
           isComplete(t, config.customFields) ? <Badge status="COMPLETE" /> : <span title={missingDetails(t, config.customFields).join(', ')}><Badge status="DETAILS PENDING" /></span>,
           t.hostelId || '—', t.hostel || '—', t.roomNo || '—', t.defaultShift,
           <Badge status={t.hostelStatus} />, <Badge status={t.qrStatus} />,
-          <button className="btn btn-ghost btn-xs" onClick={() => open(t.traineeId)}><Icon name="eye" size={14} /> View</button>,
+          <div className="row-actions">
+            <button className="btn btn-ghost btn-xs" onClick={() => open(t.traineeId)}><Icon name="eye" size={14} /> View</button>
+            <button
+              className="btn btn-ghost btn-xs"
+              onClick={() => setCardTrainee(t)}
+              title="Download or Print Trainee ID Card"
+            >
+              <Icon name="idCard" size={14} /> ID Card
+            </button>
+            {isSuper && (
+              <button
+                className="btn btn-danger btn-xs"
+                onClick={async (e) => {
+                  e.stopPropagation();
+                  if (window.confirm(`Permanently delete trainee "${t.name}" (${t.traineeId})?\n\nThis will permanently delete the trainee record from MongoDB and free any allocated room/bed.\nThis action cannot be undone.`)) {
+                    await deleteTrainee(t.traineeId);
+                  }
+                }}
+                title="Permanently Delete Trainee Record (Super Admin)"
+              >
+                <Icon name="trash" size={13} />
+              </button>
+            )}
+          </div>,
         ])}
       />
       <div className="table-foot">{list.length} of {db.trainees.length} trainees</div>
+      {cardTrainee && <VerticalIdCard trainee={cardTrainee} onClose={() => setCardTrainee(null)} />}
     </div>
   );
 }
@@ -100,18 +128,9 @@ function Pending() {
           <Avatar trainee={t} />, t.traineeId, t.name, t.mobile, fmtDate(t.joiningDate), t.defaultShift,
           fmtDate(t.submissionDate), <Badge status={t.hostelStatus} />,
           <div className="row-actions">
+            <button className="btn btn-primary btn-xs" onClick={() => navigate('review', { id: t.traineeId })}><Icon name="check" size={14} /> Review</button>
             <button className="btn btn-ghost btn-xs" onClick={() => navigate('trainee-profile', { id: t.traineeId })}><Icon name="eye" size={14} /> View</button>
             <button className="btn btn-ghost btn-xs" onClick={() => navigate('trainee-profile', { id: t.traineeId, sub: 'edit' })}><Icon name="edit" size={14} /> Edit</button>
-            <button className="btn btn-primary btn-xs" onClick={() => setApproving(t)}><Icon name="check" size={14} /> Approve</button>
-            <button
-              className="btn btn-danger btn-xs"
-              onClick={() => {
-                if (window.confirm(`Reject the registration submitted by ${t.name}?`)) {
-                  rejectTrainee(t.traineeId);
-                  notify('Registration rejected (record retained as INACTIVE).');
-                }
-              }}
-            ><Icon name="x" size={14} /> Reject</button>
           </div>,
         ])}
       />
@@ -121,9 +140,24 @@ function Pending() {
 }
 
 function Rooms() {
-  const { db } = useStore();
+  const { db, route } = useStore();
   const [room, setRoom] = useState(null);   // {hostel, no}
   const [moving, setMoving] = useState(null); // trainee
+  const [allocating, setAllocating] = useState(null); // trainee
+
+  // Trainees who are approved but awaiting room assignment
+  const unallocated = db.trainees.filter(
+    (t) => (t.approvalStatus === 'APPROVED' || t.hostelStatus === 'APPROVED') && !t.roomNo
+  );
+
+  useEffect(() => {
+    if (route.params.allocateId) {
+      const target = db.trainees.find((t) => t.traineeId === route.params.allocateId);
+      if (target && !target.roomNo && (target.approvalStatus === 'APPROVED' || target.hostelStatus === 'APPROVED')) {
+        setAllocating(target);
+      }
+    }
+  }, [route.params.allocateId, db.trainees]);
 
   const rows = [];
   db.hostels.forEach((h) => h.rooms.forEach((r) => {
@@ -136,26 +170,100 @@ function Rooms() {
   }));
 
   return (
-    <Card noPad>
-      <Table headers={['Hostel', 'Room No.', 'Occupancy', 'Occupants', '']} rows={rows} />
-      {room && !moving && (
-        <RoomOccupantsModal hostel={room.hostel} roomNo={room.no} onClose={() => setRoom(null)} onMove={(t) => setMoving(t)} />
+    <>
+      {unallocated.length > 0 && (
+        <Card
+          title={`Approved Trainees Awaiting Room Allocation (${unallocated.length})`}
+          sub="These trainees have passed review and are ready for hostel room assignment."
+          noPad
+          style={{ marginBottom: 16 }}
+        >
+          <Table
+            headers={['Photo', 'Trainee ID', 'Name', 'Qualification', 'Shift', 'Approval', 'Action']}
+            empty="All approved trainees have rooms allocated."
+            rows={unallocated.map((t) => [
+              <Avatar trainee={t} />,
+              <strong>{t.traineeId}</strong>,
+              t.name,
+              t.qualification || '—',
+              `${t.defaultShift} Shift`,
+              <span className="chip chip-green">APPROVED</span>,
+              <button
+                className="btn btn-primary btn-xs"
+                onClick={() => setAllocating(t)}
+              >
+                <Icon name="bed" size={13} /> Allocate Room
+              </button>,
+            ])}
+          />
+        </Card>
       )}
-      {moving && <ChangeRoomModal trainee={moving} onClose={() => { setMoving(null); setRoom(null); }} />}
-    </Card>
+
+      <Card title="Configured Hostels & Room Occupancy" noPad>
+        <Table
+          headers={['Hostel', 'Room No.', 'Occupancy', 'Occupants', '']}
+          empty="No rooms found. Add hostels and configure rooms in Admin Console."
+          rows={rows}
+        />
+        {room && !moving && (
+          <RoomOccupantsModal hostel={room.hostel} roomNo={room.no} onClose={() => setRoom(null)} onMove={(t) => setMoving(t)} />
+        )}
+        {moving && <ChangeRoomModal trainee={moving} onClose={() => { setMoving(null); setRoom(null); }} />}
+        {allocating && <ApproveModal trainee={allocating} onClose={() => setAllocating(null)} />}
+      </Card>
+    </>
   );
 }
 
 export default function Trainees() {
-  const { db, route, navigate } = useStore();
+  const { db, route, navigate, notify } = useStore();
+  const [exporting, setExporting] = useState(false);
   const tab = route.params.tab || 'all';
   const pendingCount = db.trainees.filter((t) => t.hostelStatus === 'PENDING REVIEW').length;
   const tabs = [['all', 'All Trainees'], ['pending', 'Pending Review'], ['rooms', 'Room Management']];
 
+  const handleDownloadAllTrainees = async () => {
+    try {
+      setExporting(true);
+      const token = getToken();
+      const BASE_URL = import.meta.env.VITE_API_URL || '';
+      const res = await fetch(`${BASE_URL}/api/trainees/export?format=csv`, {
+        headers: token ? { Authorization: `Bearer ${token}` } : {},
+      });
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.error || `Export failed with status ${res.status}`);
+      }
+      const blob = await res.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `all-trainees-${new Date().toISOString().slice(0, 10)}.csv`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+      notify('Trainee records exported successfully.');
+    } catch (err) {
+      notify(err.message || 'Failed to export trainees');
+    } finally {
+      setExporting(false);
+    }
+  };
+
   return (
     <>
       <div className="page-head">
-        <div />
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <button
+            className="btn btn-ghost"
+            onClick={handleDownloadAllTrainees}
+            disabled={exporting}
+            title="Download all genuine trainee records from MongoDB as CSV/Excel"
+          >
+            <Icon name="download" size={15} /> {exporting ? 'Exporting…' : 'Download All Trainees'}
+          </button>
+        </div>
         <button className="btn btn-primary" onClick={() => navigate('trainee-new')}><Icon name="plus" size={16} /> New Trainee</button>
       </div>
       <div className="tabbar">

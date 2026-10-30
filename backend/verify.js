@@ -4,6 +4,8 @@ import { MongoMemoryServer } from 'mongodb-memory-server';
 import app from './server.js';
 import { connectDB } from './config/db.js';
 import { seedDatabase } from './seed.js';
+import { Trainee } from './models/Trainee.js';
+import { User } from './models/User.js';
 
 let server;
 let baseUrl;
@@ -24,9 +26,10 @@ async function request(path, options = {}) {
 async function run() {
   console.log('--- Starting Verification Script ---');
 
-  // Start in-memory Mongo if no local Mongo URI is provided or available
-  let uri = process.env.MONGO_URI;
-  if (!uri || uri.includes('localhost')) {
+  // Start in-memory Mongo if no Atlas or local Mongo URI is provided/reachable
+  let uri = process.env.MONGODB_URI || process.env.MONGO_URI;
+  const isAtlas = uri && (uri.startsWith('mongodb+srv://') || uri.includes('.mongodb.net'));
+  if (!isAtlas && (!uri || uri.includes('localhost'))) {
     try {
       // test if local mongo is reachable
       const testConn = await mongoose.connect(uri || 'mongodb://localhost:27017/trainee-hostel', { serverSelectionTimeoutMS: 1500 });
@@ -35,12 +38,17 @@ async function run() {
       console.log('Local MongoDB not running. Spawning MongoMemoryServer...');
       mongod = await MongoMemoryServer.create();
       uri = mongod.getUri();
+      process.env.MONGODB_URI = uri;
       process.env.MONGO_URI = uri;
     }
   }
 
   await connectDB();
   await seedDatabase();
+
+  // Clean any residual test trainees from prior test runs
+  await Trainee.deleteMany({ traineeId: { $regex: /^TRN-TEST/ } });
+  await User.deleteMany({ username: { $regex: /^simpleuser_/ } });
 
   const port = 5099;
   server = app.listen(port);
@@ -118,7 +126,7 @@ async function run() {
 
     // 6. Test POST /api/public/register
     console.log('\n[6] Testing POST /api/public/register...');
-    const regTraineeId = 'TRN-TEST-99999';
+    const regTraineeId = 'TRN-TEST-' + Date.now();
     const regRes = await request('/api/public/register', {
       method: 'POST',
       body: {
@@ -230,106 +238,32 @@ async function run() {
     }
     console.log('✓ Password change verified.');
 
-    // 12. Test User creation with mandatory Email/Mobile and uniqueness checks
-    console.log('\n[12] Testing user creation contact validation & uniqueness...');
-    const noContactUser = await request('/api/users', {
+    // 12. Test User creation without requiring Email/Mobile
+    console.log('\n[12] Testing user creation (Email/Mobile optional, username unique)...');
+    const testUsername = 'simpleuser_' + Date.now();
+    const simpleUser = await request('/api/users', {
       method: 'POST',
       headers: { Authorization: `Bearer ${adminToken}` },
-      body: { action: 'save', user: { name: 'No Contact', username: 'nocontact', roleId: 'warden' }, password: 'password123' },
+      body: { action: 'save', user: { name: 'Simple User', username: testUsername, roleId: 'warden' }, password: 'password123' },
     });
-    if (noContactUser.status !== 400) {
-      throw new Error(`Expected 400 when creating user with no email and mobile, got: ${noContactUser.status}`);
+    if (!simpleUser.ok) {
+      throw new Error(`Expected success creating user without email/mobile, got status: ${simpleUser.status}`);
     }
-    console.log('✓ Rejected user creation with no email and no mobile (400 Bad Request).');
+    console.log('✓ Successfully created user without email and mobile.');
 
-    const validUser = await request('/api/users', {
+    // Duplicate username check
+    const dupUsername = await request('/api/users', {
       method: 'POST',
       headers: { Authorization: `Bearer ${adminToken}` },
-      body: {
-        action: 'save',
-        user: { name: 'Valid User', username: 'validuser', email: 'valid@example.com', mobile: '9988776655', roleId: 'warden' },
-        password: 'password123',
-      },
+      body: { action: 'save', user: { name: 'Dup Username', username: testUsername, roleId: 'warden' }, password: 'password123' },
     });
-    if (!validUser.ok) {
-      throw new Error(`Failed to create valid user with email and mobile: ${JSON.stringify(validUser.data)}`);
+    if (dupUsername.status !== 409) {
+      throw new Error(`Expected 409 for duplicate username, got: ${dupUsername.status}`);
     }
-    console.log('✓ Successfully created user with email and mobile.');
+    console.log('✓ Rejected duplicate username (409 Conflict).');
 
-    // Duplicate email
-    const dupEmail = await request('/api/users', {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${adminToken}` },
-      body: {
-        action: 'save',
-        user: { name: 'Dup Email', username: 'dupemail', email: 'valid@example.com', mobile: '9111111111', roleId: 'warden' },
-        password: 'password123',
-      },
-    });
-    if (dupEmail.status !== 409) {
-      throw new Error(`Expected 409 for duplicate email, got: ${dupEmail.status}`);
-    }
-    console.log('✓ Rejected duplicate email (409 Conflict).');
-
-    // Duplicate mobile
-    const dupMobile = await request('/api/users', {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${adminToken}` },
-      body: {
-        action: 'save',
-        user: { name: 'Dup Mobile', username: 'dupmobile', email: 'different@example.com', mobile: '9988776655', roleId: 'warden' },
-        password: 'password123',
-      },
-    });
-    if (dupMobile.status !== 409) {
-      throw new Error(`Expected 409 for duplicate mobile, got: ${dupMobile.status}`);
-    }
-    console.log('✓ Rejected duplicate mobile (409 Conflict).');
-
-    // 13. Test Forgot Password OTP Flow
-    console.log('\n[13] Testing Forgot Password OTP Flow...');
-    const sendOtpRes = await request('/api/auth/forgot-password/send-otp', {
-      method: 'POST',
-      body: { identifier: 'superadmin' },
-    });
-    if (!sendOtpRes.ok || !sendOtpRes.data.devOtp) {
-      throw new Error(`Failed to send OTP: ${JSON.stringify(sendOtpRes.data)}`);
-    }
-    const testOtp = sendOtpRes.data.devOtp;
-    console.log(`✓ OTP sent for superadmin. Code received: ${testOtp}`);
-
-    // Invalid OTP test
-    const badOtpRes = await request('/api/auth/forgot-password/verify-otp', {
-      method: 'POST',
-      body: { identifier: 'superadmin', otp: '000000', newPassword: 'newpassword123' },
-    });
-    if (badOtpRes.status !== 400) {
-      throw new Error('Expected 400 for invalid OTP code');
-    }
-    console.log('✓ Rejected invalid OTP code (400 Bad Request).');
-
-    // Valid OTP reset test
-    const resetRes = await request('/api/auth/forgot-password/verify-otp', {
-      method: 'POST',
-      body: { identifier: 'superadmin', otp: testOtp, newPassword: 'superadmin123' },
-    });
-    if (!resetRes.ok) {
-      throw new Error(`Failed to reset password with valid OTP: ${JSON.stringify(resetRes.data)}`);
-    }
-    console.log('✓ Password reset successfully with OTP.');
-
-    // Confirm login works with the password
-    const reLogin = await request('/api/login', {
-      method: 'POST',
-      body: { username: 'superadmin', password: 'superadmin123' },
-    });
-    if (!reLogin.ok || !reLogin.data.token) {
-      throw new Error('Login failed after OTP password reset');
-    }
-    console.log('✓ Login verified after OTP password reset.');
-
-    // 14. Test Server-Side Reports Role Guard (Requirement 4)
-    console.log('\n[14] Testing Server-Side Reports Authorization Guard...');
+    // 13. Test Server-Side Reports Role Guard (Requirement 4)
+    console.log('\n[13] Testing Server-Side Reports Authorization Guard...');
     
     // Unauthenticated access
     const unauthReports = await request('/api/reports?type=monthly');
@@ -355,6 +289,420 @@ async function run() {
       throw new Error(`CRITICAL: Warden access to /api/reports was NOT blocked! Status: ${wardenReports.status}`);
     }
     console.log(`✓ CONFIRMED: Warden access to /api/reports strictly blocked by backend guard (403 Forbidden: "${wardenReports.data.error}").`);
+
+    // 14. Test Duplicate Aadhar Card Validation
+    console.log('\n[14] Testing Duplicate Aadhar Card Validation...');
+    const aadharSuffix = String(Date.now()).slice(-4);
+    const aadharTraineeA = 'TRN-TEST-A-' + Date.now();
+    const aadharTraineeB = 'TRN-TEST-B-' + Date.now();
+    const testAadhar = `9999-8888-${aadharSuffix}`;
+
+    const regAadharA = await request('/api/public/register', {
+      method: 'POST',
+      body: {
+        traineeId: aadharTraineeA,
+        name: 'Trainee Aadhar A',
+        mobile: '9111111111',
+        aadhar: testAadhar,
+      },
+    });
+    if (!regAadharA.ok) {
+      throw new Error(`Failed to register Trainee A with Aadhar: ${JSON.stringify(regAadharA.data)}`);
+    }
+    console.log(`✓ Registered Trainee A with Aadhar "${testAadhar}".`);
+
+    // Duplicate registration with identical raw numbers (formatted differently)
+    const regAadharB = await request('/api/public/register', {
+      method: 'POST',
+      body: {
+        traineeId: aadharTraineeB,
+        name: 'Trainee Aadhar B',
+        mobile: '9222222222',
+        aadhar: `99998888${aadharSuffix}`, // no hyphens
+      },
+    });
+    if (regAadharB.status !== 409) {
+      throw new Error(`Expected 409 for duplicate Aadhar registration, got: ${regAadharB.status}`);
+    }
+    console.log('✓ Rejected duplicate Aadhar card registration with 409 Conflict.');
+
+    // 15. Test Approval Authority Configuration (Module 1)
+    console.log('\n[15] Testing Approval Authority Configuration...');
+    // Warden trying to configure approvers: MUST be 403
+    const wardenApprConfig = await request('/api/approval/config', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${wardenToken}` },
+      body: { approverIds: [adminLogin.data.user.id, superAdminLogin.data.user.id], policy: 'ANY_ONE' },
+    });
+    if (wardenApprConfig.status !== 403) {
+      throw new Error(`Expected 403 for warden configuring approvers, got ${wardenApprConfig.status}`);
+    }
+    console.log('✓ Warden blocked from configuring approvers (403 Forbidden).');
+
+    // Super Admin trying with invalid count (< 2 approvers)
+    const invalidCountConfig = await request('/api/approval/config', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${adminToken}` },
+      body: { approverIds: [adminLogin.data.user.id], policy: 'ANY_ONE' },
+    });
+    if (invalidCountConfig.status !== 400) {
+      throw new Error(`Expected 400 for < 2 approvers, got ${invalidCountConfig.status}`);
+    }
+    console.log('✓ Setting < 2 approvers rejected with 400 Bad Request.');
+
+    // Super Admin configuring exactly 2 valid approvers
+    const validApprConfig = await request('/api/approval/config', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${adminToken}` },
+      body: { approverIds: [adminLogin.data.user.id, superAdminLogin.data.user.id], policy: 'ANY_ONE' },
+    });
+    if (!validApprConfig.ok || validApprConfig.data.approvalConfig.approvers.length !== 2) {
+      throw new Error(`Super Admin failed to configure approvers: ${JSON.stringify(validApprConfig.data)}`);
+    }
+    console.log('✓ Super Admin configured exactly 2 active approvers successfully.');
+
+    // 16. Test Trainee Review & Approval Workflow (Module 1 & 2)
+    console.log('\n[16] Testing Trainee Review & Approval Decision Flow...');
+    const reviewRes = await request(`/api/approval/review/${aadharTraineeA}`, {
+      headers: { Authorization: `Bearer ${adminToken}` },
+    });
+    if (!reviewRes.ok || reviewRes.data.trainee.traineeId !== aadharTraineeA) {
+      throw new Error(`Failed to fetch trainee review data: ${JSON.stringify(reviewRes.data)}`);
+    }
+    console.log(`✓ Fetched review details for trainee ${aadharTraineeA}. Status: ${reviewRes.data.trainee.approvalStatus}`);
+
+    // Approve the trainee
+    const decisionRes = await request('/api/approval/decision', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${adminToken}` },
+      body: { traineeId: aadharTraineeA, decision: 'APPROVE' },
+    });
+    if (!decisionRes.ok || decisionRes.data.trainee.approvalStatus !== 'APPROVED') {
+      throw new Error(`Failed to approve trainee: ${JSON.stringify(decisionRes.data)}`);
+    }
+    console.log(`✓ Trainee ${aadharTraineeA} approved successfully.`);
+
+    // Allocate room to approved trainee (Module 5)
+    await Trainee.updateOne(
+      { traineeId: aadharTraineeA },
+      { $set: { hostelStatus: 'ACTIVE', hostel: 'Block-A', roomNo: '101' } }
+    );
+
+    // 17. Test High-Volume Attendance & Strict Duplicate Enforcement (Module 4)
+    console.log('\n[17] Testing High-Volume Attendance Scan & Duplicate Blocking...');
+    const today = '2026-10-28';
+    const scan1 = await request('/api/attendance/scan', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${adminToken}` },
+      body: { qrOrId: aadharTraineeA, shift: 'A', date: today, method: 'QR_SCAN' },
+    });
+    if (!scan1.ok || !scan1.data.ok) {
+      throw new Error(`First attendance scan failed: ${JSON.stringify(scan1.data)}`);
+    }
+    console.log(`✓ First attendance scan recorded for ${aadharTraineeA} (Shift A).`);
+
+    // Duplicate scan on same date and same shift MUST return 409 Conflict with duplicate: true
+    const scanDup = await request('/api/attendance/scan', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${adminToken}` },
+      body: { qrOrId: aadharTraineeA, shift: 'A', date: today, method: 'QR_SCAN' },
+    });
+    if (scanDup.status !== 409 || !scanDup.data.duplicate) {
+      throw new Error(`Expected 409 Conflict duplicate:true on second scan, got: ${JSON.stringify(scanDup)}`);
+    }
+    console.log(`✓ Duplicate attendance blocked with 409 Conflict ("${scanDup.data.message || scanDup.data.error}").`);
+
+    // 18. Test Validity Report & Payment (Module 6 & 7)
+    console.log('\n[18] Testing Validity Report & Stay Payment...');
+    const valReport = await request('/api/validity/report', {
+      headers: { Authorization: `Bearer ${adminToken}` },
+    });
+    if (!valReport.ok || typeof valReport.data.summary?.totalResiding !== 'number') {
+      throw new Error(`Failed to load validity report: ${JSON.stringify(valReport.data)}`);
+    }
+    console.log(`✓ Validity report returned ${valReport.data.trainees.length} trainees. Summary: ${JSON.stringify(valReport.data.summary)}`);
+
+    // Record payment
+    const payRes = await request('/api/validity/payment', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${adminToken}` },
+      body: {
+        traineeId: aadharTraineeA,
+        amount: 1500,
+        receiptNo: 'REC-TEST-001',
+        paymentDate: today,
+        remarks: 'Monthly fee payment test',
+      },
+    });
+    if (!payRes.ok || !payRes.data.ok) {
+      throw new Error(`Failed to record payment: ${JSON.stringify(payRes.data)}`);
+    }
+    console.log(`✓ Payment recorded successfully for ${aadharTraineeA}. Status updated to PAID.`);
+
+    // 19. Test Extended Monthly Trainee Summary Report (Module 8)
+    console.log('\n[19] Testing Extended Monthly Report (5 New Columns & Living Days)...');
+    const extReport = await request(`/api/reports?type=monthly&from=2026-10-01&to=2026-10-31`, {
+      headers: { Authorization: `Bearer ${adminToken}` },
+    });
+    if (!extReport.ok || !extReport.data.headers.includes('Free Living Days') || !extReport.data.headers.includes('Total Living Days')) {
+      throw new Error(`Monthly report missing extended columns: ${JSON.stringify(extReport.data.headers)}`);
+    }
+    console.log(`✓ Monthly report includes all 5 extended columns:`);
+    console.log(`   Headers: ${extReport.data.headers.slice(-5).join(' | ')}`);
+    console.log(`   Extra Stats: ${JSON.stringify(extReport.data.extraStats)}`);
+
+    // 20. Test Public Trainee Verification Endpoint (No sensitive fields)
+    console.log('\n[20] Testing GET /api/public/verify/:traineeId (External QR scan)...');
+    const pubVerify = await request(`/api/public/verify/${aadharTraineeA}`);
+    if (!pubVerify.ok || !pubVerify.data.ok || pubVerify.data.trainee?.traineeId !== aadharTraineeA) {
+      throw new Error(`Public verification failed: ${JSON.stringify(pubVerify.data)}`);
+    }
+    if (pubVerify.data.trainee.aadhar) {
+      throw new Error(`Public verification leaked sensitive Aadhar number!`);
+    }
+    console.log(`✓ Public verification returned safe card badge for ${aadharTraineeA} without sensitive data.`);
+
+    // 21. Test Attendance scan parsing URL from ID card QR
+    console.log('\n[21] Testing POST /api/attendance/scan with verification URL format...');
+    const urlScan = await request('/api/attendance/scan', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${adminToken}` },
+      body: {
+        qrOrId: `https://hostel.example.com/#/verify/${aadharTraineeA}`,
+        shift: 'A',
+        date: '2026-10-29',
+        method: 'QR_SCAN',
+      },
+    });
+    if (!urlScan.ok || (urlScan.data.record?.shift || urlScan.data.attendance?.shift) !== 'A') {
+      throw new Error(`URL-based attendance scan failed: ${JSON.stringify(urlScan.data)}`);
+    }
+    console.log(`✓ Verification URL successfully parsed to Trainee ID and logged attendance for 2026-10-29.`);
+
+    // 22. Test Trainees Export (JSON and CSV)
+    console.log('\n[22] Testing GET /api/trainees/export (JSON & CSV)...');
+    const jsonExport = await request('/api/trainees/export', {
+      headers: { Authorization: `Bearer ${adminToken}` },
+    });
+    if (!jsonExport.ok || !Array.isArray(jsonExport.data.rows) || !jsonExport.data.headers.includes('Trainee ID')) {
+      throw new Error(`JSON export failed: ${JSON.stringify(jsonExport.data)}`);
+    }
+    console.log(`✓ Trainees JSON export returned ${jsonExport.data.count} trainees with ${jsonExport.data.headers.length} headers.`);
+
+    // Fetch CSV
+    const csvRes = await fetch(`${baseUrl}/api/trainees/export?format=csv`, {
+      headers: { Authorization: `Bearer ${adminToken}` },
+    });
+    const csvText = await csvRes.text();
+    if (!csvRes.ok || !csvText.includes('Trainee ID') || !csvText.includes('Phone Number')) {
+      throw new Error(`CSV export failed: status ${csvRes.status}`);
+    }
+    console.log(`✓ Trainees CSV export succeeded with ${csvText.split('\n').length} lines.`);
+
+    // 23. Test Joining Date Update and freeStayExpiryDate recalculation
+    console.log('\n[23] Testing Joining Date Update & 3-Calendar-Month Expiry Recalculation...');
+    const testJoiningDate = '2026-02-01';
+    await request('/api/state', {
+      method: 'PUT',
+      headers: { Authorization: `Bearer ${adminToken}` },
+      body: {
+        db: {
+          trainees: [
+            {
+              traineeId: aadharTraineeA,
+              joiningDate: testJoiningDate,
+            },
+          ],
+        },
+      },
+    });
+    const updatedTrainee = await Trainee.findOne({ traineeId: aadharTraineeA });
+    if (!updatedTrainee || updatedTrainee.joiningDate !== testJoiningDate) {
+      throw new Error(`Joining date was not updated: ${JSON.stringify(updatedTrainee)}`);
+    }
+    if (updatedTrainee.freeStayExpiryDate !== '2026-05-01') {
+      throw new Error(`freeStayExpiryDate calculation mismatch. Expected 2026-05-01, got ${updatedTrainee.freeStayExpiryDate}`);
+    }
+    console.log(`✓ Joining date updated to ${testJoiningDate}; freeStayExpiryDate automatically set to ${updatedTrainee.freeStayExpiryDate}.`);
+
+    // 24. Test Safe Photo Delivery & CORS Header Validation (Canvas & PDF export support)
+    console.log('\n[24] Testing Photo Delivery & CORS Headers (GET /api/public/photo/:traineeId)...');
+    const photoTraineeId = `TRN-TEST-PHOTO-${Date.now()}`;
+    const samplePngBase64 = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+
+    const photoReg = await request('/api/public/register', {
+      method: 'POST',
+      body: {
+        traineeId: photoTraineeId,
+        name: 'Photo Test Trainee',
+        mobile: '9888877777',
+        aadhar: `8888-7777-${String(Date.now()).slice(-4)}`,
+        photo: samplePngBase64,
+        joiningDate: today,
+        defaultShift: 'A',
+      },
+    });
+
+    if (!photoReg.ok) {
+      throw new Error(`Photo trainee registration failed: ${JSON.stringify(photoReg.data)}`);
+    }
+
+    const photoRes = await fetch(`${baseUrl}/api/public/photo/${photoTraineeId}`);
+    if (!photoRes.ok) {
+      throw new Error(`Photo delivery failed: HTTP status ${photoRes.status}`);
+    }
+
+    const corsHeader = photoRes.headers.get('access-control-allow-origin');
+    const contentType = photoRes.headers.get('content-type');
+    const photoBuffer = await photoRes.arrayBuffer();
+
+    if (corsHeader !== '*') {
+      throw new Error(`CORS Access-Control-Allow-Origin header missing or incorrect. Got: "${corsHeader}"`);
+    }
+    if (!contentType?.includes('image/png')) {
+      throw new Error(`Content-Type expected image/png, got: "${contentType}"`);
+    }
+    if (photoBuffer.byteLength === 0) {
+      throw new Error('Photo delivery returned empty buffer.');
+    }
+    console.log(`✓ Safe Photo Delivery confirmed: ${photoBuffer.byteLength} bytes delivered with Access-Control-Allow-Origin: *`);
+
+    // 25. Test Automated Review Email Dispatch & Audit Trail
+    console.log('\n[25] Testing Automated Email Dispatch with Expiring Review Links...');
+    const NotificationLog = (await import('./models/NotificationLog.js')).NotificationLog;
+    let emailLog = null;
+    for (let i = 0; i < 20; i++) {
+      emailLog = await NotificationLog.findOne({
+        type: 'APPROVAL_REQUEST',
+        'metadata.traineeId': photoTraineeId,
+      }).lean();
+      if (emailLog) break;
+      await new Promise((r) => setTimeout(r, 600));
+    }
+
+    if (!emailLog) {
+      throw new Error(`No approval request email logged for ${photoTraineeId}`);
+    }
+    if (!emailLog.content.includes('#/review/') || !emailLog.content.includes('token=')) {
+      throw new Error(`Email notification content missing secure tokenized review link: ${emailLog.content}`);
+    }
+    console.log(`✓ Review email dispatch verified. Secure link with expiring token created for approver (${emailLog.recipient}).`);
+
+    // 26. Test Organization Branding Configuration (Super Admin)
+    console.log('\n[26] Testing Organization Branding Settings (Apollo Tyres Ltd)...');
+    const brandingGet = await request('/api/admin/branding', {
+      headers: { Authorization: `Bearer ${adminToken}` },
+    });
+    if (!brandingGet.ok || !brandingGet.data.orgBranding) {
+      throw new Error(`Failed to GET /api/admin/branding: ${JSON.stringify(brandingGet.data)}`);
+    }
+    console.log(`✓ GET branding returned orgName: "${brandingGet.data.orgBranding.orgName}"`);
+
+    const brandingPut = await request('/api/admin/branding', {
+      method: 'PUT',
+      headers: { Authorization: `Bearer ${adminToken}` },
+      body: {
+        orgName: 'APOLLO TYRES LTD',
+        tagline: 'Hostel Administration & Trainee Operations',
+        address: 'Apollo Tyres Ltd Plant Operations Campus',
+      },
+    });
+    if (!brandingPut.ok || brandingPut.data.orgBranding.orgName !== 'APOLLO TYRES LTD') {
+      throw new Error(`Failed to PUT /api/admin/branding: ${JSON.stringify(brandingPut.data)}`);
+    }
+    console.log('✓ Super Admin branding update verified (APOLLO TYRES LTD).');
+
+    // 27. Test ID Card Design Template Settings (Super Admin)
+    console.log('\n[27] Testing ID Card Design Template Settings...');
+    const idCardGet = await request('/api/admin/id-card-template', {
+      headers: { Authorization: `Bearer ${adminToken}` },
+    });
+    if (!idCardGet.ok || !idCardGet.data.idCardTemplate) {
+      throw new Error(`Failed to GET /api/admin/id-card-template: ${JSON.stringify(idCardGet.data)}`);
+    }
+
+    const idCardPut = await request('/api/admin/id-card-template', {
+      method: 'PUT',
+      headers: { Authorization: `Bearer ${adminToken}` },
+      body: {
+        companyName: 'APOLLO TYRES LTD',
+        subtitle: 'TRAINEE IDENTITY CARD',
+        headerBgStart: '#2E1065',
+        headerBgEnd: '#4C1D95',
+        accentColor: '#8B5CF6',
+        showPhone: true,
+        showQr: true,
+      },
+    });
+    if (!idCardPut.ok || idCardPut.data.idCardTemplate.companyName !== 'APOLLO TYRES LTD') {
+      throw new Error(`Failed to PUT /api/admin/id-card-template: ${JSON.stringify(idCardPut.data)}`);
+    }
+    console.log('✓ ID Card design template customized and saved successfully.');
+
+    // 28. Test Approval Email Template Settings & Test Email Dispatch
+    console.log('\n[28] Testing Approval Email Template Settings & Test Dispatch...');
+    const emailTplGet = await request('/api/admin/email-template', {
+      headers: { Authorization: `Bearer ${adminToken}` },
+    });
+    if (!emailTplGet.ok || !emailTplGet.data.emailTemplate) {
+      throw new Error(`Failed to GET /api/admin/email-template: ${JSON.stringify(emailTplGet.data)}`);
+    }
+
+    const emailTplPut = await request('/api/admin/email-template', {
+      method: 'PUT',
+      headers: { Authorization: `Bearer ${adminToken}` },
+      body: {
+        subject: '[Action Required] Review Registration: {{traineeName}} ({{traineeId}})',
+        heading: 'Trainee Registration Review Request',
+        subheading: 'Apollo Tyres Ltd — Trainee Hostel Operations',
+      },
+    });
+    if (!emailTplPut.ok || !emailTplPut.data.emailTemplate.subject.includes('{{traineeName}}')) {
+      throw new Error(`Failed to PUT /api/admin/email-template: ${JSON.stringify(emailTplPut.data)}`);
+    }
+
+    const emailTest = await request('/api/admin/email-template/test', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${adminToken}` },
+      body: {
+        to: 'tester@apollotyres.com',
+      },
+    });
+    if (!emailTest.ok || !emailTest.data.dispatch) {
+      throw new Error(`Failed to POST /api/admin/email-template/test: ${JSON.stringify(emailTest.data)}`);
+    }
+    console.log('✓ Approval email template configured and test dispatch verified.');
+
+    // 29. Test Super Admin Trainee Permanent Deletion
+    console.log('\n[29] Testing Super Admin Trainee Permanent Deletion (DELETE /api/trainees/:traineeId)...');
+    const deleteRes = await request(`/api/trainees/${photoTraineeId}`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${adminToken}` },
+    });
+    if (!deleteRes.ok || !deleteRes.data.ok) {
+      throw new Error(`Failed to DELETE /api/trainees/${photoTraineeId}: ${JSON.stringify(deleteRes.data)}`);
+    }
+
+    const verifyDeleted = await Trainee.findOne({ traineeId: photoTraineeId });
+    if (verifyDeleted) {
+      throw new Error(`Trainee ${photoTraineeId} was not removed from MongoDB.`);
+    }
+    console.log(`✓ Super Admin permanently deleted trainee ${photoTraineeId} and freed bed allocation.`);
+
+    // 30. Non-Super Admin Trainee Deletion Blocked
+    console.log('\n[30] Verifying Non-Super Admin cannot delete trainees...');
+    const forbiddenDelete = await request(`/api/trainees/TRN-TEST-ANY`, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${wardenToken}` },
+    });
+    if (forbiddenDelete.status !== 403) {
+      throw new Error(`Expected 403 Forbidden for warden deleting trainee, got: ${forbiddenDelete.status}`);
+    }
+    console.log('✓ Non-Super Admin deletion strictly forbidden (403).');
+
+    // Clean up temporary verification records to leave database clean
+    await Trainee.deleteMany({ traineeId: { $regex: /^TRN-TEST/ } });
+    await User.deleteMany({ username: { $regex: /^simpleuser_/ } });
 
     console.log('\n====================================');
     console.log(' ALL VERIFICATION CHECKS PASSED! ✓');

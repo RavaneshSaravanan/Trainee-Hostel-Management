@@ -2,7 +2,7 @@
 // Edit REQUIRED to change which fields must be filled. Required custom fields are checked too.
 export const REQUIRED = [
   ['name', 'Name'], ['mobile', 'Mobile'], ['dob', 'Date of Birth'], ['gender', 'Gender'], ['qualification', 'Qualification'],
-  ['aadhar', 'Aadhar No.'], ['food', 'Food Preference'], ['address1', 'Address'], ['district', 'District'], ['state', 'State'],
+  ['aadhar', 'Aadhar No.'], ['food', 'Food Preference'], ['address1', 'Address'], ['state', 'State'],
   ['guardianName', 'Guardian Name'], ['guardianContact', 'Guardian Contact'], ['photo', 'Photo'],
 ];
 const empty = (v) => v === undefined || v === null || String(v).trim() === '' || String(v).trim() === '—';

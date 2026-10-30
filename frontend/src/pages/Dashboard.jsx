@@ -5,15 +5,29 @@ import { Badge, Card, Icon, Table } from '../components/ui.jsx';
 import { fmtDate, todayStr } from '../utils/dates.js';
 import { dayCounts, occupantsOf } from '../utils/summary.js';
 import { isComplete } from '../utils/details.js';
+import { exportDashboardPptx } from '../utils/pptxExport.js';
 
 const EMPTY = { hostel: '', from: '', to: '', employmentStatus: '', hostelStatus: '', shift: '' };
 
 export default function Dashboard() {
-  const { db, navigate, config } = useStore();
+  const { db, navigate, config, session, notify } = useStore();
   const W = (k) => config.widgets[k] !== false;
   const [f, setF] = useState(EMPTY);
+  const [downloadingPptx, setDownloadingPptx] = useState(false);
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
   const filtered = Object.values(f).some(Boolean);
+
+  const handleDownloadPptx = async () => {
+    setDownloadingPptx(true);
+    try {
+      await exportDashboardPptx({ db, config, session });
+      notify('PowerPoint (.pptx) dashboard presentation generated successfully.');
+    } catch (err) {
+      notify('Failed to generate presentation: ' + err.message);
+    } finally {
+      setDownloadingPptx(false);
+    }
+  };
 
   // Every number on this page is computed from the filtered trainee list.
   const ts = db.trainees.filter((t) =>
@@ -61,14 +75,37 @@ export default function Dashboard() {
 
   return (
     <>
+      <div className="page-head no-print" style={{ marginBottom: 14 }}>
+        <div>
+          <h2 style={{ margin: 0, fontSize: 20 }}>Executive Operations Dashboard</h2>
+          <p className="muted" style={{ margin: '4px 0 0', fontSize: 13 }}>
+            Live hostel statistics, bed occupancy, attendance records, and trainee analytics.
+          </p>
+        </div>
+        <button
+          className="btn btn-primary"
+          onClick={handleDownloadPptx}
+          disabled={downloadingPptx}
+          title="Download complete executive dashboard report as PowerPoint presentation (.pptx)"
+        >
+          <Icon name="download" size={15} />
+          {downloadingPptx ? 'Generating PowerPoint…' : 'Download Dashboard (.pptx)'}
+        </button>
+      </div>
+
       {pendingDetails.length > 0 ? (
         <div className="alert-banner bad">
           <Icon name="alert" size={20} />
           <div className="alert-text"><strong>{pendingDetails.length} trainee{pendingDetails.length > 1 ? 's have' : ' has'} pending details.</strong> Open and fill the missing details — they turn green once complete.</div>
           <button className="btn btn-danger btn-sm" onClick={() => navigate('trainees', { details: 'pending' })}>View pending</button>
         </div>
-      ) : (
+      ) : db.trainees.length > 0 ? (
         <div className="alert-banner good"><Icon name="check" size={20} /><div className="alert-text"><strong>All trainee details are complete.</strong></div></div>
+      ) : (
+        <div className="alert-banner" style={{ background: '#f8fafc', borderColor: '#e2e8f0', color: '#64748b' }}>
+          <Icon name="users" size={20} />
+          <div className="alert-text"><strong>No trainees found in the database.</strong> Use &ldquo;New Trainee&rdquo; to register trainees.</div>
+        </div>
       )}
 
       {W('filters') && (
@@ -136,26 +173,34 @@ export default function Dashboard() {
       <div className="grid-2">
         {W('occupancy') && (
         <Card title="Hostel-wise Room Occupancy">
-          {hostelRows.map((h) => (
-            <div className="hostel-row" key={h.name}>
-              <div className="hostel-row-name"><Icon name="home" size={15} /> {h.name}</div>
-              <div className="hostel-row-bar"><div className="hostel-row-fill" style={{ width: `${h.pct}%` }} /></div>
-              <div className="hostel-row-count">{h.n}/{h.cap}</div>
-            </div>
-          ))}
+          {hostelRows.length > 0 ? (
+            hostelRows.map((h) => (
+              <div className="hostel-row" key={h.name}>
+                <div className="hostel-row-name"><Icon name="home" size={15} /> {h.name}</div>
+                <div className="hostel-row-bar"><div className="hostel-row-fill" style={{ width: `${h.pct}%` }} /></div>
+                <div className="hostel-row-count">{h.n}/{h.cap}</div>
+              </div>
+            ))
+          ) : (
+            <div className="empty-state">No hostels configured yet. Add hostels in Admin Console.</div>
+          )}
         </Card>
         )}
         {W('shifts') && (
         <Card title="Shift Distribution (active trainees)">
-          <div className="shift-bars">
-            {shiftCounts.map((x) => (
-              <div className="shift-bar-col" key={x.s}>
-                <div className="shift-bar" style={{ height: Math.max(6, Math.round((x.n / maxShift) * 90)) }} />
-                <div className="shift-bar-label">{x.s}</div>
-                <div className="shift-bar-value">{x.n}</div>
-              </div>
-            ))}
-          </div>
+          {ts.some((t) => t.hostelStatus === 'ACTIVE') ? (
+            <div className="shift-bars">
+              {shiftCounts.map((x) => (
+                <div className="shift-bar-col" key={x.s}>
+                  <div className="shift-bar" style={{ height: Math.max(6, Math.round((x.n / maxShift) * 90)) }} />
+                  <div className="shift-bar-label">{x.s}</div>
+                  <div className="shift-bar-value">{x.n}</div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="empty-state">No active trainees in hostel to display shift distribution.</div>
+          )}
         </Card>
         )}
       </div>
@@ -163,14 +208,20 @@ export default function Dashboard() {
       <div className="grid-2">
         {W('registrations') && (
         <Card title="Recent Registrations" noPad>
-          <Table headers={['Trainee ID', 'Name', 'Submitted', 'Status']}
-            rows={recentRegs.map((t) => [link(t.traineeId), t.name, fmtDate(t.submissionDate), <Badge status={t.hostelStatus} />])} />
+          <Table
+            headers={['Trainee ID', 'Name', 'Submitted', 'Status']}
+            empty="No trainee registrations found."
+            rows={recentRegs.map((t) => [link(t.traineeId), t.name, fmtDate(t.submissionDate), <Badge status={t.hostelStatus} />])}
+          />
         </Card>
         )}
         {W('resignations') && (
         <Card title="Recent Resignations" noPad>
-          <Table headers={['Trainee ID', 'Name', 'Last Working Day', 'Status']}
-            rows={recentResign.map((r) => [link(r.traineeId), nameOf(r.traineeId), fmtDate(r.lastWorkingDate), <Badge status={r.status} />])} />
+          <Table
+            headers={['Trainee ID', 'Name', 'Last Working Day', 'Status']}
+            empty="No resignation records found."
+            rows={recentResign.map((r) => [link(r.traineeId), nameOf(r.traineeId), fmtDate(r.lastWorkingDate), <Badge status={r.status} />])}
+          />
         </Card>
         )}
       </div>
@@ -178,14 +229,20 @@ export default function Dashboard() {
       <div className="grid-2">
         {W('complaints') && (
         <Card title="Recent Complaints" noPad>
-          <Table headers={['Trainee ID', 'Complaint', 'Date', 'Status']}
-            rows={recentComplaints.map((r) => [link(r.traineeId), r.text, fmtDate(r.date), <Badge status={r.status} />])} />
+          <Table
+            headers={['Trainee ID', 'Complaint', 'Date', 'Status']}
+            empty="No complaints recorded."
+            rows={recentComplaints.map((r) => [link(r.traineeId), r.text, fmtDate(r.date), <Badge status={r.status} />])}
+          />
         </Card>
         )}
         {W('outing') && (
         <Card title="Recent Outing / Vacate Activity" noPad>
-          <Table headers={['Trainee ID', 'Type', 'Date', 'Status']}
-            rows={recentOv.map((r) => [link(r.traineeId), <Badge status={r.type} />, fmtDate(r.date), <Badge status={r.status} />])} />
+          <Table
+            headers={['Trainee ID', 'Type', 'Date', 'Status']}
+            empty="No outing or vacate activity recorded."
+            rows={recentOv.map((r) => [link(r.traineeId), <Badge status={r.type} />, fmtDate(r.date), <Badge status={r.status} />])}
+          />
         </Card>
         )}
       </div>

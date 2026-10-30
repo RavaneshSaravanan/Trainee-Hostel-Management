@@ -34,6 +34,8 @@ const ICONS = {
   trash: '<path d="M4 7h16"/><path d="M9 7V4h6v3"/><path d="M6 7l1 13h10l1-13"/>',
   up: '<path d="M6 15l6-6 6 6"/>',
   down: '<path d="M6 9l6 6 6-6"/>',
+  calendar: '<rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/>',
+  idCard: '<rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="2"/><line x1="15" y1="8" x2="17" y2="8"/><line x1="15" y1="12" x2="17" y2="12"/><line x1="7" y1="16" x2="17" y2="16"/>',
 };
 
 export function Icon({ name, size = 18 }) {
@@ -96,7 +98,8 @@ export function Card({ title, sub, action, children, noPad }) {
   );
 }
 
-export function Modal({ title, onClose, onSubmit, submitLabel = 'Save', children }) {
+export function Modal({ title, onClose, onSubmit, submitLabel = 'Save', action, actions, children }) {
+  const extraAction = action || actions;
   return (
     <div className="modal-overlay" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
       <form
@@ -112,6 +115,7 @@ export function Modal({ title, onClose, onSubmit, submitLabel = 'Save', children
         </div>
         <div className="modal-body">{children}</div>
         <div className="modal-foot">
+          {extraAction}
           <button type="button" className="btn btn-ghost" onClick={onClose}>{onSubmit ? 'Cancel' : 'Close'}</button>
           {onSubmit && (
             <button type="submit" className="btn btn-primary"><Icon name="check" size={15} /> {submitLabel}</button>

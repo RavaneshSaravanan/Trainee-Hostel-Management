@@ -4,9 +4,11 @@ import { useStore } from '../store.jsx';
 import { QUALIFICATIONS, SHIFTS } from '../data/constants.js';
 import { Avatar, Badge, Card, Icon, Table, formData } from '../components/ui.jsx';
 import { CustomInput } from '../components/RegistrationForm.jsx';
+import PhotoCapture from '../components/PhotoCapture.jsx';
 import { missingDetails } from '../utils/details.js';
 import { resizeImage } from '../utils/image.js';
 import { ApproveModal, ChangeRoomModal } from '../components/RoomModals.jsx';
+import VerticalIdCard from '../components/VerticalIdCard.jsx';
 import { addDays, fmtDate, todayStr } from '../utils/dates.js';
 import { computeSummary } from '../utils/summary.js';
 
@@ -17,7 +19,7 @@ function Overview({ t }) {
   const info = [
     ['Trainee ID', t.traineeId], ['Hostel ID', t.hostelId || '—'], ['Mobile', t.mobile], ['E-mail', t.email || '—'],
     ['Date of Birth', fmtDate(t.dob)], ['Gender', t.gender], ['Qualification', t.qualification], ['Aadhar No.', t.aadhar],
-    ['Food', t.food], ['Joining Date', fmtDate(t.joiningDate)], ['Address', t.address1 || '—'], ['District', t.district || '—'],
+    ['Food', t.food], ['Joining Date', fmtDate(t.joiningDate)], ['Address', t.address1 || '—'],
     ['State', t.state || '—'], ['Guardian Name', t.guardianName || '—'], ['Guardian Contact', t.guardianContact || '—'],
     ['Default Shift', t.defaultShift], ['Employment Status', t.employmentStatus], ['Hostel Status', t.hostelStatus],
     ['Hostel', t.hostel || '—'], ['Room No.', t.roomNo || '—'], ['QR ID', t.qrId || '—'], ['QR Status', t.qrStatus],
@@ -92,11 +94,9 @@ function Edit({ t }) {
             {S('Qualification', 'qualification', QUALIFICATIONS)}
             {F('Aadhar No.', 'aadhar')}
             {S('Food Preference', 'food', ['VEG', 'NON-VEG'])}
-            <div><label className="field-label">Photo</label>
-              <div className="photo-upload-row">
-                <Avatar trainee={{ name: t.name, photo }} size="md" />
-                <input className="input" type="file" name="photoFile" accept="image/*" onChange={async (e) => { const f = e.target.files[0]; if (f) setPhoto(await resizeImage(f)); }} />
-              </div>
+            <div style={{ gridColumn: 'span 2' }}>
+              <label className="field-label">Photo</label>
+              <PhotoCapture value={photo} onChange={setPhoto} />
             </div>
           </div>
         </div>
@@ -104,8 +104,7 @@ function Edit({ t }) {
           <div className="form-section-title">Address</div>
           <div className="form-grid">
             <div className="span-2"><label className="field-label">Address Line 1</label><input className="input" name="address1" defaultValue={t.address1} /></div>
-            {F('District', 'district')}
-            {F('State', 'state')}
+            {F('State', 'state', { span: true })}
           </div>
         </div>
         <div className="form-section">
@@ -113,8 +112,9 @@ function Edit({ t }) {
           <div className="form-grid">{F('Guardian Name', 'guardianName')}{F('Guardian Contact', 'guardianContact')}</div>
         </div>
         <div className="form-section">
-          <div className="form-section-title">Employment</div>
+          <div className="form-section-title">Employment & Joining Details</div>
           <div className="form-grid">
+            {F('Joining Date *', 'joiningDate', { type: 'date', required: true })}
             {S('Default Shift', 'defaultShift', SHIFTS)}
             {S('Employment Status', 'employmentStatus', ['ACTIVE', 'RESIGNED'])}
             {F('Remarks (short note)', 'remarks')}
@@ -292,11 +292,12 @@ function Qr({ t }) {
 
 /* ---------------- Profile shell ---------------- */
 export default function TraineeProfile() {
-  const { route, navigate, getTrainee, updateTrainee, notify } = useStore();
+  const { route, navigate, getTrainee, updateTrainee, deleteTrainee, isSuper, notify } = useStore();
   const t = getTrainee(route.params.id);
   const [range, setRange] = useState({ from: addDays(todayStr(), -13), to: todayStr() });
   const [approving, setApproving] = useState(false);
   const [moving, setMoving] = useState(false);
+  const [showIdCard, setShowIdCard] = useState(false);
 
   if (!t) {
     return <div className="empty-state">Trainee not found. <a className="link" onClick={() => navigate('trainees')}>Back to Trainees</a></div>;
@@ -304,7 +305,7 @@ export default function TraineeProfile() {
   const sub = route.params.sub || 'overview';
   const go = (s) => navigate('trainee-profile', { id: t.traineeId, sub: s });
   const tabs = [
-    ['overview', 'Overview'], ['edit', 'Edit Profile'],
+    ['overview', 'Overview'], ['id-card', 'ID Card'], ['edit', 'Edit Profile'],
     ['page1', 'View More · Attendance & Exit'], ['page2', 'View More · Summary & Remarks'], ['qr', 'QR Code'],
   ];
 
@@ -334,8 +335,29 @@ export default function TraineeProfile() {
             </button>
           )}
           {t.roomNo && <button className="btn btn-ghost btn-sm" onClick={() => setMoving(true)}><Icon name="bed" size={14} /> Change Room</button>}
+          <button
+            className="btn btn-ghost btn-sm"
+            onClick={() => setShowIdCard(true)}
+            title="Download & Print ID Card"
+          >
+            <Icon name="idCard" size={14} /> ID Card
+          </button>
           <button className="btn btn-ghost btn-sm" onClick={() => go('edit')}><Icon name="edit" size={14} /> Edit Profile</button>
           <button className="btn btn-ghost btn-sm" onClick={() => go('qr')}><Icon name="qr" size={14} /> {t.qrId ? 'View QR' : 'QR'}</button>
+          {isSuper && (
+            <button
+              className="btn btn-danger btn-sm"
+              onClick={async () => {
+                if (window.confirm(`Permanently delete trainee "${t.name}" (${t.traineeId})?\n\nThis will permanently delete the trainee record from MongoDB and free any allocated room/bed.\nThis action cannot be undone.`)) {
+                  const ok = await deleteTrainee(t.traineeId);
+                  if (ok) navigate('trainees');
+                }
+              }}
+              title="Permanently Delete Trainee Record (Super Admin)"
+            >
+              <Icon name="trash" size={14} /> Delete
+            </button>
+          )}
         </div>
       </div>
 
@@ -344,6 +366,7 @@ export default function TraineeProfile() {
       </div>
 
       {sub === 'edit' ? <Edit key={t.traineeId} t={t} />
+        : sub === 'id-card' ? <div className="card" style={{ padding: '24px 16px' }}><VerticalIdCard trainee={t} embedded /></div>
         : sub === 'page1' ? <Page1 t={t} range={range} setRange={setRange} />
         : sub === 'page2' ? <Page2 t={t} range={range} />
         : sub === 'qr' ? <Qr t={t} />
@@ -351,6 +374,7 @@ export default function TraineeProfile() {
 
       {approving && <ApproveModal trainee={t} onClose={() => setApproving(false)} />}
       {moving && <ChangeRoomModal trainee={t} onClose={() => setMoving(false)} />}
+      {showIdCard && <VerticalIdCard trainee={t} onClose={() => setShowIdCard(false)} />}
     </>
   );
 }

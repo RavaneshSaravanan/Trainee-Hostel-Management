@@ -52,33 +52,90 @@ function buildReportLocally(type, db, trainees, from, to, hostelFilter) {
   }
   if (type === 'leave') {
     return {
-      headers: ['Trainee ID', 'Name', 'Type', 'From', 'To', 'Days', 'Status'],
+      headers: ['Trainee ID', 'Name', 'Type', 'From', 'To', 'Days'],
       rows: db.leaves.filter((l) => ids.has(l.traineeId) && l.toDate >= from && l.fromDate <= to)
-        .map((l) => [l.traineeId, nameOf(l.traineeId), l.leaveType, fmtDate(l.fromDate), fmtDate(l.toDate), l.days, l.status]),
+        .map((l) => [l.traineeId, nameOf(l.traineeId), l.leaveType, fmtDate(l.fromDate), fmtDate(l.toDate), l.days]),
     };
   }
   if (['outing', 'tempvacate', 'permvacate'].includes(type)) {
     const ty = { outing: 'OUTING', tempvacate: 'TEMPORARY VACATE', permvacate: 'PERMANENT VACATE' }[type];
     return {
-      headers: ['Trainee ID', 'Name', 'From', 'Expected Return', 'Reason', 'Status'],
+      headers: ['Trainee ID', 'Name', 'From', 'Expected Return', 'Reason'],
       rows: db.outingVacate.filter((o) => ids.has(o.traineeId) && o.type === ty && o.fromDate <= to && (o.expectedReturn || (ty === 'PERMANENT VACATE' ? '9999-12-31' : o.fromDate)) >= from)
-        .map((o) => [o.traineeId, nameOf(o.traineeId), fmtDate(o.fromDate), o.expectedReturn ? fmtDate(o.expectedReturn) : '—', o.reason, o.status]),
+        .map((o) => [o.traineeId, nameOf(o.traineeId), fmtDate(o.fromDate), o.expectedReturn ? fmtDate(o.expectedReturn) : '—', o.reason]),
     };
   }
   if (type === 'resignation') {
     return {
-      headers: ['Trainee ID', 'Name', 'Resignation Date', 'Last Working Date', 'Reason', 'Status'],
+      headers: ['Trainee ID', 'Name', 'Resignation Date', 'Last Working Date', 'Reason'],
       rows: db.resignations.filter((r) => ids.has(r.traineeId) && r.resignationDate >= from && r.resignationDate <= to)
-        .map((r) => [r.traineeId, nameOf(r.traineeId), fmtDate(r.resignationDate), fmtDate(r.lastWorkingDate), r.reason, r.status]),
+        .map((r) => [r.traineeId, nameOf(r.traineeId), fmtDate(r.resignationDate), fmtDate(r.lastWorkingDate), r.reason]),
     };
   }
   // monthly (default)
+  let totalFreeTrainees = 0;
+  let totalPaidTrainees = 0;
+  let totalFreeLivingDays = 0;
+  let totalPaidLivingDays = 0;
+  let grandTotalLivingDays = 0;
+
+  const rows = trainees.map((t) => {
+    const s = computeSummary(db, t.traineeId, from, to);
+    if (s.isFreeTrainee) totalFreeTrainees++;
+    if (s.isPaidTrainee) totalPaidTrainees++;
+    totalFreeLivingDays += s.freeLivingDays;
+    totalPaidLivingDays += s.paidLivingDays;
+    grandTotalLivingDays += s.totalLivingDays;
+
+    return [
+      t.traineeId,
+      t.name,
+      t.hostel || '—',
+      t.roomNo || '—',
+      s.workingDays,
+      s.WO,
+      s.L,
+      s.OUT,
+      s.tempVacateDays,
+      s.permVacateDays,
+      s.livingDays,
+      s.vacatedDays,
+      s.isFreeTrainee ? 1 : 0,
+      s.isPaidTrainee ? 1 : 0,
+      s.freeLivingDays,
+      s.paidLivingDays,
+      s.totalLivingDays,
+    ];
+  });
+
   return {
-    headers: ['Trainee ID', 'Name', 'Hostel', 'Room', 'Working Days', 'Week Off', 'Leave', 'Outing', 'Temp. Vacate', 'Perm. Vacate', 'Living Days', 'Vacated Days'],
-    rows: trainees.map((t) => {
-      const s = computeSummary(db, t.traineeId, from, to);
-      return [t.traineeId, t.name, t.hostel || '—', t.roomNo || '—', s.workingDays, s.WO, s.L, s.OUT, s.tempVacateDays, s.permVacateDays, s.livingDays, s.vacatedDays];
-    }),
+    headers: [
+      'Trainee ID',
+      'Name',
+      'Hostel',
+      'Room',
+      'Working Days',
+      'Week Off',
+      'Leave',
+      'Outing',
+      'Temp. Vacate',
+      'Perm. Vacate',
+      'Living Days',
+      'Vacated Days',
+      'Free Trainees',
+      'Paid Trainees',
+      'Free Living Days',
+      'Paid Living Days',
+      'Total Living Days',
+    ],
+    rows,
+    extraStats: {
+      totalFreeTrainees,
+      totalPaidTrainees,
+      totalFreeLivingDays,
+      totalPaidLivingDays,
+      grandTotalLivingDays,
+    },
   };
 }
 
@@ -147,6 +204,7 @@ export default function Reports() {
   const localReport = buildReportLocally(f.type, db, trainees, f.from, f.to, f.hostel);
   const headers = serverData?.headers || localReport.headers;
   const rows = serverData?.rows || localReport.rows;
+  const extraStats = serverData?.extraStats || localReport.extraStats;
   const title = REPORTS.find(([v]) => v === f.type)[1];
 
   const exportCsv = () => {
@@ -198,6 +256,31 @@ export default function Reports() {
         </div>
       </div>
 
+      {f.type === 'monthly' && extraStats && (
+        <div className="kpi-grid" style={{ marginBottom: 16 }}>
+          <div className="card kpi-card" style={{ borderLeft: '4px solid #16a34a' }}>
+            <div className="kpi-label" style={{ color: '#16a34a' }}>Total Free Trainees</div>
+            <div className="kpi-value" style={{ color: '#16a34a' }}>{extraStats.totalFreeTrainees}</div>
+          </div>
+          <div className="card kpi-card" style={{ borderLeft: '4px solid #2563eb' }}>
+            <div className="kpi-label" style={{ color: '#2563eb' }}>Total Paid Trainees</div>
+            <div className="kpi-value" style={{ color: '#2563eb' }}>{extraStats.totalPaidTrainees}</div>
+          </div>
+          <div className="card kpi-card">
+            <div className="kpi-label">Free Living Days</div>
+            <div className="kpi-value">{extraStats.totalFreeLivingDays}</div>
+          </div>
+          <div className="card kpi-card">
+            <div className="kpi-label">Paid Living Days</div>
+            <div className="kpi-value">{extraStats.totalPaidLivingDays}</div>
+          </div>
+          <div className="card kpi-card" style={{ borderLeft: '4px solid #7c3aed' }}>
+            <div className="kpi-label" style={{ color: '#7c3aed' }}>Grand Total Living Days</div>
+            <div className="kpi-value" style={{ color: '#7c3aed' }}>{extraStats.grandTotalLivingDays}</div>
+          </div>
+        </div>
+      )}
+
       <Card
         title={title}
         sub={loading ? 'Loading report from server…' : f.type === 'hostel' || f.type === 'occupancy' ? 'Current snapshot' : `${fmtDate(f.from)} – ${fmtDate(f.to)} · ${rows.length} rows`}
@@ -205,6 +288,7 @@ export default function Reports() {
       >
         <Table
           headers={headers}
+          empty="No report data found for the selected dates and filters."
           rows={rows.map((r) => r.map((c, i) => (headers[i] === 'Status' ? <Badge status={c} /> : c)))}
         />
       </Card>

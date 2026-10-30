@@ -14,6 +14,7 @@ import { Role } from '../models/Role.js';
 import { User } from '../models/User.js';
 import { getRev, bumpRev } from '../models/Meta.js';
 import { DEFAULT_CONFIG, DEFAULT_ROLES, SUPER_ROLE, withDefaults } from '../defaults.js';
+import { addThreeCalendarMonths } from '../utils/validity.js';
 
 const router = express.Router();
 
@@ -120,6 +121,88 @@ router.get('/state', auth, async (req, res) => {
   }
 });
 
+// GET /api/trainees/export (auth: downloads all genuine MongoDB trainee records)
+router.get('/trainees/export', auth, async (req, res) => {
+  try {
+    const trainees = await Trainee.find({}).sort({ createdAt: -1 }).lean();
+
+    const headers = [
+      'Trainee ID',
+      'Full Name',
+      'Phone Number',
+      'Email',
+      'Date of Birth',
+      'Gender',
+      'Qualification',
+      'Food Preference',
+      'Address',
+      'State',
+      'Guardian Name',
+      'Guardian Contact',
+      'Joining Date',
+      'Free Stay Expiry Date',
+      'Default Shift',
+      'Employment Status',
+      'Hostel Status',
+      'Approval Status',
+      'Hostel Name',
+      'Room Number',
+      'QR ID',
+      'Payment Status',
+      'Approved By',
+      'Submission Date',
+    ];
+
+    const rows = trainees.map((t) => [
+      t.traineeId || '',
+      t.name || '',
+      t.mobile || '',
+      t.email || '',
+      t.dob || '',
+      t.gender || '',
+      t.qualification || '',
+      t.food || '',
+      t.address1 || '',
+      t.state || '',
+      t.guardianName || '',
+      t.guardianContact || '',
+      t.joiningDate || '',
+      t.freeStayExpiryDate || '',
+      t.defaultShift || '',
+      t.employmentStatus || '',
+      t.hostelStatus || '',
+      t.approvalStatus || '',
+      t.hostel || '',
+      t.roomNo || '',
+      t.qrId || '',
+      t.paymentStatus || 'FREE',
+      t.approvedBy || '',
+      t.submissionDate || '',
+    ]);
+
+    const format = req.query.format || 'json';
+    if (format === 'csv') {
+      const q = (v) => `"${String(v).replace(/"/g, '""')}"`;
+      const csv = [headers, ...rows].map((r) => r.map(q).join(',')).join('\n');
+      res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+      res.setHeader(
+        'Content-Disposition',
+        `attachment; filename="all-trainees-${new Date().toISOString().slice(0, 10)}.csv"`
+      );
+      return res.send(csv);
+    }
+
+    return res.json({
+      ok: true,
+      headers,
+      rows,
+      count: trainees.length,
+    });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
 // PUT /api/state (auth)
 router.put('/state', auth, async (req, res) => {
   try {
@@ -141,13 +224,19 @@ router.put('/state', auth, async (req, res) => {
 
       if (Array.isArray(db.trainees) && db.trainees.length > 0) {
         await Trainee.bulkWrite(
-          db.trainees.filter((t) => t && t.traineeId).map((t) => ({
-            updateOne: {
-              filter: { traineeId: t.traineeId },
-              update: { $set: sanitizeForSet(t) },
-              upsert: true,
-            },
-          }))
+          db.trainees.filter((t) => t && t.traineeId).map((t) => {
+            const data = sanitizeForSet(t);
+            if (data.joiningDate && !data.freeStayExpiryDate) {
+              data.freeStayExpiryDate = addThreeCalendarMonths(data.joiningDate);
+            }
+            return {
+              updateOne: {
+                filter: { traineeId: t.traineeId },
+                update: { $set: data },
+                upsert: true,
+              },
+            };
+          })
         );
       }
 

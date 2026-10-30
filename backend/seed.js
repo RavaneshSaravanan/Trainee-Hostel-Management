@@ -171,51 +171,7 @@ export async function seedDatabase() {
     { upsert: true }
   );
 
-  // 5. Sample data from frontend/src/data/seed.js
-  try {
-    const seedPath = path.resolve(__dirname, '../frontend/src/data/seed.js');
-    const seedModule = await import(pathToFileURL(seedPath).href);
-    if (typeof seedModule.createSeed === 'function') {
-      const db = seedModule.createSeed();
-      if (Array.isArray(db.hostels) && db.hostels.length > 0) {
-        await Hostel.insertMany(db.hostels);
-      }
-      if (Array.isArray(db.trainees) && db.trainees.length > 0) {
-        await Trainee.insertMany(db.trainees);
-      }
-      if (Array.isArray(db.attendance) && db.attendance.length > 0) {
-        await Attendance.insertMany(db.attendance);
-      }
-      if (Array.isArray(db.leaves) && db.leaves.length > 0) {
-        await Leave.insertMany(db.leaves);
-      }
-      if (Array.isArray(db.outingVacate) && db.outingVacate.length > 0) {
-        await OutingVacate.insertMany(db.outingVacate);
-      }
-      if (Array.isArray(db.resignations) && db.resignations.length > 0) {
-        await Resignation.insertMany(db.resignations);
-      }
-      if (Array.isArray(db.remarks) && db.remarks.length > 0) {
-        await Remark.insertMany(db.remarks);
-      }
-      if (Array.isArray(db.roomHistory) && db.roomHistory.length > 0) {
-        await RoomHistory.insertMany(db.roomHistory);
-      }
-      if (db.dailySummary && typeof db.dailySummary === 'object') {
-        const dsList = Array.isArray(db.dailySummary)
-          ? db.dailySummary
-          : Object.entries(db.dailySummary).map(([date, val]) => ({ date, ...val }));
-        if (dsList.length > 0) {
-          await DailySummary.insertMany(dsList);
-        }
-      }
-      console.log('Sample data imported from frontend seed.');
-    }
-  } catch (err) {
-    console.warn('Could not load sample data from frontend/src/data/seed.js:', err.message);
-  }
-
-  console.log('Seeding completed successfully.');
+  console.log('Seeding completed successfully (clean production schema initialized).');
 }
 
 // When called directly via `npm run seed` or `node seed.js`

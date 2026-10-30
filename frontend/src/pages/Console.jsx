@@ -1,8 +1,21 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useStore } from '../store.jsx';
-import { ASSIGNABLE_PAGES, DEFAULT_CONFIG, FONTS, PAGES, SUPER_ROLE, THEME_PRESETS, WIDGET_LABELS } from '../data/defaults.js';
+import { api } from '../utils/api.js';
+import {
+  ASSIGNABLE_PAGES,
+  DEFAULT_CONFIG,
+  DEFAULT_EMAIL_TEMPLATE,
+  DEFAULT_IDCARD_TEMPLATE,
+  DEFAULT_ORG_BRANDING,
+  FONTS,
+  PAGES,
+  SUPER_ROLE,
+  THEME_PRESETS,
+  WIDGET_LABELS,
+} from '../data/defaults.js';
 import { Badge, Card, Icon, Modal, Table } from '../components/ui.jsx';
 import { resizeBackground, resizeImage } from '../utils/image.js';
+import VerticalIdCard from '../components/VerticalIdCard.jsx';
 
 // ADMIN CONSOLE (Super Admin only): login members, roles, look & feel, pages, form fields, hostels.
 // Everything here is saved to the server automatically — no code changes needed.
@@ -21,10 +34,6 @@ function UserModal({ user, onClose }) {
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
 
   const handleSave = async () => {
-    if (!f.email?.trim() && !f.mobile?.trim()) {
-      notify('Please enter at least one contact method (Email or Mobile).');
-      return;
-    }
     try {
       await saveUser(f, pw);
       notify('Saved.');
@@ -44,16 +53,13 @@ function UserModal({ user, onClose }) {
 
       <div className="two-col" style={{ marginTop: 12 }}>
         <div>
-          <label className="field-label">Email ID</label>
+          <label className="field-label">Email ID (optional)</label>
           <input className="input" type="email" placeholder="e.g. user@example.com" value={f.email || ''} onChange={set('email')} />
         </div>
         <div>
-          <label className="field-label">Mobile Number</label>
+          <label className="field-label">Mobile Number (optional)</label>
           <input className="input" type="tel" placeholder="e.g. 9876543210" value={f.mobile || ''} onChange={set('mobile')} />
         </div>
-      </div>
-      <div className="muted" style={{ marginTop: 4, fontSize: 12 }}>
-        * At least one (Email or Mobile) is mandatory for OTP password reset.
       </div>
 
       <label className="field-label" style={{ marginTop: 12 }}>{user ? 'New password (leave blank to keep)' : 'Password'}</label>
@@ -141,6 +147,221 @@ function Roles() {
   );
 }
 
+/* ---------------- Approval Authorities (Super Admin Only) ---------------- */
+function Approvers() {
+  const { users, roles, notify } = useStore();
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [selectedIds, setSelectedIds] = useState([]);
+  const [policy, setPolicy] = useState('ANY_ONE');
+  const [savedConfig, setSavedConfig] = useState(null);
+
+  const activeUsers = users.filter((u) => u.active !== false);
+  const roleName = (id) => (roles.find((r) => r.id === id) || {}).name || id;
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await api('/api/approval/config');
+        if (res.approvalConfig) {
+          setSavedConfig(res.approvalConfig);
+          setSelectedIds((res.approvalConfig.approvers || []).map((a) => a.userId));
+          setPolicy(res.approvalConfig.policy || 'ANY_ONE');
+        }
+      } catch (err) {
+        notify(err.message || 'Failed to load approval settings.');
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, [notify]);
+
+  const toggleUser = (userId) => {
+    if (selectedIds.includes(userId)) {
+      setSelectedIds(selectedIds.filter((id) => id !== userId));
+    } else {
+      if (selectedIds.length >= 3) {
+        notify('Maximum 3 approvers can be selected.');
+        return;
+      }
+      setSelectedIds([...selectedIds, userId]);
+    }
+  };
+
+  const handleSave = async () => {
+    if (selectedIds.length < 2 || selectedIds.length > 3) {
+      notify('Please select exactly 2 or 3 active members as approval authorities.');
+      return;
+    }
+    setSaving(true);
+    try {
+      const res = await api('/api/approval/config', {
+        method: 'POST',
+        body: {
+          approverIds: selectedIds,
+          policy,
+        },
+      });
+      setSavedConfig(res.approvalConfig);
+      notify('Approval authorities and policy saved successfully.');
+    } catch (err) {
+      notify(err.message || 'Failed to save approver configuration.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (loading) {
+    return (
+      <Card title="Approval Authorities">
+        <div className="empty-state">Loading approval configuration…</div>
+      </Card>
+    );
+  }
+
+  return (
+    <>
+      <Card
+        title="Trainee Registration Approval Authorities"
+        sub="Configure exactly 2 or 3 active members authorized to review, approve, or reject new trainee registrations."
+      >
+        <div className="alert-banner info" style={{ marginBottom: 16 }}>
+          <Icon name="check" size={18} />
+          <div className="alert-text">
+            <strong>Requirements:</strong> Exactly 2 or 3 active user accounts must be designated. Approvers will receive email alerts with direct review links for newly registered trainees.
+          </div>
+        </div>
+
+        <div style={{ marginBottom: 16 }}>
+          <label className="field-label" style={{ fontWeight: 600 }}>Approval Decision Policy</label>
+          <select className="input" style={{ maxWidth: 360 }} value={policy} onChange={(e) => setPolicy(e.target.value)}>
+            <option value="ANY_ONE">Any 1 Approver (First approval activates trainee)</option>
+            <option value="MAJORITY">Majority Approvers (e.g. 2 of 2, or 2 of 3)</option>
+            <option value="ALL">All Approvers (Unanimous approval required)</option>
+          </select>
+        </div>
+
+        <div style={{ marginBottom: 16 }}>
+          <label className="field-label" style={{ fontWeight: 600 }}>
+            Select Eligible Active Members ({selectedIds.length} of 2-3 selected)
+          </label>
+          <div className="table-wrap">
+            <table className="tbl">
+              <thead>
+                <tr>
+                  <th style={{ width: 40 }}>Select</th>
+                  <th>Name</th>
+                  <th>Username</th>
+                  <th>Email</th>
+                  <th>Role</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {activeUsers.map((u) => {
+                  const checked = selectedIds.includes(u.id);
+                  return (
+                    <tr
+                      key={u.id}
+                      style={{ cursor: 'pointer', background: checked ? 'var(--card-hover, rgba(59,130,246,0.06))' : undefined }}
+                      onClick={() => toggleUser(u.id)}
+                    >
+                      <td>
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={() => {}}
+                          style={{ cursor: 'pointer' }}
+                        />
+                      </td>
+                      <td><strong>{u.name}</strong></td>
+                      <td>{u.username}</td>
+                      <td>{u.email || <span className="muted">No email set</span>}</td>
+                      <td>{roleName(u.roleId)}</td>
+                      <td><Badge status="ACTIVE" /></td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        {selectedIds.length < 2 && (
+          <div className="notice" style={{ color: 'var(--red, #ef4444)' }}>
+            ⚠️ Please select at least 2 active approvers (currently {selectedIds.length} selected).
+          </div>
+        )}
+
+        <div style={{ marginTop: 16, display: 'flex', alignItems: 'center', gap: 14 }}>
+          <button
+            className="btn btn-primary"
+            onClick={handleSave}
+            disabled={saving || selectedIds.length < 2 || selectedIds.length > 3}
+          >
+            <Icon name="check" size={15} /> {saving ? 'Saving…' : 'Save Approval Configuration'}
+          </button>
+          {savedConfig?.configuredAt && (
+            <span className="muted" style={{ fontSize: 13 }}>
+              Last updated by {savedConfig.configuredBy} on {new Date(savedConfig.configuredAt).toLocaleDateString()}
+            </span>
+          )}
+        </div>
+      </Card>
+
+      <Card
+        title="Google Drive Photo Storage & Migration"
+        sub="Connect Google Drive to store trainee photographs as external drive references instead of binary database strings."
+      >
+        <div style={{ fontSize: 13, color: 'var(--gray-600)', marginBottom: 14, lineHeight: 1.5 }}>
+          When <code>GOOGLE_SERVICE_ACCOUNT_EMAIL</code> and <code>GOOGLE_DRIVE_FOLDER_ID</code> are configured in <code>backend/.env</code>, newly submitted or edited trainee photos are stored in Google Drive. Photographs are delivered securely through authorized backend streaming with full CORS support.
+        </div>
+        <GoogleDriveMigrateBtn />
+      </Card>
+    </>
+  );
+}
+
+function GoogleDriveMigrateBtn() {
+  const { notify } = useStore();
+  const [migrating, setMigrating] = useState(false);
+  const [result, setResult] = useState(null);
+
+  const handleMigrate = async () => {
+    try {
+      setMigrating(true);
+      setResult(null);
+      const res = await api('/api/approval/migrate-photos', { method: 'POST' });
+      setResult(res);
+      notify(res.message || `Migration finished: ${res.migrated || 0} photos uploaded to Google Drive.`);
+    } catch (err) {
+      notify(err.message || 'Migration failed');
+    } finally {
+      setMigrating(false);
+    }
+  };
+
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+      <button
+        className="btn btn-ghost"
+        onClick={handleMigrate}
+        disabled={migrating}
+        title="Upload any existing base64 photos in database to Google Drive"
+      >
+        <Icon name="download" size={14} /> {migrating ? 'Uploading to Drive…' : 'Migrate Existing Photos to Google Drive'}
+      </button>
+      {result && (
+        <span style={{ fontSize: 13, color: result.ok ? 'var(--green)' : 'var(--red)' }}>
+          {result.ok
+            ? `✓ Completed: Migrated ${result.migrated} of ${result.total} records to Google Drive.`
+            : `⚠️ ${result.message}`}
+        </span>
+      )}
+    </div>
+  );
+}
+
 /* ---------------- Appearance ---------------- */
 function Appearance() {
   const { config, setConfig, notify } = useStore();
@@ -156,7 +377,14 @@ function Appearance() {
           <div><label className="field-label">App name</label><input className="input" value={config.appName} onChange={(e) => top({ appName: e.target.value })} /></div>
           <div><label className="field-label">Sub title</label><input className="input" value={config.appSub} onChange={(e) => top({ appSub: e.target.value })} /></div>
           <div><label className="field-label">Logo</label><input className="input" type="file" accept="image/*" onChange={pickLogo} /></div>
-          <div style={{ alignSelf: 'end' }}>{config.logo && <button className="btn btn-ghost btn-sm" onClick={() => top({ logo: '' })}>Remove logo</button>}</div>
+          <div style={{ alignSelf: 'end' }}>
+            {config.logo ? (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <img src={config.logo} alt="Logo Preview" style={{ height: 42, maxWidth: 140, objectFit: 'contain', background: '#fff', border: '1px solid var(--border)', borderRadius: 6, padding: 4 }} />
+                <button className="btn btn-ghost btn-sm" onClick={() => top({ logo: '' })}>Remove logo</button>
+              </div>
+            ) : <span className="muted">No logo uploaded</span>}
+          </div>
         </div>
       </Card>
       <Card title="Theme colours">
@@ -277,41 +505,667 @@ function Hostels() {
           <button className="btn btn-primary" type="submit"><Icon name="plus" size={14} /> Add hostel</button>
         </form>
       </Card>
-      {db.hostels.map((h) => (
-        <Card key={h.id} title={h.name} sub={`${h.rooms.length} rooms · capacity ${h.rooms.reduce((s, r) => s + r.capacity, 0)}`}>
-          <div className="room-chips">
-            {h.rooms.map((r) => (
-              <label className="room-chip" key={r.no}>Room {r.no}
-                <input type="number" min="1" value={r.capacity} onChange={(e) => setRoomCapacity(h.id, r.no, e.target.value)} />
-              </label>
-            ))}
-          </div>
-          <form className="inline-form" style={{ marginTop: 12 }} onSubmit={(e) => {
-            e.preventDefault();
-            const r = room[h.id] || {};
-            if (!r.no) return;
-            if (h.rooms.some((x) => x.no === r.no)) { notify('Room number already exists.'); return; }
-            addRoom(h.id, r.no.trim(), r.cap || 4); setRoom({ ...room, [h.id]: {} });
-          }}>
-            <input className="input" placeholder="Room no." value={(room[h.id] || {}).no || ''} onChange={(e) => setRoom({ ...room, [h.id]: { ...room[h.id], no: e.target.value } })} />
-            <input className="input" type="number" min="1" placeholder="Capacity (4)" value={(room[h.id] || {}).cap || ''} onChange={(e) => setRoom({ ...room, [h.id]: { ...room[h.id], cap: e.target.value } })} />
-            <button className="btn btn-ghost" type="submit"><Icon name="plus" size={14} /> Add room</button>
-          </form>
+      {db.hostels.length === 0 ? (
+        <Card title="Configured Hostels">
+          <div className="empty-state">No hostels added yet. Use the &ldquo;Add hostel&rdquo; form above to add your first hostel.</div>
         </Card>
-      ))}
+      ) : (
+        db.hostels.map((h) => (
+          <Card key={h.id} title={h.name} sub={`${h.rooms.length} rooms · capacity ${h.rooms.reduce((s, r) => s + r.capacity, 0)}`}>
+            <div className="room-chips">
+              {h.rooms.map((r) => (
+                <label className="room-chip" key={r.no}>Room {r.no}
+                  <input type="number" min="1" value={r.capacity} onChange={(e) => setRoomCapacity(h.id, r.no, e.target.value)} />
+                </label>
+              ))}
+            </div>
+            <form className="inline-form" style={{ marginTop: 12 }} onSubmit={(e) => {
+              e.preventDefault();
+              const r = room[h.id] || {};
+              if (!r.no) return;
+              if (h.rooms.some((x) => x.no === r.no)) { notify('Room number already exists.'); return; }
+              addRoom(h.id, r.no.trim(), r.cap || 4); setRoom({ ...room, [h.id]: {} });
+            }}>
+              <input className="input" placeholder="Room no." value={(room[h.id] || {}).no || ''} onChange={(e) => setRoom({ ...room, [h.id]: { ...room[h.id], no: e.target.value } })} />
+              <input className="input" type="number" min="1" placeholder="Capacity (4)" value={(room[h.id] || {}).cap || ''} onChange={(e) => setRoom({ ...room, [h.id]: { ...room[h.id], cap: e.target.value } })} />
+              <button className="btn btn-ghost" type="submit"><Icon name="plus" size={14} /> Add room</button>
+            </form>
+          </Card>
+        ))
+      )}
     </>
   );
 }
 
-const TABS = [['users', 'Login members'], ['roles', 'Roles'], ['look', 'Look & feel'], ['pages', 'Pages & fields'], ['hostels', 'Hostels & rooms']];
+/* ---------------- Organization Branding ---------------- */
+function OrganizationBranding() {
+  const { config, setConfig, notify } = useStore();
+  const current = config.orgBranding || DEFAULT_ORG_BRANDING;
+  const [form, setForm] = useState(current);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    setForm(config.orgBranding || DEFAULT_ORG_BRANDING);
+  }, [config.orgBranding]);
+
+  const handleLogoUpload = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    try {
+      const dataUrl = await resizeImage(file, 400);
+      setForm((p) => ({ ...p, logo: dataUrl }));
+      notify('Logo loaded. Click "Save Branding Settings" to publish.');
+    } catch (err) {
+      notify('Failed to process image: ' + err.message);
+    }
+  };
+
+  const handleSave = async (e) => {
+    e?.preventDefault();
+    setSaving(true);
+    try {
+      const res = await api('/api/admin/branding', { method: 'PUT', body: form });
+      setConfig((p) => ({
+        ...p,
+        orgBranding: res.orgBranding,
+        appName: res.orgBranding.orgName || p.appName,
+        logo: res.orgBranding.logo || p.logo,
+      }));
+      notify('✓ Organization Branding updated successfully.');
+    } catch (err) {
+      notify('Error saving branding: ' + err.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleReset = () => {
+    if (window.confirm('Reset Organization Branding to default Apollo Tyres Ltd settings?')) {
+      setForm(DEFAULT_ORG_BRANDING);
+    }
+  };
+
+  return (
+    <div className="grid-2">
+      <Card title="Organization Branding Settings" sub="Configure official corporate identity, logo, and brand name.">
+        <form onSubmit={handleSave}>
+          <label className="field-label">Organization Name *</label>
+          <input
+            className="input"
+            value={form.orgName}
+            onChange={(e) => setForm({ ...form, orgName: e.target.value })}
+            placeholder="e.g. APOLLO TYRES LTD"
+            required
+          />
+
+          <label className="field-label" style={{ marginTop: 14 }}>Tagline / Department Subtitle</label>
+          <input
+            className="input"
+            value={form.tagline}
+            onChange={(e) => setForm({ ...form, tagline: e.target.value })}
+            placeholder="e.g. Hostel Administration & Trainee Operations"
+          />
+
+          <label className="field-label" style={{ marginTop: 14 }}>Plant / Campus Address</label>
+          <input
+            className="input"
+            value={form.address || ''}
+            onChange={(e) => setForm({ ...form, address: e.target.value })}
+            placeholder="e.g. Apollo Tyres Ltd Manufacturing Campus"
+          />
+
+          <label className="field-label" style={{ marginTop: 14 }}>Official Organization Logo</label>
+          <div style={{ display: 'flex', gap: 10, alignItems: 'center', marginTop: 6, flexWrap: 'wrap' }}>
+            <label className="btn btn-ghost btn-sm" style={{ cursor: 'pointer' }}>
+              <Icon name="upload" size={14} /> Upload Custom Logo
+              <input type="file" accept="image/*" onChange={handleLogoUpload} style={{ display: 'none' }} />
+            </label>
+            {form.logo && (
+              <button
+                type="button"
+                className="btn btn-ghost btn-sm"
+                onClick={() => setForm({ ...form, logo: '' })}
+              >
+                <Icon name="trash" size={14} /> Remove Custom Logo
+              </button>
+            )}
+          </div>
+
+          <div style={{ display: 'flex', gap: 10, marginTop: 24 }}>
+            <button type="submit" className="btn btn-primary" disabled={saving}>
+              <Icon name="check" size={14} /> {saving ? 'Saving…' : 'Save Branding Settings'}
+            </button>
+            <button type="button" className="btn btn-ghost" onClick={handleReset}>
+              Reset to Default
+            </button>
+          </div>
+        </form>
+      </Card>
+
+      <Card title="Branding Preview" sub="How Apollo Tyres branding appears across headers, exports, and ID cards.">
+        <div style={{ padding: 24, background: '#f8fafc', borderRadius: 8, border: '1px solid #e2e8f0', textAlign: 'center' }}>
+          <div style={{ minHeight: 64, display: 'flex', alignItems: 'center', justifyContent: 'center', marginBottom: 12 }}>
+            {form.logo ? (
+              <img src={form.logo} alt="Organization Logo" style={{ maxHeight: 60, maxWidth: 240, objectFit: 'contain' }} />
+            ) : (
+              <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8, background: '#2E1065', padding: '10px 20px', borderRadius: 8 }}>
+                <span style={{ fontSize: 24, fontWeight: 800, color: '#C084FC', letterSpacing: '-0.5px' }}>apollo</span>
+                <span style={{ fontSize: 24, fontWeight: 400, color: '#FFFFFF', letterSpacing: '-0.5px' }}>tyres</span>
+              </div>
+            )}
+          </div>
+          <div style={{ fontSize: 20, fontWeight: 800, color: '#1e1b4b', letterSpacing: '0.02em' }}>{form.orgName || 'APOLLO TYRES LTD'}</div>
+          <div style={{ fontSize: 13, color: '#6d28d9', marginTop: 4, fontWeight: 600 }}>{form.tagline || 'Hostel Administration & Trainee Operations'}</div>
+          {form.address && <div style={{ fontSize: 12, color: '#64748b', marginTop: 4 }}>{form.address}</div>}
+        </div>
+      </Card>
+    </div>
+  );
+}
+
+/* ---------------- ID Card Design Settings ---------------- */
+const SAMPLE_TRAINEE = {
+  traineeId: 'TR-APOLLO-001',
+  name: 'Vikram Sharma',
+  mobile: '9876543210',
+  qualification: 'Diploma Mechanical',
+  department: 'Plant Operations',
+  hostel: 'Apollo Campus Block A',
+  roomNo: '102',
+  joiningDate: '2026-01-15',
+  photo: '',
+  qrId: 'QR-DEMO-001',
+  hostelStatus: 'ACTIVE',
+  qrStatus: 'ACTIVE',
+  defaultShift: 'G',
+};
+
+function IdCardDesignSettings() {
+  const { config, setConfig, notify } = useStore();
+  const current = config.idCardTemplate || DEFAULT_IDCARD_TEMPLATE;
+  const [form, setForm] = useState(current);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    setForm(config.idCardTemplate || DEFAULT_IDCARD_TEMPLATE);
+  }, [config.idCardTemplate]);
+
+  const handleSave = async (e) => {
+    e?.preventDefault();
+    setSaving(true);
+    try {
+      const res = await api('/api/admin/id-card-template', { method: 'PUT', body: form });
+      setConfig((p) => ({ ...p, idCardTemplate: res.idCardTemplate }));
+      notify('✓ ID Card design template updated successfully.');
+    } catch (err) {
+      notify('Error saving ID Card template: ' + err.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleReset = () => {
+    if (window.confirm('Reset ID Card design template to official violet defaults?')) {
+      setForm(DEFAULT_IDCARD_TEMPLATE);
+    }
+  };
+
+  return (
+    <div className="grid-2">
+      <Card title="ID Card Design Settings" sub="Customize colors, visible details, headers, and dimensions.">
+        <form onSubmit={handleSave}>
+          <div className="form-grid">
+            <div className="span-2">
+              <label className="field-label">Header Company Title</label>
+              <input
+                className="input"
+                value={form.companyName || ''}
+                onChange={(e) => setForm({ ...form, companyName: e.target.value })}
+                placeholder="e.g. APOLLO TYRES LTD"
+              />
+            </div>
+
+            <div className="span-2">
+              <label className="field-label">Card Subtitle</label>
+              <input
+                className="input"
+                value={form.subtitle || ''}
+                onChange={(e) => setForm({ ...form, subtitle: e.target.value })}
+                placeholder="e.g. TRAINEE IDENTITY CARD"
+              />
+            </div>
+
+            <div>
+              <label className="field-label">Header Gradient Start</label>
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                <input
+                  type="color"
+                  value={form.headerBgStart || '#2E1065'}
+                  onChange={(e) => setForm({ ...form, headerBgStart: e.target.value })}
+                  style={{ width: 44, height: 38, padding: 0, border: 'none', cursor: 'pointer' }}
+                />
+                <input
+                  className="input"
+                  value={form.headerBgStart || '#2E1065'}
+                  onChange={(e) => setForm({ ...form, headerBgStart: e.target.value })}
+                />
+              </div>
+            </div>
+
+            <div>
+              <label className="field-label">Header Gradient End</label>
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                <input
+                  type="color"
+                  value={form.headerBgEnd || '#4C1D95'}
+                  onChange={(e) => setForm({ ...form, headerBgEnd: e.target.value })}
+                  style={{ width: 44, height: 38, padding: 0, border: 'none', cursor: 'pointer' }}
+                />
+                <input
+                  className="input"
+                  value={form.headerBgEnd || '#4C1D95'}
+                  onChange={(e) => setForm({ ...form, headerBgEnd: e.target.value })}
+                />
+              </div>
+            </div>
+
+            <div>
+              <label className="field-label">Accent Stripe Color</label>
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                <input
+                  type="color"
+                  value={form.accentColor || '#8B5CF6'}
+                  onChange={(e) => setForm({ ...form, accentColor: e.target.value })}
+                  style={{ width: 44, height: 38, padding: 0, border: 'none', cursor: 'pointer' }}
+                />
+                <input
+                  className="input"
+                  value={form.accentColor || '#8B5CF6'}
+                  onChange={(e) => setForm({ ...form, accentColor: e.target.value })}
+                />
+              </div>
+            </div>
+
+            <div>
+              <label className="field-label">Photo Shape</label>
+              <select
+                className="input"
+                value={form.photoShape || 'circle'}
+                onChange={(e) => setForm({ ...form, photoShape: e.target.value })}
+              >
+                <option value="circle">Circular Avatar</option>
+                <option value="square">Rounded Square</option>
+              </select>
+            </div>
+
+            <div className="span-2">
+              <label className="field-label">Footer Card Text</label>
+              <input
+                className="input"
+                value={form.footerText || ''}
+                onChange={(e) => setForm({ ...form, footerText: e.target.value })}
+                placeholder="Authorized Trainee ID Card · Apollo Tyres Ltd"
+              />
+            </div>
+          </div>
+
+          <div style={{ marginTop: 18 }}>
+            <label className="field-label" style={{ fontWeight: 600, marginBottom: 8 }}>Visible Details on Card</label>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+              <Switch
+                checked={form.showQualification !== false}
+                onChange={(v) => setForm({ ...form, showQualification: v })}
+                label="Show Qualification"
+              />
+              <Switch
+                checked={form.showPhone !== false}
+                onChange={(v) => setForm({ ...form, showPhone: v })}
+                label="Show Phone Number"
+              />
+              <Switch
+                checked={form.showHostel !== false}
+                onChange={(v) => setForm({ ...form, showHostel: v })}
+                label="Show Hostel Block"
+              />
+              <Switch
+                checked={form.showRoom !== false}
+                onChange={(v) => setForm({ ...form, showRoom: v })}
+                label="Show Room Number"
+              />
+              <Switch
+                checked={form.showJoiningDate !== false}
+                onChange={(v) => setForm({ ...form, showJoiningDate: v })}
+                label="Show Joining Date"
+              />
+              <Switch
+                checked={form.showQr !== false}
+                onChange={(v) => setForm({ ...form, showQr: v })}
+                label="Show QR Code"
+              />
+            </div>
+          </div>
+
+          <div style={{ display: 'flex', gap: 10, marginTop: 24 }}>
+            <button type="submit" className="btn btn-primary" disabled={saving}>
+              <Icon name="check" size={14} /> {saving ? 'Saving…' : 'Save ID Card Settings'}
+            </button>
+            <button type="button" className="btn btn-ghost" onClick={handleReset}>
+              Reset to Default
+            </button>
+          </div>
+        </form>
+      </Card>
+
+      <Card title="Live ID Card Preview" sub="Real-time preview of the printable and downloadable card.">
+        <div style={{ display: 'flex', justifyContent: 'center', padding: '12px 0' }}>
+          <VerticalIdCard trainee={SAMPLE_TRAINEE} customTemplate={form} embedded />
+        </div>
+      </Card>
+    </div>
+  );
+}
+
+/* ---------------- Approval Email Template Settings ---------------- */
+const PLACEHOLDERS = [
+  ['{{traineeName}}', 'Trainee Full Name'],
+  ['{{traineeId}}', 'Trainee ID'],
+  ['{{joiningDate}}', 'Joining Date'],
+  ['{{department}}', 'Department / Qualification'],
+  ['{{approvalLink}}', 'Review & Approval Link'],
+  ['{{organizationName}}', 'Organization Name'],
+  ['{{organizationLogo}}', 'Organization Logo URL'],
+  ['{{approverName}}', 'Approver Name'],
+];
+
+function ApprovalEmailTemplateSettings() {
+  const { config, setConfig, notify } = useStore();
+  const current = config.emailTemplate || DEFAULT_EMAIL_TEMPLATE;
+  const branding = config.orgBranding || DEFAULT_ORG_BRANDING;
+  const [form, setForm] = useState(current);
+  const [saving, setSaving] = useState(false);
+  const [testEmail, setTestEmail] = useState('');
+  const [sendingTest, setSendingTest] = useState(false);
+
+  useEffect(() => {
+    setForm(config.emailTemplate || DEFAULT_EMAIL_TEMPLATE);
+  }, [config.emailTemplate]);
+
+  const handleInsertToken = (token) => {
+    setForm((p) => ({
+      ...p,
+      bodyText: (p.bodyText || '') + ' ' + token,
+    }));
+  };
+
+  const handleSave = async (e) => {
+    e?.preventDefault();
+    setSaving(true);
+    try {
+      const res = await api('/api/admin/email-template', { method: 'PUT', body: form });
+      setConfig((p) => ({ ...p, emailTemplate: res.emailTemplate }));
+      notify('✓ Approval email template updated successfully.');
+    } catch (err) {
+      notify('Error saving email template: ' + err.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleReset = () => {
+    if (window.confirm('Reset approval email template to defaults?')) {
+      setForm(DEFAULT_EMAIL_TEMPLATE);
+    }
+  };
+
+  const handleSendTest = async () => {
+    if (!testEmail.trim()) {
+      notify('Please enter an email address for testing.');
+      return;
+    }
+    setSendingTest(true);
+    try {
+      const res = await api('/api/admin/email-template/test', {
+        method: 'POST',
+        body: { to: testEmail.trim(), template: form },
+      });
+      notify(`✓ Test email dispatched to ${res.recipient}. Status: ${res.dispatch?.status || 'SENT'}`);
+    } catch (err) {
+      notify('Failed to send test email: ' + err.message);
+    } finally {
+      setSendingTest(false);
+    }
+  };
+
+  // Preview token replacer
+  const sampleOrg = branding.orgName || 'APOLLO TYRES LTD';
+  const previewSubject = (form.subject || '')
+    .replace(/\{\{traineeName\}\}/g, 'Vikram Sharma')
+    .replace(/\{\{traineeId\}\}/g, 'TR-APOLLO-001')
+    .replace(/\{\{organizationName\}\}/g, sampleOrg);
+
+  const previewHeading = (form.heading || '')
+    .replace(/\{\{traineeName\}\}/g, 'Vikram Sharma')
+    .replace(/\{\{organizationName\}\}/g, sampleOrg);
+
+  const previewBody = (form.bodyText || '')
+    .replace(/\{\{traineeName\}\}/g, 'Vikram Sharma')
+    .replace(/\{\{traineeId\}\}/g, 'TR-APOLLO-001')
+    .replace(/\{\{joiningDate\}\}/g, '2026-01-15')
+    .replace(/\{\{department\}\}/g, 'Plant Operations')
+    .replace(/\{\{organizationName\}\}/g, sampleOrg)
+    .replace(/\{\{approverName\}\}/g, 'Approver');
+
+  return (
+    <div className="grid-2">
+      <Card title="Approval Email Template Settings" sub="Configure subject, content, dynamic placeholders, and layout.">
+        <form onSubmit={handleSave}>
+          <label className="field-label">Email Subject *</label>
+          <input
+            className="input"
+            value={form.subject || ''}
+            onChange={(e) => setForm({ ...form, subject: e.target.value })}
+            placeholder="[Action Required] Review Registration: {{traineeName}} ({{traineeId}})"
+            required
+          />
+
+          <div className="two-col" style={{ marginTop: 14 }}>
+            <div>
+              <label className="field-label">Banner Heading</label>
+              <input
+                className="input"
+                value={form.heading || ''}
+                onChange={(e) => setForm({ ...form, heading: e.target.value })}
+                placeholder="Trainee Registration Review Request"
+              />
+            </div>
+            <div>
+              <label className="field-label">Banner Subheading</label>
+              <input
+                className="input"
+                value={form.subheading || ''}
+                onChange={(e) => setForm({ ...form, subheading: e.target.value })}
+                placeholder="Apollo Tyres Ltd — Trainee Hostel Operations"
+              />
+            </div>
+          </div>
+
+          <div className="two-col" style={{ marginTop: 14 }}>
+            <div>
+              <label className="field-label">Header Background Color</label>
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                <input
+                  type="color"
+                  value={form.headerBg || '#2E1065'}
+                  onChange={(e) => setForm({ ...form, headerBg: e.target.value })}
+                  style={{ width: 44, height: 38, padding: 0, border: 'none', cursor: 'pointer' }}
+                />
+                <input
+                  className="input"
+                  value={form.headerBg || '#2E1065'}
+                  onChange={(e) => setForm({ ...form, headerBg: e.target.value })}
+                />
+              </div>
+            </div>
+            <div>
+              <label className="field-label">Accent / Button Color</label>
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                <input
+                  type="color"
+                  value={form.accentColor || '#7C3AED'}
+                  onChange={(e) => setForm({ ...form, accentColor: e.target.value })}
+                  style={{ width: 44, height: 38, padding: 0, border: 'none', cursor: 'pointer' }}
+                />
+                <input
+                  className="input"
+                  value={form.accentColor || '#7C3AED'}
+                  onChange={(e) => setForm({ ...form, accentColor: e.target.value })}
+                />
+              </div>
+            </div>
+          </div>
+
+          <label className="field-label" style={{ marginTop: 16 }}>
+            Body Message
+          </label>
+          <div style={{ marginBottom: 8, display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+            {PLACEHOLDERS.map(([token, desc]) => (
+              <button
+                key={token}
+                type="button"
+                className="btn btn-ghost btn-xs"
+                style={{ fontSize: 11, background: '#ede9fe', color: '#5b21b6', border: '1px solid #ddd6fe' }}
+                onClick={() => handleInsertToken(token)}
+                title={`Insert ${desc}`}
+              >
+                + {token}
+              </button>
+            ))}
+          </div>
+          <textarea
+            className="input"
+            rows={5}
+            value={form.bodyText || ''}
+            onChange={(e) => setForm({ ...form, bodyText: e.target.value })}
+            placeholder="A new trainee registration has been submitted for {{organizationName}} and requires your official review..."
+          />
+
+          <label className="field-label" style={{ marginTop: 14 }}>Footer Text</label>
+          <input
+            className="input"
+            value={form.footerText || ''}
+            onChange={(e) => setForm({ ...form, footerText: e.target.value })}
+            placeholder="Security Notice: This link contains a secure, single-use token expiring in 7 days."
+          />
+
+          <div style={{ display: 'flex', gap: 10, marginTop: 24 }}>
+            <button type="submit" className="btn btn-primary" disabled={saving}>
+              <Icon name="check" size={14} /> {saving ? 'Saving…' : 'Save Email Template'}
+            </button>
+            <button type="button" className="btn btn-ghost" onClick={handleReset}>
+              Reset to Default
+            </button>
+          </div>
+        </form>
+
+        <hr style={{ margin: '24px 0', border: 'none', borderTop: '1px solid var(--border)' }} />
+
+        <div>
+          <label className="field-label" style={{ fontWeight: 600 }}>Send Test Email</label>
+          <p style={{ fontSize: 13, color: 'var(--muted)', margin: '4px 0 10px 0' }}>
+            Dispatch a test sample of this template to verify formatting in your mail client.
+          </p>
+          <div style={{ display: 'flex', gap: 10, maxWidth: 440 }}>
+            <input
+              className="input"
+              type="email"
+              placeholder="e.g. your-email@apollotyres.com"
+              value={testEmail}
+              onChange={(e) => setTestEmail(e.target.value)}
+            />
+            <button
+              type="button"
+              className="btn btn-ghost"
+              onClick={handleSendTest}
+              disabled={sendingTest}
+            >
+              {sendingTest ? 'Sending…' : 'Send Test'}
+            </button>
+          </div>
+        </div>
+      </Card>
+
+      <Card title="Email Preview" sub="Live rendering of the notification sent to approvers.">
+        <div style={{ border: '1px solid #e2e8f0', borderRadius: 10, overflow: 'hidden', background: '#ffffff', boxShadow: '0 2px 8px rgba(0,0,0,0.05)' }}>
+          <div style={{ background: '#f1f5f9', padding: '10px 16px', borderBottom: '1px solid #e2e8f0', fontSize: 12, color: '#475569' }}>
+            <div><strong>Subject:</strong> {previewSubject}</div>
+          </div>
+          <div style={{ background: form.headerBg || '#2E1065', color: '#ffffff', padding: '16px 20px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+            <div>
+              <div style={{ fontSize: 17, fontWeight: 700 }}>{previewHeading}</div>
+              <div style={{ fontSize: 12, color: '#ddd6fe', marginTop: 2 }}>{form.subheading || `${sampleOrg} — Trainee Hostel Operations`}</div>
+            </div>
+            {branding.logo ? (
+              <img src={branding.logo} alt="Logo" style={{ maxHeight: 36, maxWidth: 100, objectFit: 'contain' }} />
+            ) : (
+              <span style={{ fontSize: 13, fontWeight: 700, color: '#ddd6fe' }}>{sampleOrg}</span>
+            )}
+          </div>
+          <div style={{ padding: 20 }}>
+            <p style={{ margin: '0 0 10px 0', fontSize: 14 }}>Dear <strong>Approver</strong>,</p>
+            <div style={{ fontSize: 13.5, color: '#334155', lineHeight: 1.6, whiteSpace: 'pre-line', marginBottom: 16 }}>
+              {previewBody}
+            </div>
+
+            <div style={{ background: '#f8fafc', borderLeft: `4px solid ${form.accentColor || '#7C3AED'}`, padding: '12px 16px', borderRadius: 6, fontSize: 13 }}>
+              <div><strong>Full Name:</strong> Vikram Sharma</div>
+              <div style={{ marginTop: 4 }}><strong>Trainee ID:</strong> <span style={{ fontFamily: 'monospace', fontWeight: 700, color: form.accentColor || '#7C3AED' }}>TR-APOLLO-001</span></div>
+              <div style={{ marginTop: 4 }}><strong>Department:</strong> Plant Operations</div>
+              <div style={{ marginTop: 4 }}><strong>Joining Date:</strong> 2026-01-15</div>
+            </div>
+
+            <div style={{ margin: '22px 0', textAlign: 'center' }}>
+              <div style={{ background: form.accentColor || '#7C3AED', color: '#ffffff', padding: '12px 24px', borderRadius: 8, display: 'inline-block', fontWeight: 700, fontSize: 14 }}>
+                Open Trainee Review & Decisions →
+              </div>
+            </div>
+
+            <div style={{ borderTop: '1px solid #f1f5f9', paddingTop: 12, fontSize: 11, color: '#94a3b8' }}>
+              {form.footerText || 'Security Notice: This link contains a secure, single-use token expiring in 7 days.'}
+            </div>
+          </div>
+        </div>
+      </Card>
+    </div>
+  );
+}
+
+const TABS = [
+  ['branding', 'Organization Branding'],
+  ['idcard', 'ID Card Design'],
+  ['email', 'Approval Email Template'],
+  ['approvers', 'Approval Authorities'],
+  ['users', 'Login members'],
+  ['roles', 'Roles'],
+  ['look', 'Look & feel'],
+  ['pages', 'Pages & fields'],
+  ['hostels', 'Hostels & rooms'],
+];
 export default function Console() {
-  const [tab, setTab] = useState('users');
+  const [tab, setTab] = useState('branding');
   return (
     <>
       <div className="tabbar scroll-x">
         {TABS.map(([id, l]) => <button key={id} className={`tab ${tab === id ? 'active' : ''}`} onClick={() => setTab(id)}>{l}</button>)}
       </div>
-      {tab === 'users' ? <Users /> : tab === 'roles' ? <Roles /> : tab === 'look' ? <Appearance /> : tab === 'pages' ? <PagesAndFields /> : <Hostels />}
+      {tab === 'branding' ? <OrganizationBranding />
+        : tab === 'idcard' ? <IdCardDesignSettings />
+        : tab === 'email' ? <ApprovalEmailTemplateSettings />
+        : tab === 'users' ? <Users />
+        : tab === 'roles' ? <Roles />
+        : tab === 'approvers' ? <Approvers />
+        : tab === 'look' ? <Appearance />
+        : tab === 'pages' ? <PagesAndFields />
+        : <Hostels />}
     </>
   );
 }

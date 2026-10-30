@@ -26,31 +26,74 @@ function RoomPicker({ hostel, setHostel, room, setRoom, currentTraineeId }) {
   );
 }
 
-/** Pending trainee -> choose hostel + room -> ACTIVE + QR generated. */
+/** Allocate hostel & room to an approved trainee. */
 export function ApproveModal({ trainee, onClose }) {
   const { approveTrainee, notify, navigate } = useStore();
   const [hostel, setHostel] = useState('');
   const [room, setRoom] = useState('');
+
+  const isRejected = trainee.approvalStatus === 'REJECTED' || trainee.hostelStatus === 'REJECTED';
+  const isPending = trainee.approvalStatus === 'PENDING_APPROVAL' || trainee.hostelStatus === 'PENDING REVIEW';
+
   return (
     <Modal
-      title="Approve & Allocate Room"
+      title={isRejected ? 'Room Allocation Blocked' : 'Allocate Room & Bed'}
       onClose={onClose}
-      submitLabel="Approve & Allocate Room"
+      submitLabel={isRejected || isPending ? undefined : 'Confirm Room Allocation'}
       onSubmit={() => {
+        if (isRejected) {
+          notify('Cannot allocate room: Trainee is rejected.');
+          return;
+        }
+        if (isPending) {
+          notify('Cannot allocate room: Trainee must be approved first.');
+          return;
+        }
+        if (!hostel || !room) {
+          notify('Please select both a hostel and room number.');
+          return;
+        }
         approveTrainee(trainee.traineeId, hostel, room);
-        notify(`${trainee.name} approved and allocated to ${hostel}, Room ${room}. QR generated.`);
+        notify(`${trainee.name} successfully allocated to ${hostel}, Room ${room}.`);
         onClose();
         navigate('trainee-profile', { id: trainee.traineeId });
       }}
     >
-      <div className="approve-trainee">
+      <div className="approve-trainee" style={{ marginBottom: 14 }}>
         <Avatar trainee={trainee} size="md" />
         <div>
           <div className="approve-name">{trainee.name}</div>
           <div className="approve-sub">{trainee.traineeId} · {trainee.qualification} · {trainee.defaultShift} Shift</div>
         </div>
       </div>
-      <RoomPicker hostel={hostel} setHostel={setHostel} room={room} setRoom={setRoom} />
+
+      {isRejected ? (
+        <div className="alert-banner bad" style={{ margin: 0 }}>
+          <Icon name="alert" size={18} />
+          <div className="alert-text">
+            <strong>Room allocation is not permitted:</strong> This trainee's registration was rejected.
+          </div>
+        </div>
+      ) : isPending ? (
+        <div className="alert-banner bad" style={{ margin: 0 }}>
+          <Icon name="alert" size={18} />
+          <div className="alert-text">
+            <strong>Approval Required:</strong> This trainee is currently pending approval. Please review and approve their registration before assigning a room.
+          </div>
+          <button
+            type="button"
+            className="btn btn-primary btn-sm"
+            onClick={() => {
+              onClose();
+              navigate('review', { id: trainee.traineeId });
+            }}
+          >
+            Open Review
+          </button>
+        </div>
+      ) : (
+        <RoomPicker hostel={hostel} setHostel={setHostel} room={room} setRoom={setRoom} currentTraineeId={trainee.traineeId} />
+      )}
     </Modal>
   );
 }

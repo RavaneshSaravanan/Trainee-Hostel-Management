@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { QUALIFICATIONS, SHIFTS } from '../data/constants.js';
 import { Avatar, Icon } from './ui.jsx';
 import { todayStr } from '../utils/dates.js';
-import { resizeImage } from '../utils/image.js';
+import PhotoCapture from './PhotoCapture.jsx';
 
 // Field wrapper lives OUTSIDE the form component so inputs keep their typed values between renders.
 const F = ({ label, children, span }) => (
@@ -50,11 +50,8 @@ export default function RegistrationForm({ customFields = [], onSubmit, submitTe
           <F label="Qualification"><select className="input" name="qualification">{QUALIFICATIONS.map((q) => <option key={q}>{q}</option>)}</select></F>
           <F label="Aadhar No."><input className="input" name="aadhar" inputMode="numeric" placeholder="XXXX-XXXX-XXXX" /></F>
           <F label="Food Preference"><select className="input" name="food"><option>VEG</option><option>NON-VEG</option></select></F>
-          <F label="Photo">
-            <div className="photo-upload-row">
-              <Avatar trainee={{ name: '?', photo }} size="md" />
-              <input className="input" type="file" name="photoFile" accept="image/*" onChange={onPhoto} />
-            </div>
+          <F label="Photo" span>
+            <PhotoCapture value={photo} onChange={setPhoto} />
           </F>
         </div>
       </div>
@@ -62,8 +59,7 @@ export default function RegistrationForm({ customFields = [], onSubmit, submitTe
         <div className="form-section-title">Address</div>
         <div className="form-grid">
           <F label="Address Line 1" span><input className="input" name="address1" /></F>
-          <F label="District"><input className="input" name="district" /></F>
-          <F label="State"><input className="input" name="state" /></F>
+          <F label="State" span><input className="input" name="state" /></F>
         </div>
       </div>
       <div className="form-section">

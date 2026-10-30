@@ -12,6 +12,9 @@ import { Leave, OutingVacate, Resignation, Remarks } from './pages/Records.jsx';
 import Reports from './pages/Reports.jsx';
 import Settings from './pages/Settings.jsx';
 import Console from './pages/Console.jsx';
+import TraineeReview from './pages/TraineeReview.jsx';
+import ValidityReport from './pages/ValidityReport.jsx';
+import TraineeCardVerify from './pages/TraineeCardVerify.jsx';
 
 // ROUTES: view name -> page component. Add a page by adding a line here, in data/defaults.js (PAGES) and it shows in the sidebar.
 const ROUTES = {
@@ -19,11 +22,13 @@ const ROUTES = {
   trainees: Trainees,
   'trainee-new': NewTrainee,
   'trainee-profile': TraineeProfile,
+  review: TraineeReview,
   attendance: Attendance,
   leave: Leave,
   'outing-vacate': OutingVacate,
   resignation: Resignation,
   remarks: Remarks,
+  validity: ValidityReport,
   reports: Reports,
   settings: Settings,
   console: Console,
@@ -40,7 +45,27 @@ export default function App() {
 
   // Public self-registration page (the QR for new trainees opens this) — no login.
   if (hash.startsWith('#/register')) return <Register />;
+
+  // Public ID card QR verification page (phone camera / normal QR reader) — no login.
+  if (hash.startsWith('#/verify/')) {
+    const verifyTraineeId = decodeURIComponent(hash.slice('#/verify/'.length).split('?')[0].trim());
+    return <TraineeCardVerify traineeId={verifyTraineeId} />;
+  }
+
   if (booting) return <div className="boot">Loading…</div>;
+
+  // Direct review link handling (#/review/:traineeId)
+  if (hash.startsWith('#/review/')) {
+    const reviewTraineeId = decodeURIComponent(hash.slice('#/review/'.length).split('?')[0].trim());
+    if (session) {
+      return (
+        <Layout>
+          <TraineeReview traineeId={reviewTraineeId} />
+        </Layout>
+      );
+    }
+    return <Login />;
+  }
 
   // Role permissions: if the current page is not allowed, fall back to the first allowed one.
   const allowed = session ? navItems(config, can) : [];

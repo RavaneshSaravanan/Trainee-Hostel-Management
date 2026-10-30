@@ -7,6 +7,7 @@
 
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react';
 import { nextId, todayStr, daysDiff } from './utils/dates.js';
+import { addThreeCalendarMonths } from './utils/validity.js';
 import { api, getToken, setToken } from './utils/api.js';
 import { applyTheme } from './utils/theme.js';
 import { DEFAULT_CONFIG, DEFAULT_ROLES, SUPER_ROLE, withDefaults } from './data/defaults.js';
@@ -120,7 +121,7 @@ export function StoreProvider({ children }) {
   const role = session ? roles.find((r) => r.id === session.roleId) : null;
   const isSuper = !!session && session.roleId === SUPER_ROLE;
   const roleName = role ? role.name : '';
-  const pageOf = (view) => (view === 'trainee-profile' ? 'trainees' : view);
+  const pageOf = (view) => (view === 'trainee-profile' || view === 'review' ? 'trainees' : view);
   const can = (view) => {
     if (!session) return false;
     const p = pageOf(view);
@@ -151,15 +152,55 @@ export function StoreProvider({ children }) {
   // ---------- Trainees ----------
   // Every trainee gets a QR id the moment they are created (no waiting for approval).
   const addTrainee = (data) => {
-    if (getTrainee(data.traineeId)) return { ok: false, error: 'This Trainee ID already exists.' };
+    const cleanId = String(data.traineeId || '').trim().toUpperCase();
+    if (!cleanId) return { ok: false, error: 'Trainee ID is required.' };
+
+    // Check duplicate Trainee ID
+    if (db.trainees.some((t) => (t.traineeId || '').trim().toUpperCase() === cleanId)) {
+      return { ok: false, error: `Trainee ID "${cleanId}" already exists. Duplicate ID is not allowed.` };
+    }
+
+    // Check duplicate Aadhar card number
+    const cleanAadhar = String(data.aadhar || '').replace(/\D/g, '');
+    if (cleanAadhar.length > 0) {
+      const dup = db.trainees.find((t) => {
+        const other = String(t.aadhar || '').replace(/\D/g, '');
+        return other.length > 0 && other === cleanAadhar;
+      });
+      if (dup) {
+        return {
+          ok: false,
+          error: `Aadhar card number "${data.aadhar}" is already registered for trainee ${dup.name} (${dup.traineeId}). Duplicate Aadhar is not allowed.`,
+        };
+      }
+    }
+
     const hostelId = nextId('HST', db.trainees.map((t) => t.hostelId), 4);
     const qrId = nextId('QR', db.trainees.map((t) => t.qrId), 5);
+    const joiningDate = data.joiningDate || todayStr();
+    const freeStayExpiryDate = addThreeCalendarMonths(joiningDate);
+
     setDb((p) => ({
       ...p,
       trainees: [
         {
-          ...data, hostelId, qrId, qrStatus: 'ACTIVE', employmentStatus: 'ACTIVE', hostelStatus: 'PENDING REVIEW',
-          hostel: '', roomNo: '', remarks: '', submissionDate: todayStr(), approvedBy: '',
+          ...data,
+          traineeId: cleanId,
+          hostelId,
+          qrId,
+          qrStatus: 'ACTIVE',
+          employmentStatus: 'ACTIVE',
+          hostelStatus: 'PENDING REVIEW',
+          approvalStatus: 'PENDING_APPROVAL',
+          paymentStatus: 'FREE',
+          freeStayExpiryDate,
+          paymentHistory: [],
+          approvals: [],
+          hostel: '',
+          roomNo: '',
+          remarks: '',
+          submissionDate: todayStr(),
+          approvedBy: '',
         },
         ...p.trainees,
       ],
@@ -167,18 +208,65 @@ export function StoreProvider({ children }) {
     return { ok: true, hostelId, qrId };
   };
 
-  const updateTrainee = (traineeId, patch) =>
-    setDb((p) => ({ ...p, trainees: p.trainees.map((t) => (t.traineeId === traineeId ? { ...t, ...patch } : t)) }));
+  const updateTrainee = (traineeId, patch) => {
+    if (patch.aadhar !== undefined) {
+      const cleanAadhar = String(patch.aadhar || '').replace(/\D/g, '');
+      if (cleanAadhar.length > 0) {
+        const dup = db.trainees.find((t) => {
+          if (t.traineeId === traineeId) return false;
+          const other = String(t.aadhar || '').replace(/\D/g, '');
+          return other.length > 0 && other === cleanAadhar;
+        });
+        if (dup) {
+          notify(`Aadhar number is already registered for ${dup.name} (${dup.traineeId}). Duplicate Aadhar is not allowed.`);
+          return false;
+        }
+      }
+    }
 
-  // Approve a pending trainee: allocate room and activate (QR already exists).
-  const approveTrainee = (traineeId, hostel, room) =>
+    const currentTrainee = db.trainees.find((t) => t.traineeId === traineeId);
+    let extraPatch = {};
+    let auditLog = null;
+
+    if (patch.joiningDate && currentTrainee && patch.joiningDate !== currentTrainee.joiningDate) {
+      const newExpiry = addThreeCalendarMonths(patch.joiningDate);
+      extraPatch = { freeStayExpiryDate: newExpiry };
+      auditLog = {
+        id: `aud_${Date.now().toString(36)}`,
+        traineeId,
+        type: 'JOINING_DATE_CHANGE',
+        date: todayStr(),
+        note: `Joining date updated from ${currentTrainee.joiningDate || 'none'} to ${patch.joiningDate} by ${actor()}`,
+        by: actor(),
+      };
+    }
+
+    setDb((p) => ({
+      ...p,
+      trainees: p.trainees.map((t) => (t.traineeId === traineeId ? { ...t, ...patch, ...extraPatch } : t)),
+      remarks: auditLog ? [auditLog, ...p.remarks] : p.remarks,
+    }));
+    return true;
+  };
+
+  // Allocate room and activate an approved trainee (QR already exists).
+  const approveTrainee = (traineeId, hostel, room) => {
+    const target = db.trainees.find((t) => t.traineeId === traineeId);
+    if (target && target.approvalStatus === 'REJECTED') {
+      notify('Room allocation denied: Trainee registration is rejected.');
+      return false;
+    }
+    if (target && (target.approvalStatus === 'PENDING_APPROVAL' || target.hostelStatus === 'PENDING REVIEW')) {
+      notify('Room allocation denied: Trainee must be approved first.');
+      return false;
+    }
     setDb((p) => {
       const qrId = nextId('QR', p.trainees.map((t) => t.qrId), 5);
       return {
         ...p,
         trainees: p.trainees.map((t) =>
           t.traineeId === traineeId
-            ? { ...t, hostel, roomNo: room, hostelStatus: 'ACTIVE', qrStatus: 'ACTIVE', qrId: t.qrId || qrId, approvedBy: actor() }
+            ? { ...t, hostel, roomNo: room, hostelStatus: 'ACTIVE', approvalStatus: 'APPROVED', qrStatus: 'ACTIVE', qrId: t.qrId || qrId, approvedBy: t.approvedBy || actor() }
             : t
         ),
         roomHistory: [
@@ -187,9 +275,31 @@ export function StoreProvider({ children }) {
         ],
       };
     });
+    return true;
+  };
 
   const rejectTrainee = (traineeId) =>
     updateTrainee(traineeId, { hostelStatus: 'INACTIVE', qrStatus: 'INACTIVE', remarks: 'Registration rejected' });
+
+  const deleteTrainee = async (traineeId) => {
+    const cleanId = String(traineeId || '').trim().toUpperCase();
+    try {
+      const res = await api(`/api/trainees/${encodeURIComponent(cleanId)}`, { method: 'DELETE' });
+      setDb((p) => ({
+        ...p,
+        trainees: p.trainees.filter((t) => t.traineeId !== cleanId),
+        attendance: p.attendance.filter((a) => a.traineeId !== cleanId),
+        leaves: p.leaves.filter((l) => l.traineeId !== cleanId),
+        outingVacate: p.outingVacate.filter((o) => o.traineeId !== cleanId),
+        resignations: p.resignations.filter((r) => r.traineeId !== cleanId),
+      }));
+      notify(res.message || `Trainee ${cleanId} permanently deleted.`);
+      return true;
+    } catch (err) {
+      notify(`Deletion failed: ${err.message}`);
+      return false;
+    }
+  };
 
   const changeRoom = (traineeId, newHostel, newRoom) =>
     setDb((p) => {
@@ -274,7 +384,7 @@ export function StoreProvider({ children }) {
     setConfig, setRoles,
     login, logout, navigate, notify,
     getTrainee, actor,
-    addTrainee, updateTrainee, approveTrainee, rejectTrainee, changeRoom,
+    addTrainee, updateTrainee, approveTrainee, rejectTrainee, deleteTrainee, changeRoom,
     saveAttendance, startDay, saveDaySummary, saveLeave, saveOutingVacate, saveResignation, saveRemark,
     addHostel, addRoom, setRoomCapacity, saveUser, deleteUser, changePassword,
   };

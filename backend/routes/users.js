@@ -37,13 +37,6 @@ router.post('/users', auth, requireSuper, async (req, res) => {
       const email = String(user.email || '').trim().toLowerCase();
       const mobile = String(user.mobile || '').trim();
 
-      // At least one (email or mobile) is mandatory
-      if (!email && !mobile) {
-        return res.status(400).json({
-          error: 'At least one contact method (Email or Mobile number) is mandatory for password recovery via OTP.',
-        });
-      }
-
       // Check username uniqueness
       const existingUsername = await User.findOne({
         username: username.toLowerCase(),

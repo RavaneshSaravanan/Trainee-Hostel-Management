@@ -4,7 +4,7 @@ import { Badge, Card, Icon, Modal, Table, formData } from '../components/ui.jsx'
 import { daysDiff, fmtDate, todayStr } from '../utils/dates.js';
 
 /* Shared page frame: header text + Add button + table, filtered by ?traineeId when opened from a profile. */
-function RecordsPage({ subtitle, addLabel, onAdd, headers, rows, filterId, clearView }) {
+function RecordsPage({ subtitle, addLabel, onAdd, headers, rows, filterId, clearView, empty }) {
   const { navigate } = useStore();
   return (
     <>
@@ -16,7 +16,7 @@ function RecordsPage({ subtitle, addLabel, onAdd, headers, rows, filterId, clear
         </div>
         <button className="btn btn-primary" onClick={onAdd}><Icon name="plus" size={16} /> {addLabel}</button>
       </div>
-      <Card noPad><Table headers={headers} rows={rows} /></Card>
+      <Card noPad><Table headers={headers} rows={rows} empty={empty || 'No records found.'} /></Card>
     </>
   );
 }
@@ -52,19 +52,20 @@ export function Leave() {
   const rows = db.leaves.filter((l) => !filterId || l.traineeId === filterId)
     .sort((a, b) => (a.fromDate < b.fromDate ? 1 : -1))
     .map((l) => [
-      l.id, l.traineeId, nameOf(l.traineeId), l.leaveType, fmtDate(l.fromDate), fmtDate(l.toDate), l.days, l.reason, <Badge status={l.status} />,
+      l.id, l.traineeId, nameOf(l.traineeId), l.leaveType, fmtDate(l.fromDate), fmtDate(l.toDate), l.days, l.reason,
       <button className="btn btn-ghost btn-xs" onClick={() => setEdit(l)}><Icon name="edit" size={13} /> Edit</button>,
     ]);
   return (
     <>
       <RecordsPage subtitle="All leave requests across hostels" addLabel="Add Leave" onAdd={() => setEdit(null)}
-        headers={['Leave ID', 'Trainee ID', 'Name', 'Type', 'From', 'To', 'Days', 'Reason', 'Status', '']} rows={rows} filterId={filterId} clearView="leave" />
+        headers={['Leave ID', 'Trainee ID', 'Name', 'Type', 'From', 'To', 'Days', 'Reason', '']} rows={rows} filterId={filterId} clearView="leave" empty="No leave requests found." />
       {edit !== undefined && <LeaveModal rec={edit} defaultId={filterId} onClose={() => setEdit(undefined)}
         onSave={(d) => {
           const data = normalize(d);
           if (!getTrainee(data.traineeId)) { notify('Unknown Trainee ID.'); return; }
           if (data.toDate < data.fromDate) { notify('To Date cannot be before From Date.'); return; }
-          saveLeave(data, edit && edit.id); notify('Leave record saved.'); setEdit(undefined);
+          saveLeave({ ...data, status: edit ? (edit.status || 'APPROVED') : 'APPROVED' }, edit && edit.id);
+          notify('Leave record saved.'); setEdit(undefined);
         }} />}
     </>
   );
@@ -91,8 +92,6 @@ function LeaveModal({ rec, defaultId, onClose, onSave }) {
       </div>
       <label className="field-label" style={{ marginTop: 12 }}>Reason</label>
       <input className="input" name="reason" defaultValue={rec ? rec.reason : ''} />
-      <label className="field-label" style={{ marginTop: 12 }}>Status</label>
-      <select className="input" name="status" defaultValue={rec ? rec.status : 'PENDING'}><option>PENDING</option><option>APPROVED</option><option>REJECTED</option></select>
       <label className="field-label" style={{ marginTop: 12 }}>Remarks</label>
       <input className="input" name="remarks" defaultValue={rec ? rec.remarks : ''} />
     </Modal>
@@ -109,20 +108,20 @@ export function OutingVacate() {
     .sort((a, b) => (a.date < b.date ? 1 : -1))
     .map((o) => [
       o.id, o.traineeId, nameOf(o.traineeId), <Badge status={o.type} />, fmtDate(o.date), fmtDate(o.fromDate),
-      o.expectedReturn ? fmtDate(o.expectedReturn) : '—', o.reason, <Badge status={o.status} />,
+      o.expectedReturn ? fmtDate(o.expectedReturn) : '—', o.reason,
       <button className="btn btn-ghost btn-xs" onClick={() => setEdit(o)}><Icon name="edit" size={13} /> Edit</button>,
     ]);
   return (
     <>
       <RecordsPage subtitle="Outing, Temporary Vacate and Permanent Vacate records" addLabel="Add Record" onAdd={() => setEdit(null)}
-        headers={['ID', 'Trainee ID', 'Name', 'Type', 'Date', 'From', 'Expected Return', 'Reason', 'Status', '']} rows={rows} filterId={filterId} clearView="outing-vacate" />
+        headers={['ID', 'Trainee ID', 'Name', 'Type', 'Date', 'From', 'Expected Return', 'Reason', '']} rows={rows} filterId={filterId} clearView="outing-vacate" empty="No outing or vacate records found." />
       {edit !== undefined && <OvModal rec={edit} defaultId={filterId} onClose={() => setEdit(undefined)}
         onSave={(d) => {
           const data = normalize(d);
           if (!getTrainee(data.traineeId)) { notify('Unknown Trainee ID.'); return; }
           if (data.type === 'PERMANENT VACATE') data.expectedReturn = '';
           else if (data.expectedReturn && data.expectedReturn < data.fromDate) { notify('Expected return cannot be before From Date.'); return; }
-          saveOutingVacate({ ...data, expectedReturn: data.expectedReturn || '' }, edit && edit.id);
+          saveOutingVacate({ ...data, expectedReturn: data.expectedReturn || '', status: edit ? (edit.status || 'APPROVED') : 'APPROVED' }, edit && edit.id);
           notify('Outing / Vacate record saved.'); setEdit(undefined);
         }} />}
     </>
@@ -154,8 +153,6 @@ function OvModal({ rec, defaultId, onClose, onSave }) {
       </div>
       <label className="field-label" style={{ marginTop: 12 }}>Reason</label>
       <input className="input" name="reason" defaultValue={rec ? rec.reason : ''} />
-      <label className="field-label" style={{ marginTop: 12 }}>Status</label>
-      <select className="input" name="status" defaultValue={rec ? rec.status : 'PENDING'}><option>PENDING</option><option>APPROVED</option><option>REJECTED</option></select>
       <label className="field-label" style={{ marginTop: 12 }}>Remarks</label>
       <input className="input" name="remarks" defaultValue={rec ? rec.remarks : ''} />
     </Modal>
@@ -171,20 +168,20 @@ export function Resignation() {
   const rows = db.resignations.filter((r) => !filterId || r.traineeId === filterId)
     .sort((a, b) => (a.resignationDate < b.resignationDate ? 1 : -1))
     .map((r) => [
-      r.id, r.traineeId, nameOf(r.traineeId), fmtDate(r.resignationDate), fmtDate(r.lastWorkingDate), r.reason, <Badge status={r.status} />,
+      r.id, r.traineeId, nameOf(r.traineeId), fmtDate(r.resignationDate), fmtDate(r.lastWorkingDate), r.reason,
       <button className="btn btn-ghost btn-xs" onClick={() => setEdit(r)}><Icon name="edit" size={13} /> Edit</button>,
     ]);
   return (
     <>
       <RecordsPage subtitle="Resignation records — the trainee master record is always retained" addLabel="Add Resignation" onAdd={() => setEdit(null)}
-        headers={['ID', 'Trainee ID', 'Name', 'Resignation Date', 'Last Working Date', 'Reason', 'Status', '']} rows={rows} filterId={filterId} clearView="resignation" />
+        headers={['ID', 'Trainee ID', 'Name', 'Resignation Date', 'Last Working Date', 'Reason', '']} rows={rows} filterId={filterId} clearView="resignation" empty="No resignation records found." />
       {edit !== undefined && (
         <Modal title={edit ? 'Edit Resignation' : 'Add Resignation'} onClose={() => setEdit(undefined)}
           onSubmit={(e) => {
             const data = normalize(formData(e));
             if (!getTrainee(data.traineeId)) { notify('Unknown Trainee ID.'); return; }
-            saveResignation(data, edit && edit.id);
-            notify(data.status === 'APPROVED' ? 'Resignation saved. Employment status updated; trainee record retained.' : 'Resignation record saved.');
+            saveResignation({ ...data, status: edit ? (edit.status || 'APPROVED') : 'APPROVED' }, edit && edit.id);
+            notify('Resignation record saved.');
             setEdit(undefined);
           }}>
           <TraineeField defaultValue={edit ? edit.traineeId : filterId} />
@@ -194,9 +191,6 @@ export function Resignation() {
           </div>
           <label className="field-label" style={{ marginTop: 12 }}>Reason</label>
           <input className="input" name="reason" defaultValue={edit ? edit.reason : ''} />
-          <label className="field-label" style={{ marginTop: 12 }}>Status</label>
-          <select className="input" name="status" defaultValue={edit ? edit.status : 'PENDING'}><option>PENDING</option><option>APPROVED</option><option>REJECTED</option></select>
-          <div className="muted" style={{ marginTop: 4 }}>Approving sets Employment Status to RESIGNED and deactivates the QR. Nothing is deleted.</div>
           <label className="field-label" style={{ marginTop: 12 }}>Remarks</label>
           <input className="input" name="remarks" defaultValue={edit ? edit.remarks : ''} />
         </Modal>
@@ -220,7 +214,7 @@ export function Remarks() {
   return (
     <>
       <RecordsPage subtitle="Full remark and complaint history, newest first" addLabel="Add Remark" onAdd={() => setEdit(null)}
-        headers={['ID', 'Trainee ID', 'Name', 'Date', 'Type', 'Remark / Complaint', 'Action Taken', 'Status', 'Reported By', '']} rows={rows} filterId={filterId} clearView="remarks" />
+        headers={['ID', 'Trainee ID', 'Name', 'Date', 'Type', 'Remark / Complaint', 'Action Taken', 'Status', 'Reported By', '']} rows={rows} filterId={filterId} clearView="remarks" empty="No remarks or complaints recorded." />
       {edit !== undefined && (
         <Modal title={edit ? 'Edit Remark' : 'Add Remark / Complaint'} onClose={() => setEdit(undefined)}
           onSubmit={(e) => {

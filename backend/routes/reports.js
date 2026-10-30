@@ -75,6 +75,7 @@ router.get('/reports', auth, requireReports, async (req, res) => {
 
     let headers = [];
     let rows = [];
+    let extraStats = null;
 
     if (type === 'hostel') {
       headers = ['Hostel', 'Total Trainees', 'Active', 'On Leave', 'Outing', 'Temp. Vacate', 'Perm. Vacate', 'Occupancy'];
@@ -162,7 +163,7 @@ router.get('/reports', auth, requireReports, async (req, res) => {
         .filter((r) => ids.has(r.traineeId) && r.resignationDate >= from && r.resignationDate <= to)
         .map((r) => [r.traineeId, nameOf(r.traineeId), fmtDate(r.resignationDate), fmtDate(r.lastWorkingDate), r.reason, r.status]);
     } else {
-      // Monthly summary default
+      // Module 8: Monthly Hostel Occupancy & Living-Days Report
       headers = [
         'Trainee ID',
         'Name',
@@ -176,9 +177,27 @@ router.get('/reports', auth, requireReports, async (req, res) => {
         'Perm. Vacate',
         'Living Days',
         'Vacated Days',
+        'Free Trainees',
+        'Paid Trainees',
+        'Free Living Days',
+        'Paid Living Days',
+        'Total Living Days',
       ];
+
+      let sumFreeDays = 0;
+      let sumPaidDays = 0;
+      let sumTotalDays = 0;
+      const freeTraineeIds = new Set();
+      const paidTraineeIds = new Set();
+
       rows = trainees.map((t) => {
         const s = computeSummary(db, t.traineeId, from, to);
+        if (s.isFreeTrainee) freeTraineeIds.add(t.traineeId);
+        if (s.isPaidTrainee) paidTraineeIds.add(t.traineeId);
+        sumFreeDays += s.freeLivingDays;
+        sumPaidDays += s.paidLivingDays;
+        sumTotalDays += s.totalLivingDays;
+
         return [
           t.traineeId,
           t.name,
@@ -192,8 +211,21 @@ router.get('/reports', auth, requireReports, async (req, res) => {
           s.permVacateDays,
           s.livingDays,
           s.vacatedDays,
+          s.isFreeTrainee ? 1 : 0,
+          s.isPaidTrainee ? 1 : 0,
+          s.freeLivingDays,
+          s.paidLivingDays,
+          s.totalLivingDays,
         ];
       });
+
+      extraStats = {
+        totalFreeTrainees: freeTraineeIds.size,
+        totalPaidTrainees: paidTraineeIds.size,
+        totalFreeLivingDays: sumFreeDays,
+        totalPaidLivingDays: sumPaidDays,
+        grandTotalLivingDays: sumTotalDays,
+      };
     }
 
     const title = REPORT_TITLES[type] || 'Report Summary';
@@ -205,6 +237,7 @@ router.get('/reports', auth, requireReports, async (req, res) => {
       headers,
       rows,
       count: rows.length,
+      extraStats,
     });
   } catch (err) {
     return res.status(500).json({ error: err.message });
