@@ -30,6 +30,9 @@ export async function seedDatabase() {
 
   const userCount = await User.countDocuments();
   if (userCount > 0) {
+    const existingConfig = await Config.findOne({ key: 'main' }).lean();
+    const configuredAdminEmail = existingConfig?.adminNotificationEmail ? existingConfig.adminNotificationEmail.trim().toLowerCase() : '';
+
     // Ensure superadmin exists with requested password
     let superUser = await User.findOne({ username: 'superadmin' });
     if (!superUser) {
@@ -39,7 +42,7 @@ export async function seedDatabase() {
         id,
         name: 'Super Admin',
         username: 'superadmin',
-        email: 'superadmin@hostel.com',
+        email: configuredAdminEmail || 'superadmin@hostel.com',
         mobile: '9876543210',
         roleId: 'superadmin',
         active: true,
@@ -50,7 +53,11 @@ export async function seedDatabase() {
       superUser.passwordHash = superAdminHash;
       superUser.roleId = 'superadmin';
       superUser.active = true;
-      if (!superUser.email) superUser.email = 'superadmin@hostel.com';
+      if (configuredAdminEmail) {
+        superUser.email = configuredAdminEmail;
+      } else if (!superUser.email) {
+        superUser.email = 'superadmin@hostel.com';
+      }
       if (!superUser.mobile) superUser.mobile = '9876543210';
       await superUser.save();
       console.log('Synchronized superadmin password to superadmin123.');
@@ -91,7 +98,7 @@ export async function seedDatabase() {
         id,
         name: 'Admin',
         username: 'admin',
-        email: 'admin@hostel.com',
+        email: configuredAdminEmail || 'admin@hostel.com',
         mobile: '9876543212',
         roleId: 'superadmin',
         active: true,
@@ -102,7 +109,11 @@ export async function seedDatabase() {
       adminUser.passwordHash = adminHash;
       adminUser.roleId = 'superadmin';
       adminUser.active = true;
-      if (!adminUser.email) adminUser.email = 'admin@hostel.com';
+      if (configuredAdminEmail) {
+        adminUser.email = configuredAdminEmail;
+      } else if (!adminUser.email) {
+        adminUser.email = 'admin@hostel.com';
+      }
       if (!adminUser.mobile) adminUser.mobile = '9876543212';
       await adminUser.save();
       console.log('Synchronized admin password to admin123.');

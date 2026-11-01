@@ -73,21 +73,42 @@ router.get('/validity/report', auth, async (req, res) => {
       processed = processed.filter((t) => t.validityStatus === status);
     }
 
-    // KPI Counters
+    // KPI Counters (Exact requirement alignment: Total Living Trainees, Free Trainees, Paid Trainees, Expiring Soon, Expired Trainees)
     const kpis = {
+      totalLivingTrainees: trainees.length,
+      freeTrainees: 0,
+      paidTrainees: 0,
+      expiringSoon: 0,
+      expiredTrainees: 0,
+      // Compatibility keys
       totalResiding: trainees.length,
       freeStay: 0,
-      expiringSoon: 0,
+      freeCount: 0,
+      expiringSoonCount: 0,
+      expiredDueCount: 0,
       expiredDue: 0,
+      paidCount: 0,
       paid: 0,
     };
 
     for (const t of trainees) {
       const val = computeValidity(t.joiningDate, t.paymentStatus, today);
-      if (val.status === 'PAID') kpis.paid++;
-      else if (val.status === 'EXPIRED_DUE') kpis.expiredDue++;
-      else if (val.status === 'EXPIRING_SOON') kpis.expiringSoon++;
-      else kpis.freeStay++;
+      if (val.status === 'PAID') {
+        kpis.paidTrainees++;
+        kpis.paid++;
+        kpis.paidCount++;
+      } else if (val.status === 'EXPIRED_DUE') {
+        kpis.expiredTrainees++;
+        kpis.expiredDue++;
+        kpis.expiredDueCount++;
+      } else if (val.status === 'EXPIRING_SOON') {
+        kpis.expiringSoon++;
+        kpis.expiringSoonCount++;
+      } else {
+        kpis.freeTrainees++;
+        kpis.freeStay++;
+        kpis.freeCount++;
+      }
     }
 
     const hostels = await Hostel.find({}, 'name').lean();

@@ -63,7 +63,7 @@ export function ApproveModal({ trainee, onClose }) {
         <Avatar trainee={trainee} size="md" />
         <div>
           <div className="approve-name">{trainee.name}</div>
-          <div className="approve-sub">{trainee.traineeId} · {trainee.qualification} · {trainee.defaultShift} Shift</div>
+          <div className="approve-sub">{trainee.traineeId} · {trainee.qualification}</div>
         </div>
       </div>
 

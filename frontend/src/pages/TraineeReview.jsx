@@ -17,6 +17,7 @@ export default function TraineeReview({ traineeId: propTraineeId }) {
   const [rejectModal, setRejectModal] = useState(false);
   const [rejectionReason, setRejectionReason] = useState('');
   const [showIdCard, setShowIdCard] = useState(false);
+  const [sendingEmail, setSendingEmail] = useState(false);
 
   const loadData = async () => {
     if (!traineeId) {
@@ -51,10 +52,15 @@ export default function TraineeReview({ traineeId: propTraineeId }) {
           rejectionReason: reason,
         },
       });
+      const emailStatusInfo = res.emailResult
+        ? res.emailResult.ok
+          ? ' · Decision notification email delivered.'
+          : ` · Email delivery note: ${res.emailResult.error || 'Failed'}`
+        : '';
       if (res.trainee?.approvalStatus === 'APPROVED') {
-        notify('Trainee approved! You can now proceed to Room Allocation.');
+        notify(`Trainee approved! You can now proceed to Room Allocation.${emailStatusInfo}`);
       } else {
-        notify(res.message || `Decision recorded: ${decision}`);
+        notify(`${res.message || `Decision recorded: ${decision}`}${emailStatusInfo}`);
       }
       setRejectModal(false);
       setRejectionReason('');
@@ -63,6 +69,19 @@ export default function TraineeReview({ traineeId: propTraineeId }) {
       notify(err.message || 'Error recording decision.');
     } finally {
       setSubmitting(false);
+    }
+  };
+
+  const handleResendDecisionEmail = async () => {
+    setSendingEmail(true);
+    try {
+      const res = await api(`/api/trainees/${encodeURIComponent(traineeId)}/send-approval-email`, { method: 'POST' });
+      notify(res.message || 'Decision notification email sent.');
+      await loadData();
+    } catch (err) {
+      notify(`Email delivery failed: ${err.message}`);
+    } finally {
+      setSendingEmail(false);
     }
   };
 
@@ -123,8 +142,6 @@ export default function TraineeReview({ traineeId: propTraineeId }) {
             <span className="dot">•</span>
             <span>Hostel ID: {t.hostelId || '—'}</span>
             <span className="dot">•</span>
-            <span>Default Shift: {t.defaultShift}</span>
-            <span className="dot">•</span>
             <span>Joining Date: {fmtDate(t.joiningDate)}</span>
           </div>
           <div className="profile-chips">
@@ -172,6 +189,16 @@ export default function TraineeReview({ traineeId: propTraineeId }) {
               >
                 <Icon name="idCard" size={14} /> ID Card
               </button>
+              {t.email && (
+                <button
+                  className="btn btn-ghost btn-sm"
+                  onClick={handleResendDecisionEmail}
+                  disabled={sendingEmail}
+                  title="Resend approval notification email to trainee"
+                >
+                  <Icon name="mail" size={14} /> {sendingEmail ? 'Sending…' : 'Resend Decision Email'}
+                </button>
+              )}
               {!t.roomNo ? (
                 <button
                   className="btn btn-primary"
@@ -191,8 +218,20 @@ export default function TraineeReview({ traineeId: propTraineeId }) {
           )}
 
           {t.approvalStatus === 'REJECTED' && (
-            <div className="badge badge-red" style={{ padding: '8px 14px', fontSize: 13 }}>
-              ✕ Trainee Rejected
+            <div style={{ display: 'flex', gap: 10, alignItems: 'center' }}>
+              <div className="badge badge-red" style={{ padding: '8px 14px', fontSize: 13 }}>
+                ✕ Trainee Rejected
+              </div>
+              {t.email && (
+                <button
+                  className="btn btn-ghost btn-sm"
+                  onClick={handleResendDecisionEmail}
+                  disabled={sendingEmail}
+                  title="Resend rejection notification email to trainee"
+                >
+                  <Icon name="mail" size={14} /> {sendingEmail ? 'Sending…' : 'Resend Rejection Email'}
+                </button>
+              )}
             </div>
           )}
         </div>
@@ -212,7 +251,6 @@ export default function TraineeReview({ traineeId: propTraineeId }) {
             <div className="info-item"><div className="info-k">Food Preference</div><div className="info-v">{t.food}</div></div>
             <div className="info-item"><div className="info-k">Joining Date</div><div className="info-v">{fmtDate(t.joiningDate)}</div></div>
             <div className="info-item"><div className="info-k">Free Stay Expiry</div><div className="info-v">{fmtDate(t.freeStayExpiryDate) || '3 Months from joining'}</div></div>
-            <div className="info-item"><div className="info-k">Default Shift</div><div className="info-v">{t.defaultShift}</div></div>
             <div className="info-item"><div className="info-k">Guardian Name</div><div className="info-v">{t.guardianName || '—'}</div></div>
             <div className="info-item"><div className="info-k">Guardian Contact</div><div className="info-v">{t.guardianContact || '—'}</div></div>
             <div className="info-item span-2"><div className="info-k">Address</div><div className="info-v">{[t.address1, t.state].filter(Boolean).join(', ') || '—'}</div></div>
@@ -275,7 +313,6 @@ export default function TraineeReview({ traineeId: propTraineeId }) {
             </p>
             <div style={{ background: '#f5f3ff', borderLeft: '4px solid #7c3aed', padding: '12px 16px', borderRadius: 6, fontSize: 13, marginBottom: 14 }}>
               <div style={{ marginBottom: 4 }}>• <strong>Qualification:</strong> {t.qualification || 'Trainee'}</div>
-              <div style={{ marginBottom: 4 }}>• <strong>Assigned Shift:</strong> {t.defaultShift || 'G'} Shift</div>
               <div style={{ marginBottom: 4 }}>• <strong>Joining Date:</strong> {fmtDate(t.joiningDate)}</div>
               <div>• <strong>Hostel Status:</strong> Will become eligible for Room Allocation</div>
             </div>

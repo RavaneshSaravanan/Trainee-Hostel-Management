@@ -12,8 +12,18 @@ export const addDays = (s, n) => {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 };
 
-export const fmtDate = (d) =>
-  d ? new Date(d + 'T00:00:00').toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }) : '—';
+export const fmtDate = (d) => {
+  if (!d) return '—';
+  if (typeof d === 'string' && /^\d{2}\/\d{2}\/\d{4}$/.test(d)) return d;
+  if (typeof d === 'string' && /^\d{4}-\d{2}-\d{2}/.test(d)) {
+    const [y, m, day] = d.slice(0, 10).split('-');
+    return `${day}/${m}/${y}`;
+  }
+  const dateObj = new Date(d);
+  if (isNaN(dateObj.getTime())) return String(d);
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${pad(dateObj.getDate())}/${pad(dateObj.getMonth() + 1)}/${dateObj.getFullYear()}`;
+};
 
 const overlapDays = (recFrom, recTo, from, to) => {
   const start = recFrom > from ? recFrom : from;

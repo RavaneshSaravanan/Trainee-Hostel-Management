@@ -140,30 +140,53 @@ router.post('/public/register', registerLimiter, async (req, res) => {
     }
 
     const d = req.body || {};
+    const name = String(d.name || '').trim();
+    if (!name) {
+      return res.status(400).json({ error: 'Trainee name is required.' });
+    }
+
+    // 1. Mobile Number Validation: Exactly 10 digits, numbers only
+    const rawMobile = String(d.mobile || '').trim();
+    if (!/^\d{10}$/.test(rawMobile)) {
+      return res.status(400).json({
+        error: 'Mobile number must be exactly 10 digits (numbers only, no alphabets or special characters).',
+      });
+    }
+
+    // 2. Trainee ID: Optional on initial registration. If provided, must not duplicate
     const traineeId = String(d.traineeId || '').trim().toUpperCase();
-    if (!traineeId || !String(d.name || '').trim() || !d.mobile) {
-      return res.status(400).json({ error: 'Trainee ID, name and mobile are required.' });
+    if (traineeId) {
+      const exists = await Trainee.findOne({ traineeId });
+      if (exists) {
+        return res.status(409).json({ error: `Trainee ID "${traineeId}" is already registered. Please enter a different ID or leave empty.` });
+      }
     }
 
-    // 1. Duplicate Trainee ID Validation
-    const exists = await Trainee.findOne({ traineeId });
-    if (exists) {
-      return res.status(409).json({ error: 'This Trainee ID is already registered.' });
-    }
-
-    // 2. Duplicate Aadhar Validation (Strictly not allowed)
+    // 3. Aadhaar Number Validation: Exactly 12 digits, numbers only
     const rawAadhar = String(d.aadhar || '').trim();
-    const cleanAadhar = rawAadhar.replace(/[\s-]/g, '');
-    if (cleanAadhar) {
-      const aadharDigits = cleanAadhar.replace(/\D/g, '');
-      const aadharPattern = aadharDigits
-        ? new RegExp('^\\D*' + aadharDigits.split('').join('\\D*') + '\\D*$')
-        : new RegExp('^' + rawAadhar + '$', 'i');
+    let cleanAadhar = '';
+    if (rawAadhar) {
+      cleanAadhar = rawAadhar.replace(/\D/g, '');
+      if (cleanAadhar.length !== 12) {
+        return res.status(400).json({ error: 'Aadhaar card number must be exactly 12 digits (numbers only).' });
+      }
 
+      // Check duplicate Aadhaar
+      const aadharPattern = new RegExp('^\\D*' + cleanAadhar.split('').join('\\D*') + '\\D*$');
       const existingAadhar = await Trainee.findOne({ aadhar: { $regex: aadharPattern } });
       if (existingAadhar) {
         return res.status(409).json({
-          error: `This Aadhar card number is already registered with another trainee (${existingAadhar.traineeId}). Duplicate Aadhar is not allowed.`,
+          error: `This Aadhaar card number is already registered with another trainee (${existingAadhar.traineeId || existingAadhar.qrId}). Duplicate Aadhaar is not allowed.`,
+        });
+      }
+    }
+
+    // 4. Email Address Validation: Must end with @gmail.com
+    const rawEmail = String(d.email || '').trim().toLowerCase();
+    if (rawEmail) {
+      if (!/^[a-zA-Z0-9._%+-]+@gmail\.com$/.test(rawEmail)) {
+        return res.status(400).json({
+          error: 'Email address must be a valid @gmail.com address (other email domains are rejected).',
         });
       }
     }
@@ -172,14 +195,26 @@ router.post('/public/register', registerLimiter, async (req, res) => {
     for (const k of [
       'name', 'mobile', 'email', 'dob', 'gender', 'qualification', 'aadhar', 'food',
       'photo', 'address1', 'state', 'guardianName', 'guardianContact',
-      'joiningDate', 'defaultShift',
+      'joiningDate',
     ]) {
       clean[k] = typeof d[k] === 'string' ? d[k].slice(0, k === 'photo' ? 400000 : 200) : '';
     }
+    clean.name = name;
+    clean.mobile = rawMobile;
+    clean.email = rawEmail;
+    if (cleanAadhar) clean.aadhar = cleanAadhar;
 
     const trainees = await Trainee.find({}, 'hostelId qrId').lean();
     const hostelId = nextId('HST', trainees.map((t) => t.hostelId), 4);
-    const qrId = nextId('QR', trainees.map((t) => t.qrId), 5);
+    
+    // Auto-generate guaranteed unique QR ID
+    let qrId = nextId('QR', trainees.map((t) => t.qrId), 5);
+    let counter = 1;
+    while (await Trainee.exists({ qrId })) {
+      qrId = `QR-${String(trainees.length + counter).padStart(5, '0')}`;
+      counter++;
+    }
+
     const joiningDate = clean.joiningDate || todayStr();
     const freeStayExpiryDate = addThreeCalendarMonths(joiningDate);
 
@@ -190,10 +225,11 @@ router.post('/public/register', registerLimiter, async (req, res) => {
     let photoDriveSize = 0;
     let finalPhoto = clean.photo || '';
 
+    const photoIdentifier = traineeId || qrId;
     if (clean.photo) {
       try {
         const uploadResult = await uploadTraineePhoto({
-          traineeId,
+          traineeId: photoIdentifier,
           photoInput: clean.photo,
         });
         if (uploadResult?.uploadedToDrive && uploadResult.fileId) {
@@ -201,12 +237,14 @@ router.post('/public/register', registerLimiter, async (req, res) => {
           photoDriveUrl = uploadResult.driveUrl;
           photoDriveMimeType = uploadResult.mimeType;
           photoDriveSize = uploadResult.size;
-          finalPhoto = `/api/public/photo/${encodeURIComponent(traineeId)}`;
+          finalPhoto = `/api/public/photo/${encodeURIComponent(photoIdentifier)}`;
         }
       } catch (uploadErr) {
-        console.warn(`[Google Drive Photo Warning] ${traineeId}: ${uploadErr.message}`);
+        console.warn(`[Google Drive Photo Warning] ${photoIdentifier}: ${uploadErr.message}`);
       }
     }
+
+    const finalTraineeId = traineeId || qrId;
 
     const newTrainee = await Trainee.create({
       ...clean,
@@ -216,7 +254,7 @@ router.post('/public/register', registerLimiter, async (req, res) => {
       photoDriveMimeType,
       photoDriveSize,
       photoDriveUpdatedAt: photoDriveId ? new Date() : undefined,
-      traineeId,
+      traineeId: finalTraineeId,
       hostelId,
       qrId,
       qrStatus: 'ACTIVE',
@@ -229,7 +267,6 @@ router.post('/public/register', registerLimiter, async (req, res) => {
       remarks: '',
       submissionDate: todayStr(),
       approvedBy: '',
-      defaultShift: clean.defaultShift || 'G',
       joiningDate,
       freeStayExpiryDate,
       paymentStatus: 'FREE',
@@ -244,7 +281,7 @@ router.post('/public/register', registerLimiter, async (req, res) => {
     }
 
     await bumpRev();
-    return res.json({ ok: true, hostelId, traineeId, qrId });
+    return res.json({ ok: true, hostelId, traineeId: finalTraineeId, qrId });
   } catch (err) {
     if (err.code === 11000) {
       if (err.keyPattern?.aadhar) {

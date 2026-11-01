@@ -1,5 +1,5 @@
 import express from 'express';
-import { auth } from '../middleware/auth.js';
+import { auth, requireSuper } from '../middleware/auth.js';
 import { Hostel } from '../models/Hostel.js';
 import { Trainee } from '../models/Trainee.js';
 import { Attendance } from '../models/Attendance.js';
@@ -15,6 +15,8 @@ import { User } from '../models/User.js';
 import { getRev, bumpRev } from '../models/Meta.js';
 import { DEFAULT_CONFIG, DEFAULT_ROLES, SUPER_ROLE, withDefaults } from '../defaults.js';
 import { addThreeCalendarMonths } from '../utils/validity.js';
+import { fmtDate } from '../utils/dates.js';
+import { sendTraineeWelcomeEmail } from '../services/emailService.js';
 
 const router = express.Router();
 
@@ -141,7 +143,6 @@ router.get('/trainees/export', auth, async (req, res) => {
       'Guardian Contact',
       'Joining Date',
       'Free Stay Expiry Date',
-      'Default Shift',
       'Employment Status',
       'Hostel Status',
       'Approval Status',
@@ -158,7 +159,7 @@ router.get('/trainees/export', auth, async (req, res) => {
       t.name || '',
       t.mobile || '',
       t.email || '',
-      t.dob || '',
+      fmtDate(t.dob),
       t.gender || '',
       t.qualification || '',
       t.food || '',
@@ -166,9 +167,8 @@ router.get('/trainees/export', auth, async (req, res) => {
       t.state || '',
       t.guardianName || '',
       t.guardianContact || '',
-      t.joiningDate || '',
-      t.freeStayExpiryDate || '',
-      t.defaultShift || '',
+      fmtDate(t.joiningDate),
+      fmtDate(t.freeStayExpiryDate),
       t.employmentStatus || '',
       t.hostelStatus || '',
       t.approvalStatus || '',
@@ -177,7 +177,7 @@ router.get('/trainees/export', auth, async (req, res) => {
       t.qrId || '',
       t.paymentStatus || 'FREE',
       t.approvedBy || '',
-      t.submissionDate || '',
+      fmtDate(t.submissionDate),
     ]);
 
     const format = req.query.format || 'json';
@@ -197,6 +197,52 @@ router.get('/trainees/export', auth, async (req, res) => {
       headers,
       rows,
       count: trainees.length,
+    });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// DELETE /api/hostels/:hostelId (Super Admin only: safe deletion with active occupancy check)
+router.delete('/hostels/:hostelId', auth, requireSuper, async (req, res) => {
+  try {
+    const rawId = req.params.hostelId || '';
+    const cleanId = String(rawId).trim();
+
+    const hostel = await Hostel.findOne({
+      $or: [{ id: cleanId }, { name: cleanId }],
+    });
+
+    if (!hostel) {
+      return res.status(404).json({ error: `Hostel "${cleanId}" not found.` });
+    }
+
+    // Check if any active trainees are assigned to this hostel
+    const activeOccupants = await Trainee.find({
+      $or: [{ hostel: hostel.name }, { hostelId: hostel.id }],
+      hostelStatus: { $in: ['ACTIVE', 'ON LEAVE', 'OUTING', 'TEMPORARY VACATE'] },
+      roomNo: { $exists: true, $ne: '' },
+    }).lean();
+
+    if (activeOccupants.length > 0) {
+      const sampleNames = activeOccupants
+        .slice(0, 5)
+        .map((t) => `${t.name} (Room ${t.roomNo})`)
+        .join(', ');
+      return res.status(400).json({
+        error: `Cannot delete hostel "${hostel.name}". There are ${activeOccupants.length} active trainee(s) currently residing here: ${sampleNames}${activeOccupants.length > 5 ? '...' : ''}. Please reassign them to another hostel before deleting.`,
+        activeCount: activeOccupants.length,
+      });
+    }
+
+    // Delete hostel record from MongoDB
+    await Hostel.deleteOne({ id: hostel.id });
+    await bumpRev();
+
+    return res.json({
+      ok: true,
+      message: `Hostel "${hostel.name}" was successfully deleted.`,
+      hostelId: hostel.id,
     });
   } catch (err) {
     return res.status(500).json({ error: err.message });
@@ -224,31 +270,60 @@ router.put('/state', auth, async (req, res) => {
 
       if (Array.isArray(db.trainees) && db.trainees.length > 0) {
         await Trainee.bulkWrite(
-          db.trainees.filter((t) => t && t.traineeId).map((t) => {
+          db.trainees.filter((t) => t && (t.traineeId || t.qrId)).map((t) => {
             const data = sanitizeForSet(t);
             if (data.joiningDate && !data.freeStayExpiryDate) {
               data.freeStayExpiryDate = addThreeCalendarMonths(data.joiningDate);
             }
+            const filter = t.traineeId ? { traineeId: t.traineeId } : { qrId: t.qrId };
             return {
               updateOne: {
-                filter: { traineeId: t.traineeId },
+                filter,
                 update: { $set: data },
                 upsert: true,
               },
             };
           })
         );
+
+        // Automatically trigger welcome email when room is allocated to an approved trainee
+        const candidates = db.trainees.filter(
+          (t) => t && t.hostel && t.roomNo && t.approvalStatus === 'APPROVED' && !t.welcomeEmailSent
+        );
+        if (candidates.length > 0) {
+          const cIds = candidates.map((c) => c.traineeId || c.qrId).filter(Boolean);
+          Trainee.find({
+            $or: [{ traineeId: { $in: cIds } }, { qrId: { $in: cIds } }],
+            hostel: { $exists: true, $ne: '' },
+            roomNo: { $exists: true, $ne: '' },
+            approvalStatus: 'APPROVED',
+            welcomeEmailSent: false,
+          })
+            .then((unSent) => {
+              for (const tr of unSent) {
+                sendTraineeWelcomeEmail({ trainee: tr, triggeredBy: 'Room Allocation' }).catch((err) =>
+                  console.warn('[Welcome Email Auto Trigger Error]', err.message)
+                );
+              }
+            })
+            .catch(() => {});
+        }
       }
 
       if (Array.isArray(db.attendance) && db.attendance.length > 0) {
         await Attendance.bulkWrite(
-          db.attendance.filter((a) => a && a.traineeId && a.date).map((a) => ({
-            updateOne: {
-              filter: { traineeId: a.traineeId, date: a.date },
-              update: { $set: sanitizeForSet(a) },
-              upsert: true,
-            },
-          }))
+          db.attendance.filter((a) => a && (a.traineeId || a.qrId) && a.date).map((a) => {
+            const filter = a.traineeId
+              ? { traineeId: a.traineeId, date: a.date }
+              : { qrId: a.qrId, date: a.date };
+            return {
+              updateOne: {
+                filter,
+                update: { $set: sanitizeForSet(a) },
+                upsert: true,
+              },
+            };
+          })
         );
       }
 

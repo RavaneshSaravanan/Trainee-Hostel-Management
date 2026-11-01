@@ -7,14 +7,74 @@ import { addDays, fmtDate, monthOptions, todayStr } from '../utils/dates.js';
 import { computeSummary, dayCounts, occupantsOf } from '../utils/summary.js';
 
 const REPORTS = [
-  ['monthly', 'Monthly Trainee Summary'], ['hostel', 'Hostel-wise Summary'], ['occupancy', 'Room Occupancy'],
-  ['attendance', 'Attendance Summary'], ['daily', 'Daily Attendance Summary'], ['leave', 'Leave Summary'], ['outing', 'Outing Summary'],
-  ['tempvacate', 'Temporary Vacate Summary'], ['permvacate', 'Permanent Vacate Summary'], ['resignation', 'Resignation Summary'],
+  ['hostel-occupancy', 'Hostel-wise Occupancy Summary'],
+  ['monthly', 'Monthly Trainee Summary'],
+  ['hostel', 'Hostel-wise Summary'],
+  ['occupancy', 'Room Occupancy'],
+  ['attendance', 'Attendance Summary'],
+  ['daily', 'Daily Attendance Summary'],
+  ['leave', 'Leave Summary'],
+  ['outing', 'Outing Summary'],
+  ['tempvacate', 'Temporary Vacate Summary'],
+  ['permvacate', 'Permanent Vacate Summary'],
+  ['resignation', 'Resignation Summary'],
 ];
 
-function buildReportLocally(type, db, trainees, from, to, hostelFilter) {
+function buildReportLocally(type, db, trainees, from, to, hostelFilter, classification = 'ALL') {
   const ids = new Set(trainees.map((t) => t.traineeId));
   const nameOf = (id) => (db.trainees.find((t) => t.traineeId === id) || {}).name || '';
+
+  if (type === 'hostel-occupancy') {
+    const targetDate = to || todayStr();
+    const targetHostels = hostelFilter ? db.hostels.filter((h) => h.name === hostelFilter) : db.hostels;
+    let totalOccupiedSum = 0;
+    let totalFreeSum = 0;
+    let totalPaidSum = 0;
+    let totalAvailableSum = 0;
+    const rows = [];
+
+    for (const h of targetHostels) {
+      const cap = (h.rooms || []).reduce((s, r) => s + (r.capacity || 0), 0);
+      const occupied = (db.trainees || []).filter(
+        (t) => t.hostel === h.name && ['ACTIVE', 'ON LEAVE', 'OUTING', 'TEMPORARY VACATE'].includes(t.hostelStatus)
+      );
+
+      let free = 0;
+      let paid = 0;
+      for (const t of occupied) {
+        const expiry = t.freeStayExpiryDate || (t.joiningDate ? addDays(t.joiningDate, 90) : '');
+        if (t.paymentStatus === 'PAID' || (expiry && expiry < targetDate)) {
+          paid++;
+        } else {
+          free++;
+        }
+      }
+
+      const occ = occupied.length;
+      const avail = Math.max(0, cap - occ);
+
+      if (classification === 'FREE' && free === 0 && occ > 0) continue;
+      if (classification === 'PAID' && paid === 0 && occ > 0) continue;
+
+      totalOccupiedSum += occ;
+      totalFreeSum += free;
+      totalPaidSum += paid;
+      totalAvailableSum += avail;
+      rows.push([h.name, occ, free, paid, avail]);
+    }
+
+    return {
+      headers: ['Hostel Name', 'Total Occupied', 'Free Trainees', 'Paid Trainees', 'Available Beds'],
+      rows,
+      extraStats: {
+        totalHostels: targetHostels.length,
+        totalOccupiedTrainees: totalOccupiedSum,
+        totalFreeTrainees: totalFreeSum,
+        totalPaidTrainees: totalPaidSum,
+        totalAvailableBeds: totalAvailableSum,
+      },
+    };
+  }
 
   if (type === 'hostel') {
     return {
@@ -72,6 +132,7 @@ function buildReportLocally(type, db, trainees, from, to, hostelFilter) {
         .map((r) => [r.traineeId, nameOf(r.traineeId), fmtDate(r.resignationDate), fmtDate(r.lastWorkingDate), r.reason]),
     };
   }
+
   // monthly (default)
   let totalFreeTrainees = 0;
   let totalPaidTrainees = 0;
@@ -140,11 +201,11 @@ function buildReportLocally(type, db, trainees, from, to, hostelFilter) {
 }
 
 export default function Reports() {
-  const { db, session } = useStore();
+  const { db } = useStore();
   const months = monthOptions();
   const [f, setF] = useState({
-    type: 'monthly', from: addDays(todayStr(), -29), to: todayStr(),
-    hostel: '', shift: '', employmentStatus: '', hostelStatus: '',
+    type: 'hostel-occupancy', from: addDays(todayStr(), -29), to: todayStr(),
+    hostel: '', shift: '', employmentStatus: '', hostelStatus: '', classification: 'ALL',
   });
   const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
 
@@ -167,6 +228,7 @@ export default function Reports() {
           shift: f.shift,
           employmentStatus: f.employmentStatus,
           hostelStatus: f.hostelStatus,
+          classification: f.classification || 'ALL',
         }).toString();
         const res = await api(`/api/reports?${query}`);
         if (active) setServerData(res);
@@ -182,7 +244,7 @@ export default function Reports() {
       }
     })();
     return () => { active = false; };
-  }, [f.type, f.from, f.to, f.hostel, f.shift, f.employmentStatus, f.hostelStatus]);
+  }, [f.type, f.from, f.to, f.hostel, f.shift, f.employmentStatus, f.hostelStatus, f.classification]);
 
   // If server responded with 403 Forbidden, block rendering report
   if (authError) {
@@ -196,20 +258,23 @@ export default function Reports() {
   }
 
   // Use server report if available, else local calculation
-  const trainees = db.trainees.filter((t) =>
-    (!f.hostel || t.hostel === f.hostel) && (!f.shift || t.defaultShift === f.shift) &&
-    (!f.employmentStatus || t.employmentStatus === f.employmentStatus) && (!f.hostelStatus || t.hostelStatus === f.hostelStatus)
+  const trainees = (db.trainees || []).filter((t) =>
+    (!f.hostel || t.hostel === f.hostel) &&
+    (!f.employmentStatus || t.employmentStatus === f.employmentStatus) &&
+    (!f.hostelStatus || t.hostelStatus === f.hostelStatus)
   );
 
-  const localReport = buildReportLocally(f.type, db, trainees, f.from, f.to, f.hostel);
+  const localReport = buildReportLocally(f.type, db, trainees, f.from, f.to, f.hostel, f.classification);
   const headers = serverData?.headers || localReport.headers;
   const rows = serverData?.rows || localReport.rows;
-  const extraStats = serverData?.extraStats || localReport.extraStats;
-  const title = REPORTS.find(([v]) => v === f.type)[1];
+  const extraStats = serverData?.extraStats || serverData?.summary || localReport.extraStats;
+  const currentReportObj = REPORTS.find(([v]) => v === f.type);
+  const title = currentReportObj ? currentReportObj[1] : 'Report Summary';
 
   const exportCsv = () => {
-    const q = (v) => `"${String(v).replace(/"/g, '""')}"`;
-    const csv = [headers, ...rows].map((r) => r.map(q).join(',')).join('\n');
+    const q = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
+    const titleHeader = `"APOLLO TYRES LTD - ${title} (${todayStr()})"`;
+    const csv = [titleHeader, '', headers.map(q).join(','), ...rows.map((r) => r.map(q).join(','))].join('\n');
     const a = document.createElement('a');
     a.href = URL.createObjectURL(new Blob([csv], { type: 'text/csv' }));
     a.download = `${f.type}-report-${todayStr()}.csv`;
@@ -231,6 +296,15 @@ export default function Reports() {
             <div><label className="field-label">Report</label>
               <select className="input" value={f.type} onChange={set('type')}>{REPORTS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select>
             </div>
+            {f.type === 'hostel-occupancy' && (
+              <div><label className="field-label">Classification</label>
+                <select className="input" value={f.classification || 'ALL'} onChange={set('classification')}>
+                  <option value="ALL">All Occupancy</option>
+                  <option value="FREE">Free Trainees</option>
+                  <option value="PAID">Paid Trainees</option>
+                </select>
+              </div>
+            )}
             <div><label className="field-label">Month</label>
               <select className="input" value={monthValue ? `${monthValue.from}|${monthValue.to}` : ''} onChange={pickMonth}>
                 <option value="">Custom range…</option>
@@ -238,23 +312,53 @@ export default function Reports() {
               </select>
             </div>
             <div><label className="field-label">From</label><input className="input" type="date" value={f.from} onChange={set('from')} /></div>
-            <div><label className="field-label">To</label><input className="input" type="date" value={f.to} onChange={set('to')} /></div>
+            <div><label className="field-label">To / As Of</label><input className="input" type="date" value={f.to} onChange={set('to')} /></div>
             <div><label className="field-label">Hostel</label>
-              <select className="input" value={f.hostel} onChange={set('hostel')}><option value="">All Hostels</option>{db.hostels.map((h) => <option key={h.id}>{h.name}</option>)}</select>
+              <select className="input" value={f.hostel} onChange={set('hostel')}><option value="">All Hostels</option>{(db.hostels || []).map((h) => <option key={h.id}>{h.name}</option>)}</select>
             </div>
-            <div><label className="field-label">Shift</label>
-              <select className="input" value={f.shift} onChange={set('shift')}><option value="">All Shifts</option>{SHIFTS.map((s) => <option key={s}>{s}</option>)}</select>
-            </div>
-            <div><label className="field-label">Employment Status</label>
-              <select className="input" value={f.employmentStatus} onChange={set('employmentStatus')}><option value="">All</option><option>ACTIVE</option><option>RESIGNED</option></select>
-            </div>
-            <div><label className="field-label">Hostel Status</label>
-              <select className="input" value={f.hostelStatus} onChange={set('hostelStatus')}><option value="">All</option>{HOSTEL_STATUSES.map((s) => <option key={s}>{s}</option>)}</select>
-            </div>
+            {f.type !== 'hostel-occupancy' && (
+              <>
+                <div><label className="field-label">Shift</label>
+                  <select className="input" value={f.shift} onChange={set('shift')}><option value="">All Shifts</option>{SHIFTS.map((s) => <option key={s}>{s}</option>)}</select>
+                </div>
+                <div><label className="field-label">Employment Status</label>
+                  <select className="input" value={f.employmentStatus} onChange={set('employmentStatus')}><option value="">All</option><option>ACTIVE</option><option>RESIGNED</option></select>
+                </div>
+                <div><label className="field-label">Hostel Status</label>
+                  <select className="input" value={f.hostelStatus} onChange={set('hostelStatus')}><option value="">All</option>{HOSTEL_STATUSES.map((s) => <option key={s}>{s}</option>)}</select>
+                </div>
+              </>
+            )}
             <button className="btn btn-ghost" onClick={exportCsv} disabled={loading}><Icon name="download" size={15} /> Export CSV</button>
           </div>
         </div>
       </div>
+
+      {/* 5 Summary Cards for Hostel-wise Occupancy Summary */}
+      {f.type === 'hostel-occupancy' && extraStats && (
+        <div className="kpi-grid" style={{ marginBottom: 16 }}>
+          <div className="card kpi-card" style={{ borderLeft: '4px solid var(--primary, #7c3aed)' }}>
+            <div className="kpi-label">Total Hostels</div>
+            <div className="kpi-value">{extraStats.totalHostels ?? 0}</div>
+          </div>
+          <div className="card kpi-card" style={{ borderLeft: '4px solid #6366f1' }}>
+            <div className="kpi-label" style={{ color: '#4f46e5' }}>Total Occupied Trainees</div>
+            <div className="kpi-value" style={{ color: '#4f46e5' }}>{extraStats.totalOccupiedTrainees ?? 0}</div>
+          </div>
+          <div className="card kpi-card" style={{ borderLeft: '4px solid #16a34a' }}>
+            <div className="kpi-label" style={{ color: '#16a34a' }}>Total Free Trainees</div>
+            <div className="kpi-value" style={{ color: '#16a34a' }}>{extraStats.totalFreeTrainees ?? 0}</div>
+          </div>
+          <div className="card kpi-card" style={{ borderLeft: '4px solid #2563eb' }}>
+            <div className="kpi-label" style={{ color: '#2563eb' }}>Total Paid Trainees</div>
+            <div className="kpi-value" style={{ color: '#2563eb' }}>{extraStats.totalPaidTrainees ?? 0}</div>
+          </div>
+          <div className="card kpi-card" style={{ borderLeft: '4px solid #9333ea' }}>
+            <div className="kpi-label" style={{ color: '#9333ea' }}>Total Available Beds</div>
+            <div className="kpi-value" style={{ color: '#9333ea' }}>{extraStats.totalAvailableBeds ?? 0}</div>
+          </div>
+        </div>
+      )}
 
       {f.type === 'monthly' && extraStats && (
         <div className="kpi-grid" style={{ marginBottom: 16 }}>
@@ -283,7 +387,7 @@ export default function Reports() {
 
       <Card
         title={title}
-        sub={loading ? 'Loading report from server…' : f.type === 'hostel' || f.type === 'occupancy' ? 'Current snapshot' : `${fmtDate(f.from)} – ${fmtDate(f.to)} · ${rows.length} rows`}
+        sub={loading ? 'Loading report from server…' : f.type === 'hostel-occupancy' ? `Hostel-wise occupancy snapshot (${fmtDate(f.to)}) · ${rows.length} hostels` : f.type === 'hostel' || f.type === 'occupancy' ? 'Current snapshot' : `${fmtDate(f.from)} – ${fmtDate(f.to)} · ${rows.length} rows`}
         noPad
       >
         <Table

@@ -7,12 +7,14 @@ import { Leave } from '../models/Leave.js';
 import { OutingVacate } from '../models/OutingVacate.js';
 import { Resignation } from '../models/Resignation.js';
 import { DailySummary } from '../models/DailySummary.js';
-import { computeSummary, dayCounts, occupantsOf, addDays, fmtDate } from '../utils/summary.js';
+import { computeSummary, dayCounts, occupantsOf, addDays, fmtDate, ROOM_HOLDING_STATUSES } from '../utils/summary.js';
+import { computeValidity, todayStr } from '../utils/validity.js';
 
 const router = express.Router();
 
 const REPORT_TITLES = {
   monthly: 'Monthly Trainee Summary',
+  'hostel-occupancy': 'Hostel-wise Occupancy Summary',
   hostel: 'Hostel-wise Summary',
   occupancy: 'Room Occupancy',
   attendance: 'Attendance Summary',
@@ -64,7 +66,6 @@ router.get('/reports', auth, requireReports, async (req, res) => {
     // Filter trainees based on query parameters
     const trainees = allTrainees.filter((t) => {
       if (hostel && t.hostel !== hostel) return false;
-      if (shift && t.defaultShift !== shift) return false;
       if (employmentStatus && t.employmentStatus !== employmentStatus) return false;
       if (hostelStatus && t.hostelStatus !== hostelStatus) return false;
       return true;
@@ -77,7 +78,59 @@ router.get('/reports', auth, requireReports, async (req, res) => {
     let rows = [];
     let extraStats = null;
 
-    if (type === 'hostel') {
+    if (type === 'hostel-occupancy') {
+      const targetDate = to || todayStr();
+      const targetHostels = hostel ? db.hostels.filter((h) => h.name === hostel) : db.hostels;
+      const classFilter = String(req.query.classification || req.query.occupancyClassification || 'ALL').toUpperCase();
+
+      headers = ['Hostel Name', 'Total Occupied', 'Free Trainees', 'Paid Trainees', 'Available Beds'];
+      rows = [];
+
+      let totalOccupiedSum = 0;
+      let totalFreeSum = 0;
+      let totalPaidSum = 0;
+      let totalAvailableSum = 0;
+
+      for (const h of targetHostels) {
+        const cap = (h.rooms || []).reduce((s, r) => s + (r.capacity || 0), 0);
+        const occupiedTrainees = allTrainees.filter(
+          (t) => t.hostel === h.name && ROOM_HOLDING_STATUSES.includes(t.hostelStatus)
+        );
+
+        let freeCount = 0;
+        let paidCount = 0;
+
+        for (const t of occupiedTrainees) {
+          const val = computeValidity(t.joiningDate, t.paymentStatus, targetDate);
+          if (val.status === 'PAID' || val.status === 'EXPIRED_DUE') {
+            paidCount++;
+          } else {
+            freeCount++;
+          }
+        }
+
+        const totalOccupied = occupiedTrainees.length;
+        const availableBeds = Math.max(0, cap - totalOccupied);
+
+        if (classFilter === 'FREE' && freeCount === 0 && totalOccupied > 0) continue;
+        if (classFilter === 'PAID' && paidCount === 0 && totalOccupied > 0) continue;
+
+        totalOccupiedSum += totalOccupied;
+        totalFreeSum += freeCount;
+        totalPaidSum += paidCount;
+        totalAvailableSum += availableBeds;
+
+        rows.push([h.name, totalOccupied, freeCount, paidCount, availableBeds]);
+      }
+
+      extraStats = {
+        totalHostels: targetHostels.length,
+        totalOccupiedTrainees: totalOccupiedSum,
+        totalFreeTrainees: totalFreeSum,
+        totalPaidTrainees: totalPaidSum,
+        totalAvailableBeds: totalAvailableSum,
+      };
+    } else if (type === 'hostel') {
       headers = ['Hostel', 'Total Trainees', 'Active', 'On Leave', 'Outing', 'Temp. Vacate', 'Perm. Vacate', 'Occupancy'];
       rows = db.hostels.map((h) => {
         const list = trainees.filter((t) => t.hostel === h.name);
@@ -238,6 +291,90 @@ router.get('/reports', auth, requireReports, async (req, res) => {
       rows,
       count: rows.length,
       extraStats,
+      summary: extraStats,
+    });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// Dedicated endpoint for Hostel-wise Occupancy Summary with Free and Paid Counts
+router.get('/reports/hostel-occupancy', auth, requireReports, async (req, res) => {
+  try {
+    const {
+      hostel = '',
+      classification = 'ALL',
+      occupancyClassification = '',
+      date = '',
+      to = '',
+    } = req.query || {};
+
+    const targetDate = date || to || todayStr();
+    const classFilter = String(occupancyClassification || classification || 'ALL').toUpperCase();
+
+    const [hostels, allTrainees] = await Promise.all([
+      Hostel.find({}).lean(),
+      Trainee.find({}).lean(),
+    ]);
+
+    const targetHostels = hostel ? hostels.filter((h) => h.name === hostel) : hostels;
+    const headers = ['Hostel Name', 'Total Occupied', 'Free Trainees', 'Paid Trainees', 'Available Beds'];
+    const rows = [];
+
+    let totalOccupiedSum = 0;
+    let totalFreeSum = 0;
+    let totalPaidSum = 0;
+    let totalAvailableSum = 0;
+
+    for (const h of targetHostels) {
+      const cap = (h.rooms || []).reduce((s, r) => s + (r.capacity || 0), 0);
+      const occupiedTrainees = allTrainees.filter(
+        (t) => t.hostel === h.name && ROOM_HOLDING_STATUSES.includes(t.hostelStatus)
+      );
+
+      let freeCount = 0;
+      let paidCount = 0;
+
+      for (const t of occupiedTrainees) {
+        const val = computeValidity(t.joiningDate, t.paymentStatus, targetDate);
+        if (val.status === 'PAID' || val.status === 'EXPIRED_DUE') {
+          paidCount++;
+        } else {
+          freeCount++;
+        }
+      }
+
+      const totalOccupied = occupiedTrainees.length;
+      const availableBeds = Math.max(0, cap - totalOccupied);
+
+      if (classFilter === 'FREE' && freeCount === 0 && totalOccupied > 0) continue;
+      if (classFilter === 'PAID' && paidCount === 0 && totalOccupied > 0) continue;
+
+      totalOccupiedSum += totalOccupied;
+      totalFreeSum += freeCount;
+      totalPaidSum += paidCount;
+      totalAvailableSum += availableBeds;
+
+      rows.push([h.name, totalOccupied, freeCount, paidCount, availableBeds]);
+    }
+
+    const summary = {
+      totalHostels: targetHostels.length,
+      totalOccupiedTrainees: totalOccupiedSum,
+      totalFreeTrainees: totalFreeSum,
+      totalPaidTrainees: totalPaidSum,
+      totalAvailableBeds: totalAvailableSum,
+    };
+
+    return res.json({
+      ok: true,
+      type: 'hostel-occupancy',
+      title: 'Hostel-wise Occupancy Summary',
+      headers,
+      rows,
+      summary,
+      extraStats: summary,
+      count: rows.length,
     });
   } catch (err) {
     return res.status(500).json({ error: err.message });

@@ -146,17 +146,23 @@ export function StoreProvider({ children }) {
     window.scrollTo(0, 0);
   }, []);
 
-  const getTrainee = (id) => db.trainees.find((t) => t.traineeId === id);
+  const getTrainee = (id) =>
+    db.trainees.find(
+      (t) =>
+        (t.traineeId && t.traineeId === id) ||
+        (t.qrId && t.qrId === id) ||
+        (t.hostelId && t.hostelId === id) ||
+        (t._id && t._id === id)
+    );
   const actor = () => (session ? `${session.name} (${roleName})` : 'System');
 
   // ---------- Trainees ----------
   // Every trainee gets a QR id the moment they are created (no waiting for approval).
   const addTrainee = (data) => {
     const cleanId = String(data.traineeId || '').trim().toUpperCase();
-    if (!cleanId) return { ok: false, error: 'Trainee ID is required.' };
 
-    // Check duplicate Trainee ID
-    if (db.trainees.some((t) => (t.traineeId || '').trim().toUpperCase() === cleanId)) {
+    // Trainee ID is optional; if provided, prevent duplicate
+    if (cleanId && db.trainees.some((t) => (t.traineeId || '').trim().toUpperCase() === cleanId)) {
       return { ok: false, error: `Trainee ID "${cleanId}" already exists. Duplicate ID is not allowed.` };
     }
 
@@ -170,7 +176,7 @@ export function StoreProvider({ children }) {
       if (dup) {
         return {
           ok: false,
-          error: `Aadhar card number "${data.aadhar}" is already registered for trainee ${dup.name} (${dup.traineeId}). Duplicate Aadhar is not allowed.`,
+          error: `Aadhar card number "${data.aadhar}" is already registered for trainee ${dup.name} (${dup.traineeId || dup.qrId}). Duplicate Aadhar is not allowed.`,
         };
       }
     }
@@ -209,22 +215,23 @@ export function StoreProvider({ children }) {
   };
 
   const updateTrainee = (traineeId, patch) => {
+    const match = (t) => (t.traineeId && t.traineeId === traineeId) || (t.qrId && t.qrId === traineeId);
     if (patch.aadhar !== undefined) {
       const cleanAadhar = String(patch.aadhar || '').replace(/\D/g, '');
       if (cleanAadhar.length > 0) {
         const dup = db.trainees.find((t) => {
-          if (t.traineeId === traineeId) return false;
+          if (match(t)) return false;
           const other = String(t.aadhar || '').replace(/\D/g, '');
           return other.length > 0 && other === cleanAadhar;
         });
         if (dup) {
-          notify(`Aadhar number is already registered for ${dup.name} (${dup.traineeId}). Duplicate Aadhar is not allowed.`);
+          notify(`Aadhar number is already registered for ${dup.name} (${dup.traineeId || dup.qrId}). Duplicate Aadhar is not allowed.`);
           return false;
         }
       }
     }
 
-    const currentTrainee = db.trainees.find((t) => t.traineeId === traineeId);
+    const currentTrainee = db.trainees.find(match);
     let extraPatch = {};
     let auditLog = null;
 
@@ -233,7 +240,7 @@ export function StoreProvider({ children }) {
       extraPatch = { freeStayExpiryDate: newExpiry };
       auditLog = {
         id: `aud_${Date.now().toString(36)}`,
-        traineeId,
+        traineeId: currentTrainee.traineeId || currentTrainee.qrId,
         type: 'JOINING_DATE_CHANGE',
         date: todayStr(),
         note: `Joining date updated from ${currentTrainee.joiningDate || 'none'} to ${patch.joiningDate} by ${actor()}`,
@@ -243,7 +250,7 @@ export function StoreProvider({ children }) {
 
     setDb((p) => ({
       ...p,
-      trainees: p.trainees.map((t) => (t.traineeId === traineeId ? { ...t, ...patch, ...extraPatch } : t)),
+      trainees: p.trainees.map((t) => (match(t) ? { ...t, ...patch, ...extraPatch } : t)),
       remarks: auditLog ? [auditLog, ...p.remarks] : p.remarks,
     }));
     return true;
@@ -315,14 +322,28 @@ export function StoreProvider({ children }) {
     });
 
   // ---------- Attendance (one record per trainee per date) ----------
-  const saveAttendance = (traineeId, date, status) =>
+  const saveAttendance = (traineeId, date, status, extra = {}) =>
     setDb((p) => {
-      const exists = p.attendance.some((a) => a.traineeId === traineeId && a.date === date);
+      const match = (a) =>
+        ((a.traineeId && a.traineeId === traineeId) || (a.qrId && (a.qrId === traineeId || a.qrId === extra.qrId))) &&
+        a.date === date;
+      const exists = p.attendance.some(match);
+      const rec = {
+        traineeId: extra.traineeId || traineeId || '',
+        qrId: extra.qrId || '',
+        hostel: extra.hostel || '',
+        roomNo: extra.roomNo || '',
+        shift: status || 'A',
+        status: status || 'A',
+        date,
+        markedBy: session?.name || 'System',
+        ...extra,
+      };
       return {
         ...p,
         attendance: exists
-          ? p.attendance.map((a) => (a.traineeId === traineeId && a.date === date ? { ...a, status, markedBy: session.name } : a))
-          : [...p.attendance, { traineeId, date, status, markedBy: session.name }],
+          ? p.attendance.map((a) => (match(a) ? { ...a, ...rec } : a))
+          : [...p.attendance, rec],
       };
     });
 
@@ -342,20 +363,49 @@ export function StoreProvider({ children }) {
     }));
 
   const saveLeave = (data, id) => {
-    const days = daysDiff(data.fromDate, data.toDate) + 1;
-    upsert('leaves', 'LV', { ...data, days, leaveDate: data.leaveDate || todayStr() }, id);
-    const t = getTrainee(data.traineeId);
-    if (data.status === 'APPROVED' && t && t.hostelStatus === 'ACTIVE' && data.fromDate <= todayStr() && data.toDate >= todayStr()) {
-      updateTrainee(t.traineeId, { hostelStatus: 'ON LEAVE' });
+    const fromDate = data.outDate || data.fromDate || todayStr();
+    const toDate = data.inDate || data.toDate || fromDate;
+    const days = daysDiff(fromDate, toDate) + 1;
+    const isCompleted = !!(data.inTime || data.isCompleted);
+    const recData = {
+      ...data,
+      fromDate,
+      toDate,
+      days,
+      leaveDate: data.leaveDate || fromDate,
+      isCompleted,
+    };
+    upsert('leaves', 'LV', recData, id);
+    const t = getTrainee(data.traineeId || data.qrId);
+    if (t) {
+      if (isCompleted) {
+        updateTrainee(t.traineeId || t.qrId, { hostelStatus: 'ACTIVE' });
+      } else {
+        updateTrainee(t.traineeId || t.qrId, { hostelStatus: 'ON LEAVE' });
+      }
     }
   };
 
   const saveOutingVacate = (data, id) => {
-    upsert('outingVacate', 'OV', { ...data, date: data.date || todayStr() }, id);
-    if (data.status === 'APPROVED') {
-      const patch = { hostelStatus: data.type };
-      if (data.type === 'PERMANENT VACATE') patch.qrStatus = 'INACTIVE';
-      updateTrainee(data.traineeId, patch);
+    const isCompleted = !!(data.inTime || data.isCompleted);
+    const recData = {
+      ...data,
+      date: data.outDate || data.date || todayStr(),
+      fromDate: data.outDate || data.fromDate || todayStr(),
+      isCompleted,
+    };
+    upsert('outingVacate', 'OV', recData, id);
+    const t = getTrainee(data.traineeId || data.qrId);
+    if (t) {
+      if (isCompleted) {
+        updateTrainee(t.traineeId || t.qrId, { hostelStatus: 'ACTIVE' });
+      } else if (data.type === 'PERMANENT VACATE') {
+        updateTrainee(t.traineeId || t.qrId, { hostelStatus: 'PERMANENT VACATE', qrStatus: 'INACTIVE' });
+      } else if (data.type === 'TEMPORARY VACATE') {
+        updateTrainee(t.traineeId || t.qrId, { hostelStatus: 'TEMPORARY VACATE' });
+      } else {
+        updateTrainee(t.traineeId || t.qrId, { hostelStatus: 'OUTING' });
+      }
     }
   };
 
@@ -374,6 +424,106 @@ export function StoreProvider({ children }) {
   const setRoomCapacity = (hostelId, no, capacity) =>
     setDb((p) => ({ ...p, hostels: p.hostels.map((h) => (h.id === hostelId ? { ...h, rooms: h.rooms.map((r) => (r.no === no ? { ...r, capacity: Number(capacity) || 1 } : r)) } : h)) }));
 
+  const deleteHostel = async (hostelId) => {
+    try {
+      const res = await api(`/api/hostels/${encodeURIComponent(hostelId)}`, { method: 'DELETE' });
+      setDb((p) => ({
+        ...p,
+        hostels: p.hostels.filter((h) => h.id !== hostelId && h.name !== hostelId),
+      }));
+      notify(res.message || 'Hostel deleted successfully.');
+      return { ok: true, message: res.message };
+    } catch (err) {
+      notify(err.message || 'Failed to delete hostel.');
+      return { ok: false, error: err.message };
+    }
+  };
+
+  // ---------- Super Admin: delete records (Leave / Outing / Resignation) ----------
+  const deleteLeaveRecord = async (id) => {
+    try {
+      const res = await api(`/api/records/leave/${encodeURIComponent(id)}`, { method: 'DELETE' });
+      setDb((p) => {
+        const rec = p.leaves.find((x) => x.id === id);
+        let nextTrainees = p.trainees;
+        if (rec && (!rec.isCompleted || !rec.inTime)) {
+          nextTrainees = p.trainees.map((t) =>
+            (t.traineeId === rec.traineeId || t.qrId === rec.qrId) && t.hostelStatus === 'ON LEAVE'
+              ? { ...t, hostelStatus: 'ACTIVE' }
+              : t
+          );
+        }
+        return {
+          ...p,
+          leaves: p.leaves.filter((x) => x.id !== id),
+          trainees: nextTrainees,
+        };
+      });
+      notify(res.message || `Leave record ${id} deleted.`);
+      return true;
+    } catch (err) {
+      notify(`Delete failed: ${err.message}`);
+      return false;
+    }
+  };
+
+  const deleteOutingRecord = async (id) => {
+    try {
+      const res = await api(`/api/records/outing/${encodeURIComponent(id)}`, { method: 'DELETE' });
+      setDb((p) => {
+        const rec = p.outingVacate.find((x) => x.id === id);
+        let nextTrainees = p.trainees;
+        if (rec && (!rec.isCompleted || !rec.inTime)) {
+          nextTrainees = p.trainees.map((t) =>
+            (t.traineeId === rec.traineeId || t.qrId === rec.qrId) && ['OUTING', 'TEMPORARY VACATE'].includes(t.hostelStatus)
+              ? { ...t, hostelStatus: 'ACTIVE' }
+              : t
+          );
+        }
+        return {
+          ...p,
+          outingVacate: p.outingVacate.filter((x) => x.id !== id),
+          trainees: nextTrainees,
+        };
+      });
+      notify(res.message || `Outing record ${id} deleted.`);
+      return true;
+    } catch (err) {
+      notify(`Delete failed: ${err.message}`);
+      return false;
+    }
+  };
+
+  const deleteResignationRecord = async (id) => {
+    try {
+      const res = await api(`/api/records/resignation/${encodeURIComponent(id)}`, { method: 'DELETE' });
+      setDb((p) => {
+        const rec = p.resignations.find((x) => x.id === id);
+        let nextTrainees = p.trainees;
+        if (rec) {
+          const remainingRes = p.resignations.filter((x) => x.id !== id && x.traineeId === rec.traineeId);
+          if (remainingRes.length === 0) {
+            nextTrainees = p.trainees.map((t) =>
+              t.traineeId === rec.traineeId && t.employmentStatus === 'RESIGNED'
+                ? { ...t, employmentStatus: 'ACTIVE', hostelStatus: t.hostelStatus === 'RESIGNED' ? 'ACTIVE' : t.hostelStatus }
+                : t
+            );
+          }
+        }
+        return {
+          ...p,
+          resignations: p.resignations.filter((x) => x.id !== id),
+          trainees: nextTrainees,
+        };
+      });
+      notify(res.message || `Resignation record ${id} deleted.`);
+      return true;
+    } catch (err) {
+      notify(`Delete failed: ${err.message}`);
+      return false;
+    }
+  };
+
   // ---------- Super Admin: login members ----------
   const saveUser = async (user, password) => { const r = await api('/api/users', { method: 'POST', body: { action: 'save', user, password } }); setUsers(r.users); };
   const deleteUser = async (user) => { const r = await api('/api/users', { method: 'POST', body: { action: 'delete', user } }); setUsers(r.users); };
@@ -386,7 +536,8 @@ export function StoreProvider({ children }) {
     getTrainee, actor,
     addTrainee, updateTrainee, approveTrainee, rejectTrainee, deleteTrainee, changeRoom,
     saveAttendance, startDay, saveDaySummary, saveLeave, saveOutingVacate, saveResignation, saveRemark,
-    addHostel, addRoom, setRoomCapacity, saveUser, deleteUser, changePassword,
+    deleteLeaveRecord, deleteOutingRecord, deleteResignationRecord,
+    addHostel, addRoom, setRoomCapacity, deleteHostel, saveUser, deleteUser, changePassword,
   };
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }

@@ -34,7 +34,6 @@ export default function Dashboard() {
     (!f.hostel || t.hostel === f.hostel) &&
     (!f.employmentStatus || t.employmentStatus === f.employmentStatus) &&
     (!f.hostelStatus || t.hostelStatus === f.hostelStatus) &&
-    (!f.shift || t.defaultShift === f.shift) &&
     (!f.from || t.joiningDate >= f.from) &&
     (!f.to || t.joiningDate <= f.to)
   );
@@ -59,7 +58,7 @@ export default function Dashboard() {
     return { name: h.name, n, cap, pct: Math.round((n / cap) * 100) };
   });
 
-  const shiftCounts = SHIFTS.map((s) => ({ s, n: ts.filter((t) => t.defaultShift === s && t.hostelStatus === 'ACTIVE').length }));
+  const shiftCounts = SHIFTS.map((s) => ({ s, n: db.attendance.filter((a) => a.date === todayStr() && a.shift === s).length }));
   const maxShift = Math.max(1, ...shiftCounts.map((x) => x.n));
 
   const recentRegs = [...ts].sort((a, b) => (b.submissionDate > a.submissionDate ? 1 : -1)).slice(0, 5);
@@ -130,11 +129,6 @@ export default function Dashboard() {
                 <option value="">All</option>{HOSTEL_STATUSES.map((s) => <option key={s}>{s}</option>)}
               </select>
             </div>
-            <div><label className="field-label">Shift</label>
-              <select className="input" value={f.shift} onChange={set('shift')}>
-                <option value="">All Shifts</option>{SHIFTS.map((s) => <option key={s}>{s}</option>)}
-              </select>
-            </div>
             {filtered && <button className="btn btn-ghost" onClick={() => setF(EMPTY)}><Icon name="x" size={14} /> Clear</button>}
           </div>
         </div>
@@ -187,8 +181,8 @@ export default function Dashboard() {
         </Card>
         )}
         {W('shifts') && (
-        <Card title="Shift Distribution (active trainees)">
-          {ts.some((t) => t.hostelStatus === 'ACTIVE') ? (
+        <Card title="Today's Shift Attendance">
+          {shiftCounts.some((x) => x.n > 0) ? (
             <div className="shift-bars">
               {shiftCounts.map((x) => (
                 <div className="shift-bar-col" key={x.s}>

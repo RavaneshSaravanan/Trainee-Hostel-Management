@@ -16,6 +16,7 @@ import reportsRoutes from './routes/reports.js';
 import approvalRoutes from './routes/approval.js';
 import attendanceRoutes from './routes/attendanceRoutes.js';
 import validityRoutes from './routes/validity.js';
+import recordsRoutes from './routes/recordsRoutes.js';
 
 dotenv.config();
 
@@ -81,6 +82,7 @@ app.use('/api', reportsRoutes);
 app.use('/api', approvalRoutes);
 app.use('/api', attendanceRoutes);
 app.use('/api', validityRoutes);
+app.use('/api', recordsRoutes);
 
 // Production frontend serving
 const DIST = path.resolve(__dirname, '../frontend/dist');

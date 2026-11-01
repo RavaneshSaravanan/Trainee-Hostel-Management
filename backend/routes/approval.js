@@ -4,11 +4,25 @@ import { Config } from '../models/Config.js';
 import { User } from '../models/User.js';
 import { Trainee } from '../models/Trainee.js';
 import { ApprovalLog } from '../models/ApprovalLog.js';
+import { EmailLog } from '../models/EmailLog.js';
 import { bumpRev } from '../models/Meta.js';
-import { sendDecisionNotificationEmail, sendEmail, getAppUrl } from '../services/emailService.js';
+import {
+  sendDecisionNotificationEmail,
+  sendTraineeIdCardEmail,
+  sendTraineeWelcomeEmail,
+  sendEmail,
+  getAppUrl,
+  replaceDynamicPlaceholders,
+} from '../services/emailService.js';
 import { computeValidity } from '../utils/validity.js';
 import { migrateExistingPhotosToDrive } from '../services/googleDriveService.js';
-import { DEFAULT_ORG_BRANDING, DEFAULT_IDCARD_TEMPLATE, DEFAULT_EMAIL_TEMPLATE } from '../defaults.js';
+import {
+  DEFAULT_ORG_BRANDING,
+  DEFAULT_IDCARD_TEMPLATE,
+  DEFAULT_EMAIL_TEMPLATE,
+  DEFAULT_EMAIL_TEMPLATES,
+  DEFAULT_EMAIL_RECIPIENTS,
+} from '../defaults.js';
 
 const router = express.Router();
 
@@ -262,13 +276,38 @@ router.post('/approval/decision', auth, async (req, res) => {
       metadata: { finalStatus, policy, totalApprovals: trainee.approvals.length },
     });
 
-    // Send email notification to trainee if email provided
-    sendDecisionNotificationEmail({
-      trainee,
-      decision,
-      rejectionReason: String(rejectionReason).trim(),
-      actorName: req.user.name,
-    }).catch(() => {});
+    // Send email notification to trainee if email provided and a definitive decision is recorded in MongoDB
+    let emailResult = null;
+    if (['APPROVED', 'REJECTED'].includes(finalStatus) && trainee.email) {
+      try {
+        emailResult = await sendDecisionNotificationEmail({
+          trainee,
+          decision: finalStatus,
+          rejectionReason: String(rejectionReason).trim(),
+          actorName: req.user.name,
+        });
+        trainee.approvalEmailSent = emailResult?.ok === true;
+        trainee.approvalEmailSentAt = emailResult?.ok ? new Date() : undefined;
+        trainee.approvalEmailError = emailResult?.ok ? '' : (emailResult?.error || 'Email dispatch failed');
+      } catch (err) {
+        console.error('[Decision Notification Error]', err.message);
+        trainee.approvalEmailSent = false;
+        trainee.approvalEmailError = err.message;
+        emailResult = { ok: false, error: err.message };
+      }
+      await trainee.save();
+    }
+
+    // Deliver official ID card via email once trainee is approved
+    let idCardResult = null;
+    if (finalStatus === 'APPROVED' && trainee.email) {
+      try {
+        idCardResult = await sendTraineeIdCardEmail({ trainee });
+      } catch (err) {
+        console.warn('[ID Card Email Error]', err.message);
+        idCardResult = { ok: false, error: err.message };
+      }
+    }
 
     await bumpRev();
 
@@ -276,6 +315,8 @@ router.post('/approval/decision', auth, async (req, res) => {
       ok: true,
       message: `Trainee ${cleanId} marked ${decision}${finalStatus === 'APPROVED' ? ' (Approved and ready for room allocation)' : ''}.`,
       trainee,
+      emailResult,
+      idCardResult,
     });
   } catch (err) {
     return res.status(500).json({ error: err.message });
@@ -518,6 +559,550 @@ router.delete('/trainees/:traineeId', auth, requireSuper, async (req, res) => {
       message: `Trainee ${name} (${traineeId}) deleted permanently. Room allocation freed.`,
       traineeId,
     });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------- 10. Manual / Retry ID Card Email Delivery ----------------
+async function handleIdCardEmailDelivery(req, res) {
+  try {
+    const rawId = req.params.traineeId || '';
+    const cleanId = String(rawId).trim().toUpperCase();
+
+    const trainee = await Trainee.findOne({
+      $or: [{ traineeId: cleanId }, { qrId: cleanId }],
+    });
+
+    if (!trainee) {
+      return res.status(404).json({ error: `Trainee "${cleanId}" not found.` });
+    }
+
+    const result = await sendTraineeIdCardEmail({ trainee, force: true });
+    return res.json(result);
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+}
+router.post('/trainees/:traineeId/send-id-card', auth, handleIdCardEmailDelivery);
+router.post('/trainees/:traineeId/email-id-card', auth, handleIdCardEmailDelivery);
+
+// ---------------- 10b. Manual / Retry Approval / Rejection Decision Email ----------------
+router.post('/trainees/:traineeId/send-approval-email', auth, async (req, res) => {
+  try {
+    const rawId = req.params.traineeId || '';
+    const cleanId = String(rawId).trim().toUpperCase();
+
+    const trainee = await Trainee.findOne({
+      $or: [{ traineeId: cleanId }, { qrId: cleanId }],
+    });
+
+    if (!trainee) {
+      return res.status(404).json({ error: `Trainee "${cleanId}" not found.` });
+    }
+
+    if (!['APPROVED', 'REJECTED'].includes(trainee.approvalStatus)) {
+      return res.status(400).json({ error: 'Trainee has not been approved or rejected yet.' });
+    }
+
+    if (!trainee.email) {
+      return res.status(400).json({ error: 'Trainee does not have an email address configured.' });
+    }
+
+    const emailResult = await sendDecisionNotificationEmail({
+      trainee,
+      decision: trainee.approvalStatus,
+      rejectionReason: trainee.rejectionReason || '',
+      actorName: req.user ? (req.user.name || req.user.username) : 'Super Admin',
+    });
+
+    trainee.approvalEmailSent = emailResult?.ok === true;
+    if (emailResult?.ok) {
+      trainee.approvalEmailSentAt = new Date();
+      trainee.approvalEmailError = '';
+    } else {
+      trainee.approvalEmailError = emailResult?.error || 'Email dispatch failed';
+    }
+    await trainee.save();
+    await bumpRev();
+
+    return res.json({
+      ok: emailResult?.ok !== false,
+      message: emailResult?.ok ? 'Decision notification email dispatched successfully.' : `Email dispatch: ${emailResult?.error || 'Failed'}`,
+      emailResult,
+      trainee,
+    });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------- 11. Manual / Retry Welcome Email Delivery ----------------
+router.post('/trainees/:traineeId/send-welcome-email', auth, async (req, res) => {
+  try {
+    const rawId = req.params.traineeId || '';
+    const cleanId = String(rawId).trim().toUpperCase();
+
+    const trainee = await Trainee.findOne({
+      $or: [{ traineeId: cleanId }, { qrId: cleanId }],
+    });
+
+    if (!trainee) {
+      return res.status(404).json({ error: `Trainee "${cleanId}" not found.` });
+    }
+
+    const result = await sendTraineeWelcomeEmail({
+      trainee,
+      force: true,
+      triggeredBy: req.user ? `Super Admin Retry (${req.user.name || req.user.username})` : 'Super Admin Retry',
+    });
+    return res.json(result);
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------- 12. Allocate Room & Trigger Welcome Email ----------------
+router.post('/trainees/:traineeId/allocate-room', auth, async (req, res) => {
+  try {
+    const rawId = req.params.traineeId || '';
+    const cleanId = String(rawId).trim().toUpperCase();
+    const { hostel = '', roomNo = '' } = req.body || {};
+
+    if (!hostel || !roomNo) {
+      return res.status(400).json({ error: 'Both hostel and room number are required.' });
+    }
+
+    const trainee = await Trainee.findOne({
+      $or: [{ traineeId: cleanId }, { qrId: cleanId }],
+    });
+
+    if (!trainee) {
+      return res.status(404).json({ error: `Trainee "${cleanId}" not found.` });
+    }
+
+    if (trainee.approvalStatus === 'REJECTED' || trainee.hostelStatus === 'REJECTED') {
+      return res.status(400).json({ error: 'Cannot allocate room: Trainee is rejected.' });
+    }
+
+    trainee.hostel = String(hostel).trim();
+    trainee.roomNo = String(roomNo).trim();
+    trainee.hostelStatus = 'ACTIVE';
+    trainee.approvalStatus = 'APPROVED';
+    trainee.qrStatus = 'ACTIVE';
+    if (!trainee.approvedBy && req.user) trainee.approvedBy = req.user.name;
+
+    await trainee.save();
+
+    let emailResult = null;
+    if (!trainee.welcomeEmailSent) {
+      emailResult = await sendTraineeWelcomeEmail({ trainee, triggeredBy: 'Room Allocation' });
+    }
+
+    await bumpRev();
+
+    return res.json({
+      ok: true,
+      message: `${trainee.name} allocated to ${trainee.hostel}, Room ${trainee.roomNo}.`,
+      trainee,
+      emailResult,
+    });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------- 13. Email Recipient Management (Super Admin Only) ----------------
+router.get('/admin/email-recipients', auth, requireSuper, async (req, res) => {
+  try {
+    const cfg = await Config.findOne({ key: 'main' }).lean();
+    const recipients = cfg?.emailRecipients || [];
+    return res.json({ recipients });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/admin/email-recipients', auth, requireSuper, async (req, res) => {
+  try {
+    const { name = '', email = '', type = 'CC', emailTypes = [], enabled = true, description = '' } = req.body || {};
+    const cleanEmail = String(email).trim().toLowerCase();
+    if (!cleanEmail || !cleanEmail.includes('@')) {
+      return res.status(400).json({ error: 'A valid email address is required.' });
+    }
+    const cleanType = ['TO', 'CC', 'BCC'].includes(String(type).toUpperCase()) ? String(type).toUpperCase() : 'CC';
+    const id = `REC-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`;
+    const newRecipient = {
+      id,
+      name: String(name).trim(),
+      email: cleanEmail,
+      type: cleanType,
+      emailTypes: Array.isArray(emailTypes) && emailTypes.length > 0 ? emailTypes : ['WELCOME', 'ID_CARD', 'APPROVAL', 'ID_CARD_UPDATED', 'SYSTEM'],
+      enabled: enabled !== false,
+      description: String(description).trim(),
+    };
+
+    const cfg = await Config.findOneAndUpdate(
+      { key: 'main' },
+      { $push: { emailRecipients: newRecipient } },
+      { upsert: true, new: true }
+    );
+    await bumpRev();
+    return res.json({ ok: true, recipient: newRecipient, recipients: cfg.emailRecipients });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+router.put('/admin/email-recipients/:id', auth, requireSuper, async (req, res) => {
+  try {
+    const recId = String(req.params.id).trim();
+    const { name, email, type, emailTypes, enabled, description } = req.body || {};
+    const cfg = await Config.findOne({ key: 'main' });
+    if (!cfg) return res.status(404).json({ error: 'Config not found.' });
+
+    const existingIdx = (cfg.emailRecipients || []).findIndex((r) => r.id === recId);
+    if (existingIdx === -1) {
+      return res.status(404).json({ error: 'Recipient not found.' });
+    }
+
+    const current = cfg.emailRecipients[existingIdx];
+    if (name !== undefined) current.name = String(name).trim();
+    if (email !== undefined) {
+      const cleanEmail = String(email).trim().toLowerCase();
+      if (!cleanEmail || !cleanEmail.includes('@')) {
+        return res.status(400).json({ error: 'Invalid email address.' });
+      }
+      current.email = cleanEmail;
+    }
+    if (type !== undefined) {
+      current.type = ['TO', 'CC', 'BCC'].includes(String(type).toUpperCase()) ? String(type).toUpperCase() : current.type;
+    }
+    if (Array.isArray(emailTypes)) current.emailTypes = emailTypes;
+    if (enabled !== undefined) current.enabled = Boolean(enabled);
+    if (description !== undefined) current.description = String(description).trim();
+
+    await cfg.save();
+    await bumpRev();
+    return res.json({ ok: true, recipient: current, recipients: cfg.emailRecipients });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+router.delete('/admin/email-recipients/:id', auth, requireSuper, async (req, res) => {
+  try {
+    const recId = String(req.params.id).trim();
+    const cfg = await Config.findOneAndUpdate(
+      { key: 'main' },
+      { $pull: { emailRecipients: { id: recId } } },
+      { new: true }
+    );
+    await bumpRev();
+    return res.json({ ok: true, message: 'Recipient deleted.', recipients: cfg?.emailRecipients || [] });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------- 14. Email Templates Management (Super Admin Only) ----------------
+router.get('/admin/email-templates', auth, requireSuper, async (req, res) => {
+  try {
+    const cfg = await Config.findOne({ key: 'main' }).lean();
+    const templates = {
+      ...DEFAULT_EMAIL_TEMPLATES,
+      ...(cfg?.emailTemplates || {}),
+    };
+    return res.json({ templates });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+router.put('/admin/email-templates/:type', auth, requireSuper, async (req, res) => {
+  try {
+    const type = String(req.params.type).trim();
+    if (!['welcome', 'idCard', 'idCardUpdated', 'approval'].includes(type)) {
+      return res.status(400).json({ error: 'Invalid email template type.' });
+    }
+
+    const { subject, heading, subheading, bodyText, footerText, logoUrl, headerBg, accentColor } = req.body || {};
+    const cfg = await Config.findOne({ key: 'main' });
+    if (!cfg) return res.status(404).json({ error: 'Config not found.' });
+
+    if (!cfg.emailTemplates || typeof cfg.emailTemplates !== 'object') {
+      cfg.emailTemplates = { ...DEFAULT_EMAIL_TEMPLATES };
+    }
+
+    const currentTpl = cfg.emailTemplates[type] || DEFAULT_EMAIL_TEMPLATES[type] || {};
+    cfg.emailTemplates[type] = {
+      ...currentTpl,
+      ...(subject !== undefined ? { subject: String(subject).trim() } : {}),
+      ...(heading !== undefined ? { heading: String(heading).trim() } : {}),
+      ...(subheading !== undefined ? { subheading: String(subheading).trim() } : {}),
+      ...(bodyText !== undefined ? { bodyText: String(bodyText) } : {}),
+      ...(footerText !== undefined ? { footerText: String(footerText).trim() } : {}),
+      ...(logoUrl !== undefined ? { logoUrl: String(logoUrl) } : {}),
+      ...(headerBg !== undefined ? { headerBg: String(headerBg) } : {}),
+      ...(accentColor !== undefined ? { accentColor: String(accentColor) } : {}),
+    };
+
+    cfg.markModified('emailTemplates');
+    await cfg.save();
+    await bumpRev();
+
+    return res.json({ ok: true, template: cfg.emailTemplates[type], type });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/admin/email-templates/:type/reset', auth, requireSuper, async (req, res) => {
+  try {
+    const type = String(req.params.type).trim();
+    if (!['welcome', 'idCard', 'idCardUpdated', 'approval'].includes(type)) {
+      return res.status(400).json({ error: 'Invalid template type.' });
+    }
+    const defaultTpl = DEFAULT_EMAIL_TEMPLATES[type];
+    const cfg = await Config.findOne({ key: 'main' });
+    if (cfg) {
+      if (!cfg.emailTemplates) cfg.emailTemplates = {};
+      cfg.emailTemplates[type] = { ...defaultTpl };
+      cfg.markModified('emailTemplates');
+      await cfg.save();
+      await bumpRev();
+    }
+    return res.json({ ok: true, template: defaultTpl, type });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/admin/email-templates/:type/test', auth, requireSuper, async (req, res) => {
+  try {
+    const type = String(req.params.type).trim();
+    const { targetEmail = '', templateData = {} } = req.body || {};
+    const recipient = String(targetEmail || req.user.email || `${req.user.username}@gmail.com`).trim();
+
+    if (!recipient || !recipient.includes('@')) {
+      return res.status(400).json({ error: 'A valid target email address is required.' });
+    }
+
+    const cfg = await Config.findOne({ key: 'main' }).lean();
+    const branding = { ...DEFAULT_ORG_BRANDING, ...(cfg?.orgBranding || {}) };
+    const savedTpl = cfg?.emailTemplates?.[type] || DEFAULT_EMAIL_TEMPLATES[type] || {};
+    const tpl = { ...savedTpl, ...templateData };
+
+    const sampleData = {
+      traineeName: 'Rahul Sharma',
+      traineeId: 'TR-DEMO-001',
+      qrId: 'QR-DEMO-001',
+      traineeEmail: recipient,
+      hostelName: 'Apollo Campus Block A',
+      roomNumber: '102',
+      joiningDate: '15/01/2026',
+      freeValidityStartDate: '15/01/2026',
+      freeValidityEndDate: '15/04/2026',
+      organizationName: branding.orgName || 'APOLLO TYRES LTD',
+      organizationLogo: tpl.logoUrl || branding.logo || '',
+      idCardAttachment: `${getAppUrl()}/#/verify/QR-DEMO-001`,
+    };
+
+    const subject = `[TEST PREVIEW] ${replaceDynamicPlaceholders(tpl.subject, sampleData)}`;
+    const heading = replaceDynamicPlaceholders(tpl.heading, sampleData);
+    const subheading = replaceDynamicPlaceholders(tpl.subheading, sampleData);
+    const bodyText = replaceDynamicPlaceholders(tpl.bodyText, sampleData);
+    const footerText = replaceDynamicPlaceholders(tpl.footerText, sampleData);
+    const headerBg = tpl.headerBg || '#2E1065';
+    const accentColor = tpl.accentColor || '#7C3AED';
+
+    const text = `
+[DEMO TEST EMAIL — ${type.toUpperCase()}]
+${bodyText}
+
+Sample Details:
+- Trainee: ${sampleData.traineeName} (${sampleData.traineeId})
+- Hostel: ${sampleData.hostelName}, Room: ${sampleData.roomNumber}
+- Free Stay: ${sampleData.freeValidityStartDate} to ${sampleData.freeValidityEndDate}
+
+${footerText}
+`;
+
+    const html = `
+<div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 24px; border: 1px solid #e2e8f0; border-radius: 10px; background: #ffffff;">
+  <div style="background: #eab308; color: #000; padding: 6px 12px; font-size: 11px; font-weight: bold; border-radius: 4px; text-align: center; margin-bottom: 12px;">
+    DEMO TEST PREVIEW EMAIL · SENT FROM ADMIN CONSOLE
+  </div>
+  <div style="background: ${headerBg}; color: #ffffff; padding: 18px 22px; border-radius: 8px 8px 0 0; margin: 0 -24px 20px -24px; display: flex; align-items: center; justify-content: space-between;">
+    <div>
+      <h2 style="margin: 0; font-size: 20px; color: #ffffff;">${heading}</h2>
+      <p style="margin: 4px 0 0 0; font-size: 13px; color: #ddd6fe;">${subheading}</p>
+    </div>
+    ${sampleData.organizationLogo ? `<img src="${sampleData.organizationLogo}" alt="${sampleData.organizationName}" style="max-height: 42px; max-width: 130px; object-fit: contain; margin-left: 12px;" />` : ''}
+  </div>
+
+  <div style="font-size: 14.5px; color: #1e293b; line-height: 1.6; white-space: pre-line; margin: 16px 0;">
+    ${bodyText}
+  </div>
+
+  <div style="background: #f8fafc; border-left: 4px solid ${accentColor}; padding: 14px 18px; margin: 18px 0; border-radius: 6px; font-size: 13.5px;">
+    <p style="margin: 4px 0;"><strong>Trainee:</strong> ${sampleData.traineeName} (<span style="font-family: monospace; color: ${accentColor}; font-weight: bold;">${sampleData.traineeId}</span>)</p>
+    <p style="margin: 4px 0;"><strong>Hostel / Room:</strong> ${sampleData.hostelName} · Room ${sampleData.roomNumber}</p>
+    <p style="margin: 4px 0;"><strong>Validity Period:</strong> ${sampleData.freeValidityStartDate} → ${sampleData.freeValidityEndDate}</p>
+  </div>
+
+  <p style="font-size: 12px; color: #94a3b8; border-top: 1px solid #e2e8f0; padding-top: 14px; margin-top: 24px; text-align: center;">
+    ${footerText}
+  </p>
+</div>
+`;
+
+    const dispatch = await sendEmail({
+      to: recipient,
+      subject,
+      text,
+      html,
+      type: 'TEST',
+      triggeredBy: `Admin Test (${req.user.username})`,
+      metadata: { templateType: type },
+    });
+
+    return res.json({ ok: true, recipient, dispatch });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------- 15. Email Delivery History / Logs (Super Admin Only) ----------------
+router.get('/admin/email-logs', auth, requireSuper, async (req, res) => {
+  try {
+    const logs = await EmailLog.find({}).sort({ sentAt: -1 }).limit(150).lean();
+    return res.json({ logs });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------- 16. Admin Notification Email Management (Super Admin) ----------------
+router.get('/admin/notification-email', auth, async (req, res) => {
+  try {
+    const cfg = await Config.findOne({ key: 'main' }).lean();
+    let email = cfg?.adminNotificationEmail ? cfg.adminNotificationEmail.trim().toLowerCase() : '';
+    if (!email) {
+      const admin = await User.findOne({ roleId: 'superadmin', active: true }).sort({ createdAt: 1 }).lean();
+      email = admin?.email ? admin.email.trim().toLowerCase() : '';
+    }
+    return res.json({ adminNotificationEmail: email });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+router.put('/admin/notification-email', auth, requireSuper, async (req, res) => {
+  try {
+    const { email = '' } = req.body || {};
+    const cleanEmail = String(email).trim().toLowerCase();
+    if (!cleanEmail || !cleanEmail.includes('@') || !cleanEmail.includes('.')) {
+      return res.status(400).json({ error: 'Please provide a valid administrator email address.' });
+    }
+
+    // 1. Update Config model as single source of truth
+    await Config.findOneAndUpdate(
+      { key: 'main' },
+      { $set: { adminNotificationEmail: cleanEmail } },
+      { upsert: true }
+    );
+
+    // 2. Synchronize admin user records in User collection
+    await User.updateMany(
+      { username: { $in: ['admin', 'superadmin'] } },
+      { $set: { email: cleanEmail } }
+    );
+
+    // 3. Synchronize approvers list in approvalConfig if admin/superadmin is an approver
+    const cfg = await Config.findOne({ key: 'main' });
+    if (cfg?.approvalConfig?.approvers?.length > 0) {
+      let modified = false;
+      cfg.approvalConfig.approvers = cfg.approvalConfig.approvers.map((appr) => {
+        if (appr.username === 'admin' || appr.username === 'superadmin') {
+          modified = true;
+          return { ...appr, email: cleanEmail };
+        }
+        return appr;
+      });
+      if (modified) {
+        cfg.markModified('approvalConfig');
+        await cfg.save();
+      }
+    }
+
+    await bumpRev();
+    return res.json({
+      ok: true,
+      adminNotificationEmail: cleanEmail,
+      message: 'Admin notification email updated and saved in MongoDB.',
+    });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/admin/notification-email/test', auth, requireSuper, async (req, res) => {
+  try {
+    const { targetEmail = '' } = req.body || {};
+    const cfg = await Config.findOne({ key: 'main' }).lean();
+    const recipient = String(targetEmail || cfg?.adminNotificationEmail || req.user.email || '').trim().toLowerCase();
+
+    if (!recipient || !recipient.includes('@')) {
+      return res.status(400).json({ error: 'A valid target email address is required.' });
+    }
+
+    const branding = { ...DEFAULT_ORG_BRANDING, ...(cfg?.orgBranding || {}) };
+    const orgName = branding.orgName || 'APOLLO TYRES LTD';
+
+    const subject = `[System Notification] Test Admin Alert — ${orgName}`;
+    const text = `
+Apollo Tyres Ltd — Trainee Hostel Operations
+Administrative Notification Test
+
+This is an automated verification confirming that the Admin Notification Email address (${recipient}) is active, operational, and correctly configured in MongoDB.
+
+Triggered By: ${req.user.name} (${req.user.username})
+Timestamp: ${new Date().toISOString()}
+Configured Address: ${recipient}
+`;
+
+    const html = `
+<div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 24px; border: 1px solid #e2e8f0; border-radius: 10px; background: #ffffff;">
+  <div style="background: linear-gradient(135deg, #2E1065 0%, #4C1D95 100%); color: #ffffff; padding: 18px 22px; border-radius: 8px 8px 0 0; margin: -24px -24px 20px -24px;">
+    <h2 style="margin: 0; font-size: 20px; color: #ffffff;">Admin Notification Test</h2>
+    <p style="margin: 4px 0 0 0; font-size: 13px; color: #ddd6fe;">${orgName} · Trainee Hostel System</p>
+  </div>
+  <p>Dear <strong>Administrator</strong>,</p>
+  <p>This email confirms that the <strong>Admin Notification Email</strong> configuration in the Trainee Hostel Management System is active and receiving notifications.</p>
+  <div style="background: #f8fafc; border-left: 4px solid #7c3aed; padding: 14px 18px; margin: 18px 0; border-radius: 6px;">
+    <p style="margin: 4px 0;"><strong>Configured Address:</strong> <code style="color: #7c3aed; font-weight: bold;">${recipient}</code></p>
+    <p style="margin: 4px 0;"><strong>Status:</strong> Active &amp; Verified in MongoDB</p>
+    <p style="margin: 4px 0;"><strong>Triggered By:</strong> ${req.user.name} (${req.user.username})</p>
+    <p style="margin: 4px 0;"><strong>Timestamp:</strong> ${new Date().toLocaleString()}</p>
+  </div>
+  <p style="font-size: 12px; color: #94a3b8; border-top: 1px solid #e2e8f0; padding-top: 14px; margin-top: 24px; text-align: center;">
+    ${orgName} · Hostel Administration &amp; Trainee Operations
+  </p>
+</div>
+`;
+
+    const dispatch = await sendEmail({
+      to: recipient,
+      subject,
+      text,
+      html,
+      type: 'SYSTEM',
+      triggeredBy: `Admin Test Alert (${req.user.username})`,
+      metadata: { targetEmail: recipient },
+    });
+
+    return res.json({ ok: true, recipient, dispatch });
   } catch (err) {
     return res.status(500).json({ error: err.message });
   }

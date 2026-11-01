@@ -1,6 +1,7 @@
 import { useRef, useState } from 'react';
 import { QRCodeCanvas } from 'qrcode.react';
 import { useStore } from '../store.jsx';
+import { api } from '../utils/api.js';
 import { QUALIFICATIONS, SHIFTS } from '../data/constants.js';
 import { Avatar, Badge, Card, Icon, Table, formData } from '../components/ui.jsx';
 import { CustomInput } from '../components/RegistrationForm.jsx';
@@ -12,21 +13,33 @@ import VerticalIdCard from '../components/VerticalIdCard.jsx';
 import { addDays, fmtDate, todayStr } from '../utils/dates.js';
 import { computeSummary } from '../utils/summary.js';
 
+function maskAadhaar(num) {
+  if (!num) return '—';
+  const clean = String(num).replace(/\D/g, '');
+  if (clean.length === 12) {
+    return `XXXX-XXXX-${clean.slice(8)}`;
+  }
+  return num;
+}
+
 /* ---------------- Overview ---------------- */
 function Overview({ t }) {
   const { db, config, navigate } = useStore();
   const missing = missingDetails(t, config.customFields);
+  const traineeKey = t.traineeId || t.qrId;
   const info = [
-    ['Trainee ID', t.traineeId], ['Hostel ID', t.hostelId || '—'], ['Mobile', t.mobile], ['E-mail', t.email || '—'],
-    ['Date of Birth', fmtDate(t.dob)], ['Gender', t.gender], ['Qualification', t.qualification], ['Aadhar No.', t.aadhar],
+    ['Trainee ID', t.traineeId || '—'], ['Hostel ID', t.hostelId || '—'], ['Mobile', t.mobile], ['E-mail', t.email || '—'],
+    ['Date of Birth', fmtDate(t.dob)], ['Gender', t.gender], ['Qualification', t.qualification], ['Aadhar No.', maskAadhaar(t.aadhar)],
     ['Food', t.food], ['Joining Date', fmtDate(t.joiningDate)], ['Address', t.address1 || '—'],
     ['State', t.state || '—'], ['Guardian Name', t.guardianName || '—'], ['Guardian Contact', t.guardianContact || '—'],
-    ['Default Shift', t.defaultShift], ['Employment Status', t.employmentStatus], ['Hostel Status', t.hostelStatus],
+    ['Employment Status', t.employmentStatus], ['Hostel Status', t.hostelStatus],
     ['Hostel', t.hostel || '—'], ['Room No.', t.roomNo || '—'], ['QR ID', t.qrId || '—'], ['QR Status', t.qrStatus],
-    ['Approved By', t.approvedBy || '—'], ['Remarks', t.remarks || '—'],
+    ['Approved By', t.approvedBy || '—'],
+    ['ID Card Email Status', t.idCardDelivered ? `✓ Delivered on ${fmtDate(t.idCardDeliveredAt)}` : 'Not Delivered'],
+    ['Remarks', t.remarks || '—'],
     ...config.customFields.map((f) => [f.label, (t.custom || {})[f.id] || '—']),
   ];
-  const history = db.roomHistory.filter((h) => h.traineeId === t.traineeId);
+  const history = db.roomHistory.filter((h) => h.traineeId === (t.traineeId || t.qrId));
   return (
     <div className="grid-2">
       <Card title="Personal & Hostel Details">
@@ -34,7 +47,7 @@ function Overview({ t }) {
           <div className="alert-banner bad" style={{ marginBottom: 14 }}>
             <Icon name="alert" size={18} />
             <div className="alert-text"><strong>Details pending:</strong> {missing.join(', ')}</div>
-            <button className="btn btn-danger btn-sm" onClick={() => navigate('trainee-profile', { id: t.traineeId, sub: 'edit' })}>Fill now</button>
+            <button className="btn btn-danger btn-sm" onClick={() => navigate('trainee-profile', { id: traineeKey, sub: 'edit' })}>Fill now</button>
           </div>
         ) : <div className="alert-banner good" style={{ marginBottom: 14 }}><Icon name="check" size={18} /><div className="alert-text">All details complete</div></div>}
         <div className="info-grid">
@@ -63,14 +76,53 @@ function Overview({ t }) {
 function Edit({ t }) {
   const { updateTrainee, notify, navigate, config } = useStore();
   const [photo, setPhoto] = useState(t.photo || '');
+  const [mobile, setMobile] = useState(t.mobile ? String(t.mobile).replace(/\D/g, '') : '');
+  const [aadhar, setAadhar] = useState(t.aadhar ? String(t.aadhar).replace(/\D/g, '') : '');
+  const [email, setEmail] = useState(t.email || '');
+  const [errors, setErrors] = useState({});
+
+  const validate = () => {
+    const errs = {};
+    const cleanMobile = mobile.replace(/\D/g, '');
+    if (!cleanMobile) {
+      errs.mobile = 'Mobile number is required.';
+    } else if (cleanMobile.length !== 10) {
+      errs.mobile = 'Mobile number must be exactly 10 digits (numbers only).';
+    }
+
+    const cleanAadhar = aadhar.replace(/\D/g, '');
+    if (aadhar.trim() && cleanAadhar.length !== 12) {
+      errs.aadhar = 'Aadhaar number must be exactly 12 digits (numbers only).';
+    }
+
+    const cleanEmail = email.trim().toLowerCase();
+    if (cleanEmail && !/^[a-zA-Z0-9._%+-]+@gmail\.com$/.test(cleanEmail)) {
+      errs.email = 'Email address must be a valid @gmail.com address.';
+    }
+
+    setErrors(errs);
+    return Object.keys(errs).length === 0;
+  };
+
   const submit = (e) => {
+    e.preventDefault();
+    if (!validate()) return;
+
     const d = formData(e);
     delete d.photoFile;
     const custom = { ...(t.custom || {}) };
     config.customFields.forEach((f) => { custom[f.id] = d[`cf_${f.id}`] || ''; delete d[`cf_${f.id}`]; });
-    updateTrainee(t.traineeId, { ...d, photo, custom });
+    const targetKey = t.traineeId || t.qrId;
+    updateTrainee(targetKey, {
+      ...d,
+      mobile: mobile.replace(/\D/g, ''),
+      aadhar: aadhar.replace(/\D/g, ''),
+      email: email.trim().toLowerCase(),
+      photo,
+      custom,
+    });
     notify('Trainee details updated.');
-    navigate('trainee-profile', { id: t.traineeId, sub: 'overview' });
+    navigate('trainee-profile', { id: targetKey, sub: 'overview' });
   };
   const F = (label, name, props = {}) => (
     <div><label className="field-label">{label}</label><input className="input" name={name} defaultValue={t[name] === '—' ? '' : t[name]} {...props} /></div>
@@ -87,12 +139,60 @@ function Edit({ t }) {
           <div className="form-section-title">Personal Details</div>
           <div className="form-grid">
             {F('Trainee Name', 'name', { required: true })}
-            {F('Mobile No.', 'mobile', { required: true })}
-            {F('E-mail', 'email', { type: 'email' })}
+            <div>
+              <label className="field-label">Mobile No. * (10 Digits)</label>
+              <input
+                className={`input ${errors.mobile ? 'input-error' : ''}`}
+                name="mobile"
+                value={mobile}
+                onChange={(e) => {
+                  const val = e.target.value.replace(/\D/g, '').slice(0, 10);
+                  setMobile(val);
+                  if (errors.mobile && val.length === 10) setErrors((prev) => ({ ...prev, mobile: '' }));
+                }}
+                inputMode="numeric"
+                maxLength={10}
+                required
+              />
+              {errors.mobile && <div className="field-error" style={{ color: 'var(--red, #ef4444)', fontSize: 12, marginTop: 4 }}>{errors.mobile}</div>}
+            </div>
+            <div>
+              <label className="field-label">E-mail ID (@gmail.com strictly required)</label>
+              <input
+                className={`input ${errors.email ? 'input-error' : ''}`}
+                type="email"
+                name="email"
+                value={email}
+                onChange={(e) => {
+                  setEmail(e.target.value);
+                  if (errors.email && /^[a-zA-Z0-9._%+-]+@gmail\.com$/.test(e.target.value.trim().toLowerCase())) {
+                    setErrors((prev) => ({ ...prev, email: '' }));
+                  }
+                }}
+                placeholder="example@gmail.com"
+              />
+              {errors.email && <div className="field-error" style={{ color: 'var(--red, #ef4444)', fontSize: 12, marginTop: 4 }}>{errors.email}</div>}
+            </div>
             {F('Date of Birth', 'dob', { type: 'date' })}
             {S('Gender', 'gender', ['Male', 'Female', 'Other'])}
             {S('Qualification', 'qualification', QUALIFICATIONS)}
-            {F('Aadhar No.', 'aadhar')}
+            <div>
+              <label className="field-label">Aadhaar No. (12 Digits)</label>
+              <input
+                className={`input ${errors.aadhar ? 'input-error' : ''}`}
+                name="aadhar"
+                value={aadhar}
+                onChange={(e) => {
+                  const val = e.target.value.replace(/\D/g, '').slice(0, 12);
+                  setAadhar(val);
+                  if (errors.aadhar && val.length === 12) setErrors((prev) => ({ ...prev, aadhar: '' }));
+                }}
+                inputMode="numeric"
+                maxLength={12}
+                placeholder="123456789012"
+              />
+              {errors.aadhar && <div className="field-error" style={{ color: 'var(--red, #ef4444)', fontSize: 12, marginTop: 4 }}>{errors.aadhar}</div>}
+            </div>
             {S('Food Preference', 'food', ['VEG', 'NON-VEG'])}
             <div style={{ gridColumn: 'span 2' }}>
               <label className="field-label">Photo</label>
@@ -115,7 +215,6 @@ function Edit({ t }) {
           <div className="form-section-title">Employment & Joining Details</div>
           <div className="form-grid">
             {F('Joining Date *', 'joiningDate', { type: 'date', required: true })}
-            {S('Default Shift', 'defaultShift', SHIFTS)}
             {S('Employment Status', 'employmentStatus', ['ACTIVE', 'RESIGNED'])}
             {F('Remarks (short note)', 'remarks')}
           </div>
@@ -264,13 +363,13 @@ function Qr({ t }) {
     const canvas = box.current && box.current.querySelector('canvas');
     if (!canvas) return;
     const a = document.createElement('a');
-    a.download = `${t.traineeId}-qr.png`;
+    a.download = `${t.traineeId || t.qrId}-qr.png`;
     a.href = canvas.toDataURL('image/png');
     a.click();
   };
   const toggle = () => {
     const next = t.qrStatus === 'ACTIVE' ? 'INACTIVE' : 'ACTIVE';
-    updateTrainee(t.traineeId, { qrStatus: next });
+    updateTrainee(t.traineeId || t.qrId, { qrStatus: next });
     notify(`QR marked ${next}.`);
   };
   return (
@@ -279,7 +378,7 @@ function Qr({ t }) {
         {/* The QR contains ONLY the QR ID — no personal data. */}
         <div className="qr-canvas" ref={box}><QRCodeCanvas value={t.qrId} size={176} fgColor="#3B0F63" bgColor="#ffffff" /></div>
         <div className="qr-id">{t.qrId}</div>
-        <div className="qr-sub">{t.name} · {t.traineeId} · <Badge status={t.qrStatus} /></div>
+        <div className="qr-sub">{t.name} · {t.traineeId || '—'} · <Badge status={t.qrStatus} /></div>
         <div className="qr-actions">
           <button className="btn btn-ghost btn-sm" onClick={() => window.print()}><Icon name="print" size={15} /> Print</button>
           <button className="btn btn-ghost btn-sm" onClick={download}><Icon name="download" size={15} /> Download</button>
@@ -298,16 +397,35 @@ export default function TraineeProfile() {
   const [approving, setApproving] = useState(false);
   const [moving, setMoving] = useState(false);
   const [showIdCard, setShowIdCard] = useState(false);
+  const [sendingEmail, setSendingEmail] = useState(false);
 
   if (!t) {
     return <div className="empty-state">Trainee not found. <a className="link" onClick={() => navigate('trainees')}>Back to Trainees</a></div>;
   }
+  const traineeKey = t.traineeId || t.qrId;
   const sub = route.params.sub || 'overview';
-  const go = (s) => navigate('trainee-profile', { id: t.traineeId, sub: s });
+  const go = (s) => navigate('trainee-profile', { id: traineeKey, sub: s });
   const tabs = [
     ['overview', 'Overview'], ['id-card', 'ID Card'], ['edit', 'Edit Profile'],
     ['page1', 'View More · Attendance & Exit'], ['page2', 'View More · Summary & Remarks'], ['qr', 'QR Code'],
   ];
+
+  const handleSendEmail = async () => {
+    setSendingEmail(true);
+    try {
+      const res = await api(`/api/trainees/${encodeURIComponent(traineeKey)}/send-id-card`, { method: 'POST' });
+      if (res.ok) {
+        notify(res.message || 'ID Card delivered to trainee email successfully.');
+        updateTrainee(traineeKey, { idCardDelivered: true, idCardDeliveredAt: new Date().toISOString() });
+      } else {
+        notify(`Email delivery: ${res.message || res.error || 'Failed'}`);
+      }
+    } catch (err) {
+      notify(`Email delivery failed: ${err.message}`);
+    } finally {
+      setSendingEmail(false);
+    }
+  };
 
   return (
     <>
@@ -317,20 +435,20 @@ export default function TraineeProfile() {
         <div className="profile-head-info">
           <div className="profile-name-row"><div className="profile-name">{t.name}</div><Badge status={t.hostelStatus} /></div>
           <div className="profile-meta">
-            <span>{t.traineeId}</span><span className="dot">•</span>
+            <span>{t.traineeId || '—'}</span><span className="dot">•</span>
             <span>Hostel ID: {t.hostelId || '—'}</span><span className="dot">•</span>
-            <span>{t.hostel || 'Not allocated'}{t.roomNo ? ` · Room ${t.roomNo}` : ''}</span><span className="dot">•</span>
-            <span>Shift {t.defaultShift}</span>
+            <span>{t.hostel || 'Not allocated'}{t.roomNo ? ` · Room ${t.roomNo}` : ''}</span>
           </div>
           <div className="profile-chips">
             <span className="chip">Employment: {t.employmentStatus}</span>
             <span className="chip">QR: {t.qrStatus}</span>
+            {t.idCardDelivered && <span className="chip chip-green">ID Card Sent</span>}
           </div>
         </div>
         <div className="profile-head-actions">
           {t.hostelStatus === 'PENDING REVIEW' && <button className="btn btn-primary btn-sm" onClick={() => setApproving(true)}><Icon name="check" size={14} /> Approve</button>}
           {['ON LEAVE', 'OUTING', 'TEMPORARY VACATE'].includes(t.hostelStatus) && (
-            <button className="btn btn-primary btn-sm" onClick={() => { updateTrainee(t.traineeId, { hostelStatus: 'ACTIVE' }); notify(`${t.name} marked as returned (ACTIVE).`); }}>
+            <button className="btn btn-primary btn-sm" onClick={() => { updateTrainee(traineeKey, { hostelStatus: 'ACTIVE' }); notify(`${t.name} marked as returned (ACTIVE).`); }}>
               <Icon name="check" size={14} /> Mark Returned
             </button>
           )}
@@ -342,14 +460,24 @@ export default function TraineeProfile() {
           >
             <Icon name="idCard" size={14} /> ID Card
           </button>
+          {t.email && (
+            <button
+              className="btn btn-ghost btn-sm"
+              onClick={handleSendEmail}
+              disabled={sendingEmail}
+              title="Send or resend official ID Card to registered Gmail"
+            >
+              <Icon name="mail" size={14} /> {sendingEmail ? 'Sending…' : t.idCardDelivered ? 'Resend ID Card' : 'Email ID Card'}
+            </button>
+          )}
           <button className="btn btn-ghost btn-sm" onClick={() => go('edit')}><Icon name="edit" size={14} /> Edit Profile</button>
           <button className="btn btn-ghost btn-sm" onClick={() => go('qr')}><Icon name="qr" size={14} /> {t.qrId ? 'View QR' : 'QR'}</button>
           {isSuper && (
             <button
               className="btn btn-danger btn-sm"
               onClick={async () => {
-                if (window.confirm(`Permanently delete trainee "${t.name}" (${t.traineeId})?\n\nThis will permanently delete the trainee record from MongoDB and free any allocated room/bed.\nThis action cannot be undone.`)) {
-                  const ok = await deleteTrainee(t.traineeId);
+                if (window.confirm(`Permanently delete trainee "${t.name}" (${t.traineeId || t.qrId})?\n\nThis will permanently delete the trainee record from MongoDB and free any allocated room/bed.\nThis action cannot be undone.`)) {
+                  const ok = await deleteTrainee(traineeKey);
                   if (ok) navigate('trainees');
                 }
               }}
@@ -365,7 +493,7 @@ export default function TraineeProfile() {
         {tabs.map(([id, label]) => <button key={id} className={`tab ${sub === id ? 'active' : ''}`} onClick={() => go(id)}>{label}</button>)}
       </div>
 
-      {sub === 'edit' ? <Edit key={t.traineeId} t={t} />
+      {sub === 'edit' ? <Edit key={traineeKey} t={t} />
         : sub === 'id-card' ? <div className="card" style={{ padding: '24px 16px' }}><VerticalIdCard trainee={t} embedded /></div>
         : sub === 'page1' ? <Page1 t={t} range={range} setRange={setRange} />
         : sub === 'page2' ? <Page2 t={t} range={range} />

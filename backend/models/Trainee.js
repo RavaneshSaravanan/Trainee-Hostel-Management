@@ -2,9 +2,9 @@ import mongoose from 'mongoose';
 
 const traineeSchema = new mongoose.Schema(
   {
-    traineeId: { type: String, required: true, unique: true, index: true },
+    traineeId: { type: String, default: '' },
     hostelId: { type: String, default: '' },
-    qrId: { type: String, default: '' },
+    qrId: { type: String, required: true, unique: true, index: true },
     qrStatus: { type: String, default: 'ACTIVE' },
     name: { type: String, required: true },
     mobile: { type: String, default: '' },
@@ -25,7 +25,6 @@ const traineeSchema = new mongoose.Schema(
     guardianName: { type: String, default: '' },
     guardianContact: { type: String, default: '' },
     joiningDate: { type: String, default: '' },
-    defaultShift: { type: String, default: 'G' },
     employmentStatus: { type: String, default: 'ACTIVE' },
     hostelStatus: { type: String, default: 'PENDING REVIEW' },
     hostel: { type: String, default: '' },
@@ -78,11 +77,35 @@ const traineeSchema = new mongoose.Schema(
       default: () => [],
     },
 
-    // ID Card Issuance tracking
+    // ID Card Issuance & Email Delivery tracking
     idCardIssued: { type: Boolean, default: false },
     idCardIssuedAt: { type: Date },
+    idCardDelivered: { type: Boolean, default: false },
+    idCardDeliveredAt: { type: Date },
+    idCardDeliveryError: { type: String, default: '' },
+
+    // Welcome Email Delivery tracking
+    welcomeEmailSent: { type: Boolean, default: false },
+    welcomeEmailSentAt: { type: Date },
+    welcomeEmailError: { type: String, default: '' },
+
+    // Approval / Rejection Decision Email Delivery tracking
+    approvalEmailSent: { type: Boolean, default: false },
+    approvalEmailSentAt: { type: Date },
+    approvalEmailError: { type: String, default: '' },
   },
   { timestamps: true }
+);
+
+// Unique partial index on traineeId: if specified, duplicate traineeId is strictly not allowed, but empty traineeId is allowed
+traineeSchema.index(
+  { traineeId: 1 },
+  {
+    unique: true,
+    partialFilterExpression: {
+      traineeId: { $type: 'string', $gt: '' },
+    },
+  }
 );
 
 // Unique partial index on aadhar: duplicate aadhar is strictly not allowed if non-empty

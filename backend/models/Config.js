@@ -11,6 +11,7 @@ const configSchema = new mongoose.Schema(
     widgets: { type: mongoose.Schema.Types.Mixed, default: () => ({}) },
     customFields: { type: [mongoose.Schema.Types.Mixed], default: () => [] },
     registrationOpen: { type: Boolean, default: true },
+    adminNotificationEmail: { type: String, default: '' },
     orgBranding: {
       orgName: { type: String, default: 'APOLLO TYRES LTD' },
       logo: { type: String, default: '' },
@@ -22,6 +23,24 @@ const configSchema = new mongoose.Schema(
       default: () => ({}),
     },
     emailTemplate: {
+      type: mongoose.Schema.Types.Mixed,
+      default: () => ({}),
+    },
+    emailRecipients: {
+      type: [
+        {
+          id: { type: String, required: true },
+          name: { type: String, default: '' },
+          email: { type: String, required: true },
+          type: { type: String, enum: ['TO', 'CC', 'BCC'], default: 'CC' },
+          emailTypes: { type: [String], default: () => ['WELCOME', 'ID_CARD', 'APPROVAL', 'ID_CARD_UPDATED', 'SYSTEM'] },
+          enabled: { type: Boolean, default: true },
+          description: { type: String, default: '' },
+        },
+      ],
+      default: () => [],
+    },
+    emailTemplates: {
       type: mongoose.Schema.Types.Mixed,
       default: () => ({}),
     },

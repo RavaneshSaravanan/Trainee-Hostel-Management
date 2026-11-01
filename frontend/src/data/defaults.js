@@ -75,6 +75,51 @@ export const DEFAULT_EMAIL_TEMPLATE = {
   logoImage: '',
 };
 
+export const DEFAULT_EMAIL_TEMPLATES = {
+  welcome: {
+    subject: 'Welcome to Apollo Tyres Ltd — Hostel & Room Allocation: {{traineeName}} ({{traineeId}})',
+    heading: 'Welcome to Apollo Tyres Ltd',
+    subheading: 'Official Hostel Admission & Room Allocation Confirmation',
+    bodyText: 'Dear {{traineeName}},\n\nCongratulations on joining Apollo Tyres Ltd!\nWe are delighted to welcome you to our organization and trainee residential community.\n\nYour hostel room allocation and onboarding details are confirmed below.\nPlease review the accommodation rules and keep your Digital ID Card handy for campus and hostel access.',
+    footerText: 'Apollo Tyres Ltd · Hostel Administration & Trainee Operations · Dedicated to Excellence and Safety',
+    logoUrl: '',
+    headerBg: '#2E1065',
+    accentColor: '#7C3AED',
+  },
+  idCard: {
+    subject: 'Official Trainee Identity Card — Apollo Tyres Ltd ({{traineeName}})',
+    heading: 'APOLLO TYRES LTD',
+    subheading: 'TRAINEE IDENTITY CARD',
+    bodyText: 'Dear {{traineeName}},\n\nCongratulations! Your trainee registration with Apollo Tyres Ltd has been officially approved.\nYour official digital Trainee Identity Card is issued below. You can use your secure QR code badge for hostel entry and daily attendance verification.',
+    footerText: 'Authorized Trainee ID Card · Apollo Tyres Ltd · Hostel Operations',
+    logoUrl: '',
+    headerBg: '#2E1065',
+    accentColor: '#7C3AED',
+  },
+  idCardUpdated: {
+    subject: 'Updated Trainee Identity Card & Room Details — Apollo Tyres Ltd ({{traineeName}})',
+    heading: 'APOLLO TYRES LTD',
+    subheading: 'UPDATED TRAINEE IDENTITY CARD',
+    bodyText: 'Dear {{traineeName}},\n\nYour hostel accommodation and ID card details have been updated.\nPlease find your updated digital ID Card with your latest room allocation below.',
+    footerText: 'Authorized Trainee ID Card · Apollo Tyres Ltd · Hostel Operations',
+    logoUrl: '',
+    headerBg: '#2E1065',
+    accentColor: '#7C3AED',
+  },
+  approval: {
+    subject: '[Action Required] Review Registration: {{traineeName}} ({{traineeId}})',
+    heading: 'Trainee Registration Review Request',
+    subheading: 'Apollo Tyres Ltd — Trainee Hostel Operations',
+    bodyText: 'Dear Approver,\n\nA new trainee registration has been submitted for {{organizationName}} Trainee Hostel and requires your official review.\n\nPlease inspect the details below and record your decision:',
+    footerText: 'Security Notice: This link contains a secure, single-use token expiring in 7 days. Apollo Tyres Ltd Trainee Hostel Management.',
+    logoUrl: '',
+    headerBg: '#2E1065',
+    accentColor: '#7C3AED',
+  },
+};
+
+export const DEFAULT_EMAIL_RECIPIENTS = [];
+
 export const DEFAULT_CONFIG = {
   appName: 'Trainee Hostel',
   appSub: 'Management System',
@@ -82,6 +127,9 @@ export const DEFAULT_CONFIG = {
   orgBranding: DEFAULT_ORG_BRANDING,
   idCardTemplate: DEFAULT_IDCARD_TEMPLATE,
   emailTemplate: DEFAULT_EMAIL_TEMPLATE,
+  emailTemplates: DEFAULT_EMAIL_TEMPLATES,
+  emailRecipients: DEFAULT_EMAIL_RECIPIENTS,
+  adminNotificationEmail: '',
   theme: {
     primary: '#7C3AED', sidebar: '#3B0F63',
     bgMode: 'color', // color | gradient | image
@@ -109,6 +157,12 @@ export const withDefaults = (c = {}) => ({
   orgBranding: { ...DEFAULT_ORG_BRANDING, ...(c.orgBranding || {}) },
   idCardTemplate: { ...DEFAULT_IDCARD_TEMPLATE, ...(c.idCardTemplate || {}) },
   emailTemplate: { ...DEFAULT_EMAIL_TEMPLATE, ...(c.emailTemplate || {}) },
+  emailTemplates: {
+    ...DEFAULT_EMAIL_TEMPLATES,
+    ...(c.emailTemplates || {}),
+  },
+  emailRecipients: Array.isArray(c.emailRecipients) ? c.emailRecipients : DEFAULT_EMAIL_RECIPIENTS,
+  adminNotificationEmail: c.adminNotificationEmail || '',
   theme: { ...DEFAULT_CONFIG.theme, ...(c.theme || {}) },
   widgets: { ...DEFAULT_CONFIG.widgets, ...(c.widgets || {}) },
   pages: c.pages || {},

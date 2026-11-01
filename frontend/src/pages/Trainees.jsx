@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { QRCodeCanvas } from 'qrcode.react';
 import { useStore } from '../store.jsx';
-import { SHIFTS, HOSTEL_STATUSES } from '../data/constants.js';
+import { HOSTEL_STATUSES } from '../data/constants.js';
 import { Avatar, Badge, Card, Icon, Table } from '../components/ui.jsx';
 import { ApproveModal, ChangeRoomModal, RoomOccupantsModal } from '../components/RoomModals.jsx';
 import VerticalIdCard from '../components/VerticalIdCard.jsx';
@@ -40,14 +40,12 @@ function Master({ initialQ, initialDetails }) {
   const [q, setQ] = useState(initialQ || '');
   const [hostel, setHostel] = useState('');
   const [status, setStatus] = useState('');
-  const [shift, setShift] = useState('');
 
   const lc = q.toLowerCase();
   const list = db.trainees.filter((t) =>
     (!lc || [t.traineeId, t.hostelId, t.name, t.mobile, t.hostel, t.roomNo].some((v) => String(v || '').toLowerCase().includes(lc))) &&
     (!hostel || t.hostel === hostel) &&
     (!status || t.hostelStatus === status) &&
-    (!shift || t.defaultShift === shift) &&
     (!details || (details === 'pending') === !isComplete(t, config.customFields))
   );
 
@@ -63,16 +61,13 @@ function Master({ initialQ, initialDetails }) {
         <select className="input" value={status} onChange={(e) => setStatus(e.target.value)}>
           <option value="">All Hostel Status</option>{HOSTEL_STATUSES.map((s) => <option key={s}>{s}</option>)}
         </select>
-        <select className="input" value={shift} onChange={(e) => setShift(e.target.value)}>
-          <option value="">All Shifts</option>{SHIFTS.map((s) => <option key={s} value={s}>{s} Shift</option>)}
-        </select>
         <select className="input" value={details} onChange={(e) => setDetails(e.target.value)}>
           <option value="">All Details</option><option value="pending">Details pending (red)</option><option value="complete">Details complete (green)</option>
         </select>
         <button className="btn btn-ghost" onClick={() => setSheet(true)}><Icon name="qr" size={15} /> Print QR cards</button>
       </div>
       <Table
-        headers={['Photo', 'Trainee ID', 'Name', 'Details', 'Hostel ID', 'Hostel', 'Room', 'Shift', 'Hostel Status', 'QR', '']}
+        headers={['Photo', 'Trainee ID', 'Name', 'Details', 'Hostel ID', 'Hostel', 'Room', 'Hostel Status', 'QR', '']}
         empty="No trainees found in database."
         rowClass={(i) => (isComplete(list[i], config.customFields) ? 'row-ok' : 'row-pending')}
         rows={list.map((t) => [
@@ -80,7 +75,7 @@ function Master({ initialQ, initialDetails }) {
           <a className="link" onClick={() => open(t.traineeId)}>{t.traineeId}</a>,
           t.name,
           isComplete(t, config.customFields) ? <Badge status="COMPLETE" /> : <span title={missingDetails(t, config.customFields).join(', ')}><Badge status="DETAILS PENDING" /></span>,
-          t.hostelId || '—', t.hostel || '—', t.roomNo || '—', t.defaultShift,
+          t.hostelId || '—', t.hostel || '—', t.roomNo || '—',
           <Badge status={t.hostelStatus} />, <Badge status={t.qrStatus} />,
           <div className="row-actions">
             <button className="btn btn-ghost btn-xs" onClick={() => open(t.traineeId)}><Icon name="eye" size={14} /> View</button>
@@ -122,10 +117,10 @@ function Pending() {
   return (
     <Card noPad>
       <Table
-        headers={['Photo', 'Trainee ID', 'Name', 'Mobile', 'Joining Date', 'Shift', 'Submitted', 'Status', 'Actions']}
+        headers={['Photo', 'Trainee ID', 'Name', 'Mobile', 'Joining Date', 'Submitted', 'Status', 'Actions']}
         empty="No pending trainee requests."
         rows={pending.map((t) => [
-          <Avatar trainee={t} />, t.traineeId, t.name, t.mobile, fmtDate(t.joiningDate), t.defaultShift,
+          <Avatar trainee={t} />, t.traineeId, t.name, t.mobile, fmtDate(t.joiningDate),
           fmtDate(t.submissionDate), <Badge status={t.hostelStatus} />,
           <div className="row-actions">
             <button className="btn btn-primary btn-xs" onClick={() => navigate('review', { id: t.traineeId })}><Icon name="check" size={14} /> Review</button>
@@ -179,14 +174,13 @@ function Rooms() {
           style={{ marginBottom: 16 }}
         >
           <Table
-            headers={['Photo', 'Trainee ID', 'Name', 'Qualification', 'Shift', 'Approval', 'Action']}
+            headers={['Photo', 'Trainee ID', 'Name', 'Qualification', 'Approval', 'Action']}
             empty="All approved trainees have rooms allocated."
             rows={unallocated.map((t) => [
               <Avatar trainee={t} />,
               <strong>{t.traineeId}</strong>,
               t.name,
               t.qualification || '—',
-              `${t.defaultShift} Shift`,
               <span className="chip chip-green">APPROVED</span>,
               <button
                 className="btn btn-primary btn-xs"

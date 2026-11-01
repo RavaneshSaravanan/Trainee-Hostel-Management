@@ -5,6 +5,7 @@ import {
   ASSIGNABLE_PAGES,
   DEFAULT_CONFIG,
   DEFAULT_EMAIL_TEMPLATE,
+  DEFAULT_EMAIL_TEMPLATES,
   DEFAULT_IDCARD_TEMPLATE,
   DEFAULT_ORG_BRANDING,
   FONTS,
@@ -15,6 +16,7 @@ import {
 } from '../data/defaults.js';
 import { Badge, Card, Icon, Modal, Table } from '../components/ui.jsx';
 import { resizeBackground, resizeImage } from '../utils/image.js';
+import { fmtDate } from '../utils/dates.js';
 import VerticalIdCard from '../components/VerticalIdCard.jsx';
 
 // ADMIN CONSOLE (Super Admin only): login members, roles, look & feel, pages, form fields, hostels.
@@ -494,9 +496,28 @@ function PagesAndFields() {
 
 /* ---------------- Hostels & rooms ---------------- */
 function Hostels() {
-  const { db, addHostel, addRoom, setRoomCapacity, notify } = useStore();
+  const { db, addHostel, addRoom, setRoomCapacity, deleteHostel, isSuper, notify } = useStore();
   const [name, setName] = useState('');
   const [room, setRoom] = useState({});
+  const [deleteTarget, setDeleteTarget] = useState(null);
+  const [occupiedWarning, setOccupiedWarning] = useState(null);
+  const [deleting, setDeleting] = useState(false);
+
+  const handleDeleteClick = (h) => {
+    const activeOccupants = db.trainees.filter(
+      (t) =>
+        (t.hostel === h.name || t.hostelId === h.id) &&
+        ['ACTIVE', 'ON LEAVE', 'OUTING', 'TEMPORARY VACATE'].includes(t.hostelStatus) &&
+        t.roomNo
+    );
+
+    if (activeOccupants.length > 0) {
+      setOccupiedWarning({ hostel: h, occupants: activeOccupants });
+    } else {
+      setDeleteTarget(h);
+    }
+  };
+
   return (
     <>
       <Card title="Add hostel">
@@ -511,7 +532,24 @@ function Hostels() {
         </Card>
       ) : (
         db.hostels.map((h) => (
-          <Card key={h.id} title={h.name} sub={`${h.rooms.length} rooms · capacity ${h.rooms.reduce((s, r) => s + r.capacity, 0)}`}>
+          <Card
+            key={h.id}
+            title={h.name}
+            sub={`${h.rooms.length} rooms · capacity ${h.rooms.reduce((s, r) => s + r.capacity, 0)}`}
+            action={
+              isSuper && (
+                <button
+                  type="button"
+                  className="btn btn-ghost btn-sm"
+                  style={{ color: 'var(--red, #ef4444)' }}
+                  onClick={() => handleDeleteClick(h)}
+                  title={`Delete ${h.name}`}
+                >
+                  <Icon name="trash" size={14} /> Delete Hostel
+                </button>
+              )
+            }
+          >
             <div className="room-chips">
               {h.rooms.map((r) => (
                 <label className="room-chip" key={r.no}>Room {r.no}
@@ -532,6 +570,82 @@ function Hostels() {
             </form>
           </Card>
         ))
+      )}
+
+      {occupiedWarning && (
+        <Modal
+          title={`Cannot Delete Hostel — ${occupiedWarning.hostel.name}`}
+          onClose={() => setOccupiedWarning(null)}
+          actions={
+            <button className="btn btn-primary" onClick={() => setOccupiedWarning(null)}>
+              Understood
+            </button>
+          }
+        >
+          <div className="alert-banner bad" style={{ marginBottom: 12 }}>
+            <Icon name="alert" size={18} />
+            <div className="alert-text">
+              <strong>Direct deletion blocked:</strong> Hostel &ldquo;{occupiedWarning.hostel.name}&rdquo; currently has{' '}
+              {occupiedWarning.occupants.length} active resident trainee(s).
+            </div>
+          </div>
+          <p className="muted" style={{ fontSize: 13, marginBottom: 12 }}>
+            Please reassign all active occupants to another hostel or room before deleting this hostel. Trainee master records and historical data are preserved.
+          </p>
+          <Table
+            headers={['S.No', 'Trainee Name', 'Trainee ID', 'Room No.', 'Status']}
+            rows={occupiedWarning.occupants.map((t, idx) => [
+              idx + 1,
+              <strong>{t.name}</strong>,
+              t.traineeId || t.qrId,
+              `Room ${t.roomNo}`,
+              <Badge key={t.traineeId || t.qrId} status={t.hostelStatus} />,
+            ])}
+          />
+        </Modal>
+      )}
+
+      {deleteTarget && (
+        <Modal
+          title={`Confirm Delete Hostel — ${deleteTarget.name}`}
+          onClose={() => !deleting && setDeleteTarget(null)}
+          actions={
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+              <button className="btn btn-ghost" onClick={() => setDeleteTarget(null)} disabled={deleting}>
+                Cancel
+              </button>
+              <button
+                className="btn btn-danger"
+                disabled={deleting}
+                onClick={async () => {
+                  setDeleting(true);
+                  const res = await deleteHostel(deleteTarget.id);
+                  setDeleting(false);
+                  if (res.ok) {
+                    setDeleteTarget(null);
+                  }
+                }}
+              >
+                <Icon name="trash" size={14} /> {deleting ? 'Deleting…' : 'Confirm Delete'}
+              </button>
+            </div>
+          }
+        >
+          <div style={{ padding: '6px 0' }}>
+            <p style={{ margin: '0 0 12px' }}>
+              Are you sure you want to permanently delete hostel <strong>{deleteTarget.name}</strong>?
+            </p>
+            <div className="info-grid" style={{ marginBottom: 14 }}>
+              <div className="info-item"><div className="info-k">Hostel ID</div><div className="info-v">{deleteTarget.id}</div></div>
+              <div className="info-item"><div className="info-k">Hostel Name</div><div className="info-v">{deleteTarget.name}</div></div>
+              <div className="info-item"><div className="info-k">Configured Rooms</div><div className="info-v">{deleteTarget.rooms.length} rooms</div></div>
+              <div className="info-item"><div className="info-k">Total Capacity</div><div className="info-v">{deleteTarget.rooms.reduce((s, r) => s + r.capacity, 0)} beds</div></div>
+            </div>
+            <p className="muted" style={{ fontSize: 13, margin: 0 }}>
+              ⚠️ Trainee master records and historical data will be preserved. This action cannot be undone.
+            </p>
+          </div>
+        </Modal>
       )}
     </>
   );
@@ -677,7 +791,6 @@ const SAMPLE_TRAINEE = {
   qrId: 'QR-DEMO-001',
   hostelStatus: 'ACTIVE',
   qrStatus: 'ACTIVE',
-  defaultShift: 'G',
 };
 
 function IdCardDesignSettings() {
@@ -865,32 +978,545 @@ function IdCardDesignSettings() {
   );
 }
 
-/* ---------------- Approval Email Template Settings ---------------- */
-const PLACEHOLDERS = [
+/* ---------------- Email Management (Super Admin Only) ---------------- */
+const DYNAMIC_PLACEHOLDERS = [
   ['{{traineeName}}', 'Trainee Full Name'],
-  ['{{traineeId}}', 'Trainee ID'],
-  ['{{joiningDate}}', 'Joining Date'],
-  ['{{department}}', 'Department / Qualification'],
-  ['{{approvalLink}}', 'Review & Approval Link'],
+  ['{{traineeId}}', 'Trainee ID Number'],
+  ['{{qrId}}', 'QR Code Identifier'],
+  ['{{traineeEmail}}', 'Trainee Email Address'],
+  ['{{hostelName}}', 'Assigned Hostel Block'],
+  ['{{roomNumber}}', 'Assigned Room Number'],
+  ['{{joiningDate}}', 'Joining Date (DD/MM/YYYY)'],
+  ['{{freeValidityStartDate}}', 'Free Accommodation Start Date'],
+  ['{{freeValidityEndDate}}', 'Free Accommodation End Date (3 Months)'],
   ['{{organizationName}}', 'Organization Name'],
   ['{{organizationLogo}}', 'Organization Logo URL'],
-  ['{{approverName}}', 'Approver Name'],
+  ['{{idCardAttachment}}', 'Digital ID Card Badge / URL'],
 ];
 
-function ApprovalEmailTemplateSettings() {
+const EMAIL_WORKFLOW_TYPES = [
+  { id: 'WELCOME', label: 'Trainee Welcome Email' },
+  { id: 'ID_CARD', label: 'Trainee ID Card Email' },
+  { id: 'ID_CARD_UPDATED', label: 'ID Card Updated Email' },
+  { id: 'APPROVAL', label: 'Approval Request Email' },
+  { id: 'SYSTEM', label: 'System Notifications' },
+];
+
+function EmailRecipientModal({ recipient, onClose, onSaved }) {
+  const { notify } = useStore();
+  const isEdit = Boolean(recipient?.id);
+  const [f, setF] = useState(
+    recipient || {
+      name: '',
+      email: '',
+      type: 'CC',
+      emailTypes: ['WELCOME', 'ID_CARD', 'APPROVAL', 'ID_CARD_UPDATED', 'SYSTEM'],
+      enabled: true,
+      description: '',
+    }
+  );
+  const [saving, setSaving] = useState(false);
+
+  const toggleType = (tid) => {
+    const list = f.emailTypes || [];
+    if (list.includes(tid)) {
+      setF({ ...f, emailTypes: list.filter((x) => x !== tid) });
+    } else {
+      setF({ ...f, emailTypes: [...list, tid] });
+    }
+  };
+
+  const handleSave = async (e) => {
+    e?.preventDefault();
+    if (!f.email || !f.email.includes('@')) {
+      notify('Please enter a valid email address.');
+      return;
+    }
+    setSaving(true);
+    try {
+      if (isEdit) {
+        await api(`/api/admin/email-recipients/${recipient.id}`, { method: 'PUT', body: f });
+        notify('✓ Recipient updated successfully.');
+      } else {
+        await api('/api/admin/email-recipients', { method: 'POST', body: f });
+        notify('✓ New recipient added successfully.');
+      }
+      onSaved?.();
+      onClose();
+    } catch (err) {
+      notify('Error saving recipient: ' + err.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <Modal title={isEdit ? 'Edit Email Recipient' : 'Add Email Recipient'} onClose={onClose}>
+      <form onSubmit={handleSave}>
+        <label className="field-label">Recipient Name *</label>
+        <input
+          className="input"
+          value={f.name}
+          onChange={(e) => setF({ ...f, name: e.target.value })}
+          placeholder="e.g. HR Manager / Security Supervisor"
+          required
+        />
+
+        <label className="field-label" style={{ marginTop: 12 }}>Email Address *</label>
+        <input
+          className="input"
+          type="email"
+          value={f.email}
+          onChange={(e) => setF({ ...f, email: e.target.value })}
+          placeholder="e.g. hr.hostel@apollotyres.com"
+          required
+        />
+
+        <div className="two-col" style={{ marginTop: 12 }}>
+          <div>
+            <label className="field-label">Delivery Type</label>
+            <select
+              className="input"
+              value={f.type}
+              onChange={(e) => setF({ ...f, type: e.target.value })}
+            >
+              <option value="TO">TO (Direct Recipient)</option>
+              <option value="CC">CC (Carbon Copy)</option>
+              <option value="BCC">BCC (Blind Carbon Copy)</option>
+            </select>
+          </div>
+          <div>
+            <label className="field-label">Status</label>
+            <div style={{ marginTop: 8 }}>
+              <Switch
+                checked={f.enabled !== false}
+                onChange={(v) => setF({ ...f, enabled: v })}
+                label={f.enabled !== false ? 'Active & Receiving' : 'Disabled (Paused)'}
+              />
+            </div>
+          </div>
+        </div>
+
+        <label className="field-label" style={{ marginTop: 14 }}>Role Description / Notes</label>
+        <input
+          className="input"
+          value={f.description || ''}
+          onChange={(e) => setF({ ...f, description: e.target.value })}
+          placeholder="e.g. Receives hostel allocation updates for employee onboarding"
+        />
+
+        <label className="field-label" style={{ marginTop: 16 }}>
+          Assign to Email Workflows:
+        </label>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 4 }}>
+          {EMAIL_WORKFLOW_TYPES.map((t) => (
+            <label key={t.id} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, cursor: 'pointer' }}>
+              <input
+                type="checkbox"
+                checked={(f.emailTypes || []).includes(t.id)}
+                onChange={() => toggleType(t.id)}
+              />
+              <span>{t.label} (<code>{t.id}</code>)</span>
+            </label>
+          ))}
+        </div>
+
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10, marginTop: 24 }}>
+          <button type="button" className="btn btn-ghost" onClick={onClose} disabled={saving}>
+            Cancel
+          </button>
+          <button type="submit" className="btn btn-primary" disabled={saving}>
+            <Icon name="check" size={14} /> {saving ? 'Saving…' : isEdit ? 'Update Recipient' : 'Add Recipient'}
+          </button>
+        </div>
+      </form>
+    </Modal>
+  );
+}
+
+/* ---------------- Admin Notification Email Configuration ---------------- */
+function AdminNotificationEmailConfig() {
+  const { notify } = useStore();
+  const [email, setEmail] = useState('');
+  const [savedEmail, setSavedEmail] = useState('');
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState(null);
+
+  const loadAdminEmail = async () => {
+    try {
+      setLoading(true);
+      const res = await api('/api/admin/notification-email');
+      const cur = res.adminNotificationEmail || '';
+      setEmail(cur);
+      setSavedEmail(cur);
+    } catch (err) {
+      notify('Failed to load admin notification email: ' + err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadAdminEmail();
+  }, []);
+
+  const handleSave = async (e) => {
+    e?.preventDefault();
+    const clean = email.trim().toLowerCase();
+    if (!clean || !clean.includes('@') || !clean.includes('.')) {
+      notify('Please enter a valid administrator email address.');
+      return;
+    }
+    setSaving(true);
+    setTestResult(null);
+    try {
+      const res = await api('/api/admin/notification-email', {
+        method: 'PUT',
+        body: { email: clean },
+      });
+      setSavedEmail(res.adminNotificationEmail);
+      setEmail(res.adminNotificationEmail);
+      notify('✓ Admin notification email updated and saved in MongoDB.');
+    } catch (err) {
+      notify('Error updating admin notification email: ' + err.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleSendTest = async () => {
+    if (!savedEmail) {
+      notify('Please save a valid admin notification email first.');
+      return;
+    }
+    setTesting(true);
+    setTestResult(null);
+    try {
+      const res = await api('/api/admin/notification-email/test', {
+        method: 'POST',
+        body: { targetEmail: savedEmail },
+      });
+      setTestResult({ ok: true, recipient: res.recipient, message: 'Test alert dispatched successfully.' });
+      notify(`✓ Test notification sent to ${res.recipient}.`);
+    } catch (err) {
+      setTestResult({ ok: false, error: err.message });
+      notify('Failed to dispatch test notification: ' + err.message);
+    } finally {
+      setTesting(false);
+    }
+  };
+
+  return (
+    <Card
+      title="Admin Notification Email Configuration"
+      sub="Single source of truth in MongoDB for system alerts, approval notifications, and administrator communications."
+    >
+      <div
+        style={{
+          background: 'linear-gradient(135deg, #1e1b4b 0%, #312e81 100%)',
+          color: '#ffffff',
+          padding: '16px 20px',
+          borderRadius: 8,
+          marginBottom: 20,
+          border: '1px solid #4338ca',
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
+          <div style={{ fontSize: 22, lineHeight: 1 }}>🛡️</div>
+          <div style={{ fontSize: 13, lineHeight: 1.5 }}>
+            <div style={{ fontWeight: 700, fontSize: 14, color: '#e0e7ff', marginBottom: 2 }}>
+              MongoDB Single Source of Truth
+            </div>
+            This email address is saved directly in MongoDB and is used for all administrative notifications,
+            new trainee approval requests, and system alerts. It permanently replaces any default addresses and
+            persists across page reloads, logouts, and server restarts.
+          </div>
+        </div>
+      </div>
+
+      <form onSubmit={handleSave}>
+        <div style={{ maxWidth: 540 }}>
+          <label className="field-label" style={{ fontWeight: 600 }}>
+            Admin Notification Recipient Email *
+          </label>
+          <div style={{ display: 'flex', gap: 10, marginTop: 6 }}>
+            <input
+              className="input"
+              type="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              placeholder="e.g. admin@apollotyres.com or qa-admin@gmail.com"
+              required
+              disabled={loading || saving}
+              style={{ fontSize: 14 }}
+            />
+            <button
+              type="submit"
+              className="btn btn-primary"
+              disabled={loading || saving || (email.trim().toLowerCase() === savedEmail && Boolean(savedEmail))}
+              style={{ whiteSpace: 'nowrap' }}
+            >
+              <Icon name="check" size={14} /> {saving ? 'Saving to MongoDB…' : 'Save Admin Email'}
+            </button>
+          </div>
+          <div style={{ fontSize: 12, color: 'var(--muted)', marginTop: 6 }}>
+            Currently active in MongoDB:{' '}
+            <strong style={{ color: savedEmail ? '#7c3aed' : '#dc2626', fontFamily: 'monospace' }}>
+              {savedEmail || 'No admin email configured'}
+            </strong>
+          </div>
+        </div>
+      </form>
+
+      <hr style={{ margin: '20px 0', border: 'none', borderTop: '1px solid var(--border)' }} />
+
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 12 }}>
+        <div>
+          <div style={{ fontWeight: 600, fontSize: 13.5, color: 'var(--text)' }}>
+            Verify Admin Notification Delivery
+          </div>
+          <div style={{ fontSize: 12.5, color: 'var(--muted)', marginTop: 2 }}>
+            Dispatch a verified test alert directly to the saved admin address to confirm deliverability.
+          </div>
+        </div>
+        <button
+          type="button"
+          className="btn btn-ghost btn-sm"
+          onClick={handleSendTest}
+          disabled={testing || !savedEmail}
+        >
+          <Icon name="send" size={13} /> {testing ? 'Sending Test…' : 'Send Test Notification'}
+        </button>
+      </div>
+
+      {testResult && (
+        <div
+          style={{
+            marginTop: 14,
+            padding: '10px 14px',
+            borderRadius: 6,
+            fontSize: 13,
+            background: testResult.ok ? '#dcfce7' : '#fee2e2',
+            color: testResult.ok ? '#15803d' : '#b91c1c',
+            border: `1px solid ${testResult.ok ? '#86efac' : '#fca5a5'}`,
+          }}
+        >
+          {testResult.ok ? `✓ ${testResult.message} Sent to ${testResult.recipient}.` : `✗ Error: ${testResult.error}`}
+        </div>
+      )}
+    </Card>
+  );
+}
+
+function EmailRecipientManagement() {
+  const { notify } = useStore();
+  const [recipients, setRecipients] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [modalItem, setModalItem] = useState(null); // null, 'new', or recipient object
+
+  const loadRecipients = async () => {
+    try {
+      setLoading(true);
+      const res = await api('/api/admin/email-recipients');
+      setRecipients(res.recipients || []);
+    } catch (err) {
+      notify('Failed to load email recipients: ' + err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadRecipients();
+  }, []);
+
+  const handleToggleActive = async (rec) => {
+    try {
+      const updated = { ...rec, enabled: !rec.enabled };
+      await api(`/api/admin/email-recipients/${rec.id}`, { method: 'PUT', body: updated });
+      setRecipients((prev) => prev.map((r) => (r.id === rec.id ? updated : r)));
+      notify(`✓ ${rec.name} ${updated.enabled ? 'enabled' : 'disabled'}.`);
+    } catch (err) {
+      notify('Error toggling recipient status: ' + err.message);
+    }
+  };
+
+  const handleDelete = async (rec) => {
+    if (!window.confirm(`Are you sure you want to delete recipient "${rec.name}" (${rec.email})?`)) {
+      return;
+    }
+    try {
+      await api(`/api/admin/email-recipients/${rec.id}`, { method: 'DELETE' });
+      setRecipients((prev) => prev.filter((r) => r.id !== rec.id));
+      notify(`✓ Recipient "${rec.name}" deleted.`);
+    } catch (err) {
+      notify('Error deleting recipient: ' + err.message);
+    }
+  };
+
+  return (
+    <div>
+      {/* Primary Recipient Info Banner */}
+      <div
+        style={{
+          background: 'linear-gradient(135deg, #2E1065 0%, #4C1D95 100%)',
+          color: '#ffffff',
+          padding: '16px 20px',
+          borderRadius: 10,
+          marginBottom: 20,
+          boxShadow: '0 2px 10px rgba(76, 29, 149, 0.15)',
+        }}
+      >
+        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 14 }}>
+          <div style={{ fontSize: 24, lineHeight: 1 }}>✉</div>
+          <div>
+            <div style={{ fontSize: 16, fontWeight: 700, letterSpacing: '0.01em' }}>
+              Primary Recipient Rule
+            </div>
+            <p style={{ margin: '4px 0 0 0', fontSize: 13, color: '#e9d5ff', lineHeight: 1.5 }}>
+              The <strong>Primary Recipient</strong> for all automated trainee communications (Welcome Email, ID Card,
+              Updates) is strictly the <strong>trainee's registered personal email address</strong> (e.g. <code>@gmail.com</code>).
+              Any additional recipients configured below are automatically added as <strong>TO</strong>, <strong>CC</strong>,
+              or <strong>BCC</strong> copies according to their assigned workflows.
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
+        <div>
+          <h3 style={{ margin: 0, fontSize: 17, fontWeight: 700, color: 'var(--text)' }}>
+            Configured Email Recipients ({recipients.length})
+          </h3>
+          <p style={{ margin: '2px 0 0 0', fontSize: 13, color: 'var(--muted)' }}>
+            Configure administrators, wardens, HR staff, and security personnel who receive automated notifications.
+          </p>
+        </div>
+        <button className="btn btn-primary btn-sm" onClick={() => setModalItem('new')}>
+          <Icon name="plus" size={14} /> Add Recipient
+        </button>
+      </div>
+
+      {loading ? (
+        <Card>
+          <div style={{ padding: 24, textAlign: 'center', color: 'var(--muted)' }}>
+            Loading configured recipients…
+          </div>
+        </Card>
+      ) : recipients.length === 0 ? (
+        <Card>
+          <div style={{ padding: 36, textAlign: 'center' }}>
+            <div style={{ fontSize: 32, marginBottom: 10 }}>👥</div>
+            <div style={{ fontSize: 15, fontWeight: 600, color: 'var(--text)' }}>No additional recipients configured</div>
+            <p style={{ fontSize: 13, color: 'var(--muted)', maxWidth: 440, margin: '6px auto 16px auto' }}>
+              All emails currently go only to the individual trainee's registered email address. Add HR, warden, or security addresses to receive copies.
+            </p>
+            <button className="btn btn-primary btn-sm" onClick={() => setModalItem('new')}>
+              <Icon name="plus" size={14} /> Add First Recipient
+            </button>
+          </div>
+        </Card>
+      ) : (
+        <Table
+          headers={['Recipient Name & Email', 'Delivery Type', 'Assigned Workflows', 'Notes / Role', 'Status', 'Actions']}
+          rows={recipients.map((r) => [
+            <div key="info">
+              <div style={{ fontWeight: 600, color: 'var(--text)' }}>{r.name}</div>
+              <div style={{ fontSize: 12, color: 'var(--muted)', fontFamily: 'monospace' }}>{r.email}</div>
+            </div>,
+            <Badge
+              key="type"
+              tone={r.type === 'TO' ? 'primary' : r.type === 'CC' ? 'accent' : 'neutral'}
+            >
+              {r.type}
+            </Badge>,
+            <div key="types" style={{ display: 'flex', flexWrap: 'wrap', gap: 4, maxWidth: 260 }}>
+              {(r.emailTypes || []).map((t) => (
+                <span
+                  key={t}
+                  style={{
+                    fontSize: 11,
+                    background: '#ede9fe',
+                    color: '#5b21b6',
+                    padding: '2px 6px',
+                    borderRadius: 4,
+                    fontWeight: 600,
+                  }}
+                >
+                  {t}
+                </span>
+              ))}
+            </div>,
+            <span key="desc" style={{ fontSize: 12, color: 'var(--muted)' }}>
+              {r.description || '—'}
+            </span>,
+            <Switch
+              key="status"
+              checked={r.enabled !== false}
+              onChange={() => handleToggleActive(r)}
+              label={r.enabled !== false ? 'Active' : 'Disabled'}
+            />,
+            <div key="actions" style={{ display: 'flex', gap: 6 }}>
+              <button
+                className="btn btn-ghost btn-xs"
+                onClick={() => setModalItem(r)}
+                title="Edit Recipient"
+              >
+                <Icon name="edit" size={13} />
+              </button>
+              <button
+                className="btn btn-ghost btn-xs"
+                style={{ color: '#dc2626' }}
+                onClick={() => handleDelete(r)}
+                title="Delete Recipient"
+              >
+                <Icon name="trash" size={13} />
+              </button>
+            </div>,
+          ])}
+        />
+      )}
+
+      {modalItem && (
+        <EmailRecipientModal
+          recipient={modalItem === 'new' ? null : modalItem}
+          onClose={() => setModalItem(null)}
+          onSaved={loadRecipients}
+        />
+      )}
+    </div>
+  );
+}
+
+/* ---------------- Email Template Editor (Super Admin Only) ---------------- */
+const TEMPLATE_TABS = [
+  ['welcome', 'Trainee Welcome Email'],
+  ['idCard', 'Trainee ID Card Email'],
+  ['idCardUpdated', 'ID Card Updated Email'],
+  ['approval', 'Approval Request Email'],
+];
+
+function EmailTemplateEditor() {
   const { config, setConfig, notify } = useStore();
-  const current = config.emailTemplate || DEFAULT_EMAIL_TEMPLATE;
+  const [activeType, setActiveType] = useState('welcome');
   const branding = config.orgBranding || DEFAULT_ORG_BRANDING;
-  const [form, setForm] = useState(current);
+  const currentTemplates = {
+    ...DEFAULT_EMAIL_TEMPLATES,
+    ...(config.emailTemplates || {}),
+  };
+  const [form, setForm] = useState(currentTemplates[activeType] || DEFAULT_EMAIL_TEMPLATES[activeType]);
   const [saving, setSaving] = useState(false);
   const [testEmail, setTestEmail] = useState('');
   const [sendingTest, setSendingTest] = useState(false);
 
   useEffect(() => {
-    setForm(config.emailTemplate || DEFAULT_EMAIL_TEMPLATE);
-  }, [config.emailTemplate]);
+    const tpl = (config.emailTemplates && config.emailTemplates[activeType]) || DEFAULT_EMAIL_TEMPLATES[activeType];
+    setForm(tpl || {});
+  }, [activeType, config.emailTemplates]);
 
-  const handleInsertToken = (token) => {
+  const handleInsertPlaceholder = (token) => {
     setForm((p) => ({
       ...p,
       bodyText: (p.bodyText || '') + ' ' + token,
@@ -901,32 +1527,54 @@ function ApprovalEmailTemplateSettings() {
     e?.preventDefault();
     setSaving(true);
     try {
-      const res = await api('/api/admin/email-template', { method: 'PUT', body: form });
-      setConfig((p) => ({ ...p, emailTemplate: res.emailTemplate }));
-      notify('✓ Approval email template updated successfully.');
+      const res = await api(`/api/admin/email-templates/${activeType}`, {
+        method: 'PUT',
+        body: form,
+      });
+      setConfig((prev) => ({
+        ...prev,
+        emailTemplates: {
+          ...(prev.emailTemplates || {}),
+          [activeType]: res.template,
+        },
+      }));
+      notify(`✓ ${TEMPLATE_TABS.find((t) => t[0] === activeType)?.[1] || activeType} template saved successfully.`);
     } catch (err) {
-      notify('Error saving email template: ' + err.message);
+      notify('Error saving template: ' + err.message);
     } finally {
       setSaving(false);
     }
   };
 
-  const handleReset = () => {
-    if (window.confirm('Reset approval email template to defaults?')) {
-      setForm(DEFAULT_EMAIL_TEMPLATE);
+  const handleReset = async () => {
+    if (window.confirm(`Reset "${TEMPLATE_TABS.find((t) => t[0] === activeType)?.[1]}" to system defaults?`)) {
+      try {
+        const res = await api(`/api/admin/email-templates/${activeType}/reset`, { method: 'POST' });
+        setForm(res.template);
+        setConfig((prev) => ({
+          ...prev,
+          emailTemplates: {
+            ...(prev.emailTemplates || {}),
+            [activeType]: res.template,
+          },
+        }));
+        notify('✓ Template reset to default.');
+      } catch (err) {
+        notify('Error resetting template: ' + err.message);
+      }
     }
   };
 
   const handleSendTest = async () => {
-    if (!testEmail.trim()) {
-      notify('Please enter an email address for testing.');
+    if (!testEmail.trim() || !testEmail.includes('@')) {
+      notify('Please enter a valid email address to receive the test dispatch.');
       return;
     }
     setSendingTest(true);
     try {
-      const res = await api('/api/admin/email-template/test', {
+      const res = await api(`/api/admin/email-templates/${activeType}/test`, {
         method: 'POST',
-        body: { to: testEmail.trim(), template: form },
+        body: { targetEmail: testEmail.trim(), templateData: form },
       });
       notify(`✓ Test email dispatched to ${res.recipient}. Status: ${res.dispatch?.status || 'SENT'}`);
     } catch (err) {
@@ -936,236 +1584,657 @@ function ApprovalEmailTemplateSettings() {
     }
   };
 
-  // Preview token replacer
+  // Sample data for live preview
   const sampleOrg = branding.orgName || 'APOLLO TYRES LTD';
-  const previewSubject = (form.subject || '')
-    .replace(/\{\{traineeName\}\}/g, 'Vikram Sharma')
-    .replace(/\{\{traineeId\}\}/g, 'TR-APOLLO-001')
-    .replace(/\{\{organizationName\}\}/g, sampleOrg);
+  const sampleLogo = form.logoUrl || branding.logo || '';
+  const sampleData = {
+    traineeName: 'Rahul Sharma',
+    traineeId: 'TR-APOLLO-001',
+    qrId: 'QR-APOLLO-001',
+    traineeEmail: 'rahul.sharma@gmail.com',
+    hostelName: 'Apollo Campus Block A',
+    roomNumber: '102',
+    joiningDate: '15/01/2026',
+    freeValidityStartDate: '15/01/2026',
+    freeValidityEndDate: '15/04/2026',
+    organizationName: sampleOrg,
+    organizationLogo: sampleLogo,
+    idCardAttachment: 'https://hostel.apollotyres.com/#/verify/QR-APOLLO-001',
+  };
 
-  const previewHeading = (form.heading || '')
-    .replace(/\{\{traineeName\}\}/g, 'Vikram Sharma')
-    .replace(/\{\{organizationName\}\}/g, sampleOrg);
+  const replaceTokens = (str) => {
+    if (!str) return '';
+    let out = String(str);
+    Object.entries(sampleData).forEach(([k, v]) => {
+      out = out.split(`{{${k}}}`).join(v || '');
+    });
+    return out;
+  };
 
-  const previewBody = (form.bodyText || '')
-    .replace(/\{\{traineeName\}\}/g, 'Vikram Sharma')
-    .replace(/\{\{traineeId\}\}/g, 'TR-APOLLO-001')
-    .replace(/\{\{joiningDate\}\}/g, '2026-01-15')
-    .replace(/\{\{department\}\}/g, 'Plant Operations')
-    .replace(/\{\{organizationName\}\}/g, sampleOrg)
-    .replace(/\{\{approverName\}\}/g, 'Approver');
+  const previewSubject = replaceTokens(form.subject);
+  const previewHeading = replaceTokens(form.heading);
+  const previewSubheading = replaceTokens(form.subheading);
+  const previewBody = replaceTokens(form.bodyText);
+  const previewFooter = replaceTokens(form.footerText);
 
   return (
-    <div className="grid-2">
-      <Card title="Approval Email Template Settings" sub="Configure subject, content, dynamic placeholders, and layout.">
-        <form onSubmit={handleSave}>
-          <label className="field-label">Email Subject *</label>
-          <input
-            className="input"
-            value={form.subject || ''}
-            onChange={(e) => setForm({ ...form, subject: e.target.value })}
-            placeholder="[Action Required] Review Registration: {{traineeName}} ({{traineeId}})"
-            required
-          />
+    <div>
+      {/* Template selector tabs */}
+      <div style={{ display: 'flex', gap: 8, marginBottom: 16, flexWrap: 'wrap' }}>
+        {TEMPLATE_TABS.map(([id, label]) => (
+          <button
+            key={id}
+            type="button"
+            className={`btn btn-sm ${activeType === id ? 'btn-primary' : 'btn-ghost'}`}
+            onClick={() => setActiveType(id)}
+            style={{ fontWeight: 600 }}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
 
-          <div className="two-col" style={{ marginTop: 14 }}>
-            <div>
-              <label className="field-label">Banner Heading</label>
-              <input
-                className="input"
-                value={form.heading || ''}
-                onChange={(e) => setForm({ ...form, heading: e.target.value })}
-                placeholder="Trainee Registration Review Request"
-              />
-            </div>
-            <div>
-              <label className="field-label">Banner Subheading</label>
-              <input
-                className="input"
-                value={form.subheading || ''}
-                onChange={(e) => setForm({ ...form, subheading: e.target.value })}
-                placeholder="Apollo Tyres Ltd — Trainee Hostel Operations"
-              />
-            </div>
-          </div>
-
-          <div className="two-col" style={{ marginTop: 14 }}>
-            <div>
-              <label className="field-label">Header Background Color</label>
-              <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                <input
-                  type="color"
-                  value={form.headerBg || '#2E1065'}
-                  onChange={(e) => setForm({ ...form, headerBg: e.target.value })}
-                  style={{ width: 44, height: 38, padding: 0, border: 'none', cursor: 'pointer' }}
-                />
-                <input
-                  className="input"
-                  value={form.headerBg || '#2E1065'}
-                  onChange={(e) => setForm({ ...form, headerBg: e.target.value })}
-                />
-              </div>
-            </div>
-            <div>
-              <label className="field-label">Accent / Button Color</label>
-              <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                <input
-                  type="color"
-                  value={form.accentColor || '#7C3AED'}
-                  onChange={(e) => setForm({ ...form, accentColor: e.target.value })}
-                  style={{ width: 44, height: 38, padding: 0, border: 'none', cursor: 'pointer' }}
-                />
-                <input
-                  className="input"
-                  value={form.accentColor || '#7C3AED'}
-                  onChange={(e) => setForm({ ...form, accentColor: e.target.value })}
-                />
-              </div>
-            </div>
-          </div>
-
-          <label className="field-label" style={{ marginTop: 16 }}>
-            Body Message
-          </label>
-          <div style={{ marginBottom: 8, display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-            {PLACEHOLDERS.map(([token, desc]) => (
-              <button
-                key={token}
-                type="button"
-                className="btn btn-ghost btn-xs"
-                style={{ fontSize: 11, background: '#ede9fe', color: '#5b21b6', border: '1px solid #ddd6fe' }}
-                onClick={() => handleInsertToken(token)}
-                title={`Insert ${desc}`}
-              >
-                + {token}
-              </button>
-            ))}
-          </div>
-          <textarea
-            className="input"
-            rows={5}
-            value={form.bodyText || ''}
-            onChange={(e) => setForm({ ...form, bodyText: e.target.value })}
-            placeholder="A new trainee registration has been submitted for {{organizationName}} and requires your official review..."
-          />
-
-          <label className="field-label" style={{ marginTop: 14 }}>Footer Text</label>
-          <input
-            className="input"
-            value={form.footerText || ''}
-            onChange={(e) => setForm({ ...form, footerText: e.target.value })}
-            placeholder="Security Notice: This link contains a secure, single-use token expiring in 7 days."
-          />
-
-          <div style={{ display: 'flex', gap: 10, marginTop: 24 }}>
-            <button type="submit" className="btn btn-primary" disabled={saving}>
-              <Icon name="check" size={14} /> {saving ? 'Saving…' : 'Save Email Template'}
-            </button>
-            <button type="button" className="btn btn-ghost" onClick={handleReset}>
-              Reset to Default
-            </button>
-          </div>
-        </form>
-
-        <hr style={{ margin: '24px 0', border: 'none', borderTop: '1px solid var(--border)' }} />
-
-        <div>
-          <label className="field-label" style={{ fontWeight: 600 }}>Send Test Email</label>
-          <p style={{ fontSize: 13, color: 'var(--muted)', margin: '4px 0 10px 0' }}>
-            Dispatch a test sample of this template to verify formatting in your mail client.
-          </p>
-          <div style={{ display: 'flex', gap: 10, maxWidth: 440 }}>
+      <div className="grid-2">
+        {/* Editor Form */}
+        <Card
+          title={`Edit ${TEMPLATE_TABS.find((t) => t[0] === activeType)?.[1]}`}
+          sub="Customize email subject, banner heading, accent colors, body copy, and layout."
+        >
+          <form onSubmit={handleSave}>
+            <label className="field-label">Subject Line *</label>
             <input
               className="input"
-              type="email"
-              placeholder="e.g. your-email@apollotyres.com"
-              value={testEmail}
-              onChange={(e) => setTestEmail(e.target.value)}
+              value={form.subject || ''}
+              onChange={(e) => setForm({ ...form, subject: e.target.value })}
+              placeholder="e.g. Welcome to {{organizationName}} Hostel — {{traineeName}}"
+              required
             />
-            <button
-              type="button"
-              className="btn btn-ghost"
-              onClick={handleSendTest}
-              disabled={sendingTest}
-            >
-              {sendingTest ? 'Sending…' : 'Send Test'}
-            </button>
-          </div>
-        </div>
-      </Card>
 
-      <Card title="Email Preview" sub="Live rendering of the notification sent to approvers.">
-        <div style={{ border: '1px solid #e2e8f0', borderRadius: 10, overflow: 'hidden', background: '#ffffff', boxShadow: '0 2px 8px rgba(0,0,0,0.05)' }}>
-          <div style={{ background: '#f1f5f9', padding: '10px 16px', borderBottom: '1px solid #e2e8f0', fontSize: 12, color: '#475569' }}>
-            <div><strong>Subject:</strong> {previewSubject}</div>
-          </div>
-          <div style={{ background: form.headerBg || '#2E1065', color: '#ffffff', padding: '16px 20px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-            <div>
-              <div style={{ fontSize: 17, fontWeight: 700 }}>{previewHeading}</div>
-              <div style={{ fontSize: 12, color: '#ddd6fe', marginTop: 2 }}>{form.subheading || `${sampleOrg} — Trainee Hostel Operations`}</div>
-            </div>
-            {branding.logo ? (
-              <img src={branding.logo} alt="Logo" style={{ maxHeight: 36, maxWidth: 100, objectFit: 'contain' }} />
-            ) : (
-              <span style={{ fontSize: 13, fontWeight: 700, color: '#ddd6fe' }}>{sampleOrg}</span>
-            )}
-          </div>
-          <div style={{ padding: 20 }}>
-            <p style={{ margin: '0 0 10px 0', fontSize: 14 }}>Dear <strong>Approver</strong>,</p>
-            <div style={{ fontSize: 13.5, color: '#334155', lineHeight: 1.6, whiteSpace: 'pre-line', marginBottom: 16 }}>
-              {previewBody}
-            </div>
-
-            <div style={{ background: '#f8fafc', borderLeft: `4px solid ${form.accentColor || '#7C3AED'}`, padding: '12px 16px', borderRadius: 6, fontSize: 13 }}>
-              <div><strong>Full Name:</strong> Vikram Sharma</div>
-              <div style={{ marginTop: 4 }}><strong>Trainee ID:</strong> <span style={{ fontFamily: 'monospace', fontWeight: 700, color: form.accentColor || '#7C3AED' }}>TR-APOLLO-001</span></div>
-              <div style={{ marginTop: 4 }}><strong>Department:</strong> Plant Operations</div>
-              <div style={{ marginTop: 4 }}><strong>Joining Date:</strong> 2026-01-15</div>
-            </div>
-
-            <div style={{ margin: '22px 0', textAlign: 'center' }}>
-              <div style={{ background: form.accentColor || '#7C3AED', color: '#ffffff', padding: '12px 24px', borderRadius: 8, display: 'inline-block', fontWeight: 700, fontSize: 14 }}>
-                Open Trainee Review & Decisions →
+            <div className="two-col" style={{ marginTop: 14 }}>
+              <div>
+                <label className="field-label">Banner Heading</label>
+                <input
+                  className="input"
+                  value={form.heading || ''}
+                  onChange={(e) => setForm({ ...form, heading: e.target.value })}
+                  placeholder="Welcome to Trainee Hostel"
+                />
+              </div>
+              <div>
+                <label className="field-label">Banner Subheading</label>
+                <input
+                  className="input"
+                  value={form.subheading || ''}
+                  onChange={(e) => setForm({ ...form, subheading: e.target.value })}
+                  placeholder="Official Accommodation Allotment"
+                />
               </div>
             </div>
 
-            <div style={{ borderTop: '1px solid #f1f5f9', paddingTop: 12, fontSize: 11, color: '#94a3b8' }}>
-              {form.footerText || 'Security Notice: This link contains a secure, single-use token expiring in 7 days.'}
+            <div className="two-col" style={{ marginTop: 14 }}>
+              <div>
+                <label className="field-label">Header Background Color</label>
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                  <input
+                    type="color"
+                    value={form.headerBg || '#2E1065'}
+                    onChange={(e) => setForm({ ...form, headerBg: e.target.value })}
+                    style={{ width: 44, height: 38, padding: 0, border: 'none', cursor: 'pointer' }}
+                  />
+                  <input
+                    className="input"
+                    value={form.headerBg || '#2E1065'}
+                    onChange={(e) => setForm({ ...form, headerBg: e.target.value })}
+                  />
+                </div>
+              </div>
+              <div>
+                <label className="field-label">Accent / Highlight Color</label>
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                  <input
+                    type="color"
+                    value={form.accentColor || '#7C3AED'}
+                    onChange={(e) => setForm({ ...form, accentColor: e.target.value })}
+                    style={{ width: 44, height: 38, padding: 0, border: 'none', cursor: 'pointer' }}
+                  />
+                  <input
+                    className="input"
+                    value={form.accentColor || '#7C3AED'}
+                    onChange={(e) => setForm({ ...form, accentColor: e.target.value })}
+                  />
+                </div>
+              </div>
+            </div>
+
+            <div style={{ marginTop: 16 }}>
+              <label className="field-label">Dynamic Placeholders</label>
+              <p style={{ fontSize: 12, color: 'var(--muted)', margin: '2px 0 8px 0' }}>
+                Click any tag below to insert it at the end of the message:
+              </p>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, maxHeight: 110, overflowY: 'auto', padding: 4 }}>
+                {DYNAMIC_PLACEHOLDERS.map(([token, desc]) => (
+                  <button
+                    key={token}
+                    type="button"
+                    className="btn btn-ghost btn-xs"
+                    style={{
+                      fontSize: 11,
+                      background: '#ede9fe',
+                      color: '#5b21b6',
+                      border: '1px solid #ddd6fe',
+                      padding: '3px 8px',
+                    }}
+                    onClick={() => handleInsertPlaceholder(token)}
+                    title={`Insert ${desc}`}
+                  >
+                    + {token}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <label className="field-label" style={{ marginTop: 16 }}>
+              Email Body Content *
+            </label>
+            <textarea
+              className="input"
+              rows={8}
+              value={form.bodyText || ''}
+              onChange={(e) => setForm({ ...form, bodyText: e.target.value })}
+              placeholder="Write your email body message here. Use {{traineeName}}, {{hostelName}}, etc."
+              required
+            />
+
+            <label className="field-label" style={{ marginTop: 14 }}>Footer Text</label>
+            <input
+              className="input"
+              value={form.footerText || ''}
+              onChange={(e) => setForm({ ...form, footerText: e.target.value })}
+              placeholder="Hostel Administration Office · Contact: hostel@apollotyres.com"
+            />
+
+            <div style={{ display: 'flex', gap: 10, marginTop: 24 }}>
+              <button type="submit" className="btn btn-primary" disabled={saving}>
+                <Icon name="check" size={14} /> {saving ? 'Saving…' : 'Save Email Template'}
+              </button>
+              <button type="button" className="btn btn-ghost" onClick={handleReset}>
+                Reset to Default
+              </button>
+            </div>
+          </form>
+
+          <hr style={{ margin: '24px 0', border: 'none', borderTop: '1px solid var(--border)' }} />
+
+          <div>
+            <label className="field-label" style={{ fontWeight: 600 }}>Send Test Email</label>
+            <p style={{ fontSize: 13, color: 'var(--muted)', margin: '4px 0 10px 0' }}>
+              Dispatch a test rendering of this template to verify email presentation in Outlook, Gmail, or mobile clients.
+            </p>
+            <div style={{ display: 'flex', gap: 10, maxWidth: 440 }}>
+              <input
+                className="input"
+                type="email"
+                placeholder="e.g. admin@apollotyres.com"
+                value={testEmail}
+                onChange={(e) => setTestEmail(e.target.value)}
+              />
+              <button
+                type="button"
+                className="btn btn-ghost"
+                onClick={handleSendTest}
+                disabled={sendingTest}
+              >
+                {sendingTest ? 'Sending…' : 'Send Test'}
+              </button>
             </div>
           </div>
-        </div>
-      </Card>
+        </Card>
+
+        {/* Live Email Preview */}
+        <Card title="Live Email Preview" sub="Real-time preview rendered with sample Apollo Tyres Ltd data.">
+          <div
+            style={{
+              border: '1px solid #e2e8f0',
+              borderRadius: 10,
+              overflow: 'hidden',
+              background: '#ffffff',
+              boxShadow: '0 2px 10px rgba(0,0,0,0.06)',
+            }}
+          >
+            {/* Mock Subject Bar */}
+            <div
+              style={{
+                background: '#f8fafc',
+                padding: '10px 16px',
+                borderBottom: '1px solid #e2e8f0',
+                fontSize: 12.5,
+                color: '#334155',
+              }}
+            >
+              <div><strong>Subject:</strong> {previewSubject}</div>
+              <div style={{ marginTop: 2, fontSize: 11.5, color: '#64748b' }}>
+                <strong>To:</strong> rahul.sharma@gmail.com (Trainee)
+              </div>
+            </div>
+
+            {/* Email Header Banner */}
+            <div
+              style={{
+                background: form.headerBg || '#2E1065',
+                color: '#ffffff',
+                padding: '18px 22px',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+              }}
+            >
+              <div>
+                <div style={{ fontSize: 18, fontWeight: 700, letterSpacing: '0.01em' }}>
+                  {previewHeading}
+                </div>
+                <div style={{ fontSize: 12, color: '#ddd6fe', marginTop: 3 }}>
+                  {previewSubheading || `${sampleOrg} — Trainee Hostel Operations`}
+                </div>
+              </div>
+              {sampleLogo ? (
+                <img
+                  src={sampleLogo}
+                  alt="Logo"
+                  style={{ maxHeight: 38, maxWidth: 110, objectFit: 'contain' }}
+                />
+              ) : (
+                <span style={{ fontSize: 13, fontWeight: 700, color: '#ddd6fe' }}>{sampleOrg}</span>
+              )}
+            </div>
+
+            {/* Email Content Body */}
+            <div style={{ padding: 22 }}>
+              <div
+                style={{
+                  fontSize: 14,
+                  color: '#1e293b',
+                  lineHeight: 1.6,
+                  whiteSpace: 'pre-line',
+                  marginBottom: 16,
+                }}
+              >
+                {previewBody}
+              </div>
+
+              {/* Trainee Details Highlight Box */}
+              <div
+                style={{
+                  background: '#f8fafc',
+                  borderLeft: `4px solid ${form.accentColor || '#7C3AED'}`,
+                  padding: '14px 18px',
+                  borderRadius: 6,
+                  fontSize: 13,
+                  lineHeight: 1.6,
+                }}
+              >
+                <div><strong>Trainee:</strong> Rahul Sharma (<span style={{ fontFamily: 'monospace', fontWeight: 700, color: form.accentColor || '#7C3AED' }}>TR-APOLLO-001</span>)</div>
+                <div style={{ marginTop: 4 }}><strong>Hostel & Room:</strong> Apollo Campus Block A · Room 102</div>
+                <div style={{ marginTop: 4 }}><strong>Free Stay Period:</strong> 15/01/2026 → 15/04/2026 (3 Months)</div>
+              </div>
+
+              {/* Mock Action Badge / Link */}
+              <div style={{ margin: '22px 0', textAlign: 'center' }}>
+                <div
+                  style={{
+                    background: form.accentColor || '#7C3AED',
+                    color: '#ffffff',
+                    padding: '11px 22px',
+                    borderRadius: 8,
+                    display: 'inline-block',
+                    fontWeight: 700,
+                    fontSize: 13.5,
+                  }}
+                >
+                  View Digital ID Card & Details →
+                </div>
+              </div>
+
+              {/* Footer */}
+              <div
+                style={{
+                  borderTop: '1px solid #f1f5f9',
+                  paddingTop: 14,
+                  fontSize: 11.5,
+                  color: '#94a3b8',
+                  textAlign: 'center',
+                }}
+              >
+                {previewFooter || 'Hostel Administration Office · Security & Compliance'}
+              </div>
+            </div>
+          </div>
+        </Card>
+      </div>
     </div>
   );
 }
 
-const TABS = [
+/* ---------------- Email Delivery History & Audit Logs ---------------- */
+function EmailDeliveryHistory() {
+  const { notify } = useStore();
+  const [logs, setLogs] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [filterType, setFilterType] = useState('ALL');
+  const [filterStatus, setFilterStatus] = useState('ALL');
+  const [searchTerm, setSearchTerm] = useState('');
+  const [retryingId, setRetryingId] = useState(null);
+
+  const loadLogs = async () => {
+    try {
+      setLoading(true);
+      const res = await api('/api/admin/email-logs');
+      setLogs(res.logs || []);
+    } catch (err) {
+      notify('Failed to load email logs: ' + err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadLogs();
+  }, []);
+
+  const handleRetryWelcome = async (traineeId) => {
+    if (!traineeId) return;
+    setRetryingId(traineeId);
+    try {
+      const res = await api(`/api/trainees/${traineeId}/send-welcome-email`, { method: 'POST' });
+      notify(`✓ Welcome email re-dispatched for ${traineeId}. Status: ${res.dispatch?.status || 'SENT'}`);
+      loadLogs();
+    } catch (err) {
+      notify('Failed to retry welcome email: ' + err.message);
+    } finally {
+      setRetryingId(null);
+    }
+  };
+
+  const filteredLogs = logs.filter((l) => {
+    if (filterType !== 'ALL' && l.type !== filterType) return false;
+    if (filterStatus !== 'ALL' && l.status !== filterStatus) return false;
+    if (searchTerm.trim()) {
+      const q = searchTerm.toLowerCase();
+      const matchTo = (l.to || '').toLowerCase().includes(q);
+      const matchSub = (l.subject || '').toLowerCase().includes(q);
+      const matchName = (l.traineeName || '').toLowerCase().includes(q);
+      const matchTid = (l.traineeId || '').toLowerCase().includes(q);
+      if (!matchTo && !matchSub && !matchName && !matchTid) return false;
+    }
+    return true;
+  });
+
+  return (
+    <div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14, flexWrap: 'wrap', gap: 10 }}>
+        <div>
+          <h3 style={{ margin: 0, fontSize: 17, fontWeight: 700, color: 'var(--text)' }}>
+            Email Delivery History ({filteredLogs.length})
+          </h3>
+          <p style={{ margin: '2px 0 0 0', fontSize: 13, color: 'var(--muted)' }}>
+            Complete audit trail of automated welcome emails, ID cards, approvals, and system notifications.
+          </p>
+        </div>
+        <button className="btn btn-ghost btn-sm" onClick={loadLogs} disabled={loading}>
+          <Icon name="refresh" size={14} /> Refresh Logs
+        </button>
+      </div>
+
+      {/* Filter Bar */}
+      <div style={{ display: 'flex', gap: 10, marginBottom: 14, flexWrap: 'wrap', alignItems: 'center' }}>
+        <input
+          className="input"
+          style={{ maxWidth: 260 }}
+          placeholder="Search by trainee, email, or subject…"
+          value={searchTerm}
+          onChange={(e) => setSearchTerm(e.target.value)}
+        />
+        <select
+          className="input"
+          style={{ width: 'auto' }}
+          value={filterType}
+          onChange={(e) => setFilterType(e.target.value)}
+        >
+          <option value="ALL">All Email Types</option>
+          <option value="WELCOME">Welcome Email</option>
+          <option value="ID_CARD">ID Card Email</option>
+          <option value="ID_CARD_UPDATED">ID Card Updated</option>
+          <option value="APPROVAL">Approval Request</option>
+          <option value="TEST">Test Preview</option>
+        </select>
+        <select
+          className="input"
+          style={{ width: 'auto' }}
+          value={filterStatus}
+          onChange={(e) => setFilterStatus(e.target.value)}
+        >
+          <option value="ALL">All Statuses</option>
+          <option value="SENT">Sent</option>
+          <option value="FAILED">Failed</option>
+        </select>
+      </div>
+
+      {loading ? (
+        <Card>
+          <div style={{ padding: 24, textAlign: 'center', color: 'var(--muted)' }}>
+            Loading email logs…
+          </div>
+        </Card>
+      ) : filteredLogs.length === 0 ? (
+        <Card>
+          <div style={{ padding: 32, textAlign: 'center', color: 'var(--muted)' }}>
+            No email delivery logs match the selected filters.
+          </div>
+        </Card>
+      ) : (
+        <Table
+          headers={['Sent Time', 'Workflow / Type', 'Trainee', 'Recipient (TO / CC)', 'Subject', 'Status', 'Actions']}
+          rows={filteredLogs.map((l) => [
+            <span key="time" style={{ fontSize: 12, color: 'var(--muted)', whiteSpace: 'nowrap' }}>
+              {fmtDate(l.sentAt)} {l.sentAt ? new Date(l.sentAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''}
+            </span>,
+            <Badge
+              key="type"
+              tone={
+                l.type === 'WELCOME' ? 'primary'
+                  : l.type === 'ID_CARD' ? 'accent'
+                  : l.type === 'APPROVAL' ? 'warning'
+                  : 'neutral'
+              }
+            >
+              {l.type}
+            </Badge>,
+            <div key="trainee">
+              {l.traineeName ? (
+                <>
+                  <div style={{ fontWeight: 600, color: 'var(--text)', fontSize: 13 }}>{l.traineeName}</div>
+                  <div style={{ fontSize: 11.5, color: 'var(--muted)', fontFamily: 'monospace' }}>{l.traineeId}</div>
+                </>
+              ) : (
+                <span style={{ fontSize: 12, color: 'var(--muted)' }}>—</span>
+              )}
+            </div>,
+            <div key="to">
+              <div style={{ fontSize: 12.5, color: 'var(--text)' }}>{l.to}</div>
+              {l.cc && l.cc.length > 0 && (
+                <div style={{ fontSize: 11, color: 'var(--muted)' }}>
+                  CC: {Array.isArray(l.cc) ? l.cc.join(', ') : l.cc}
+                </div>
+              )}
+              {l.bcc && l.bcc.length > 0 && (
+                <div style={{ fontSize: 11, color: 'var(--muted)' }}>
+                  BCC: {Array.isArray(l.bcc) ? l.bcc.join(', ') : l.bcc}
+                </div>
+              )}
+            </div>,
+            <span key="sub" style={{ fontSize: 12.5, color: 'var(--text)' }} title={l.subject}>
+              {(l.subject || '').slice(0, 48)}{(l.subject || '').length > 48 ? '…' : ''}
+            </span>,
+            <div key="status">
+              <Badge tone={l.status === 'SENT' ? 'success' : 'danger'}>
+                {l.status}
+              </Badge>
+              {l.error && (
+                <div style={{ fontSize: 11, color: '#dc2626', marginTop: 2, maxWidth: 160 }} title={l.error}>
+                  {l.error.slice(0, 40)}…
+                </div>
+              )}
+            </div>,
+            <div key="actions">
+              {l.type === 'WELCOME' && l.traineeId ? (
+                <button
+                  className="btn btn-ghost btn-xs"
+                  onClick={() => handleRetryWelcome(l.traineeId)}
+                  disabled={retryingId === l.traineeId}
+                  title="Re-send Welcome Email"
+                >
+                  <Icon name="refresh" size={12} /> {retryingId === l.traineeId ? 'Sending…' : 'Retry'}
+                </button>
+              ) : (
+                <span style={{ fontSize: 12, color: 'var(--muted)' }}>—</span>
+              )}
+            </div>,
+          ])}
+        />
+      )}
+    </div>
+  );
+}
+
+/* ---------------- Combined Email Management Container ---------------- */
+function EmailManagement() {
+  const [subTab, setSubTab] = useState('admin-email');
+  return (
+    <div>
+      <div style={{ display: 'flex', gap: 8, marginBottom: 20, borderBottom: '1px solid var(--border)', paddingBottom: 12, flexWrap: 'wrap' }}>
+        <button
+          className={`btn btn-sm ${subTab === 'admin-email' ? 'btn-primary' : 'btn-ghost'}`}
+          onClick={() => setSubTab('admin-email')}
+          style={{ fontWeight: 600 }}
+        >
+          <Icon name="sliders" size={14} /> Admin Notification Email
+        </button>
+        <button
+          className={`btn btn-sm ${subTab === 'recipients' ? 'btn-primary' : 'btn-ghost'}`}
+          onClick={() => setSubTab('recipients')}
+          style={{ fontWeight: 600 }}
+        >
+          <Icon name="users" size={14} /> Recipient Management
+        </button>
+        <button
+          className={`btn btn-sm ${subTab === 'templates' ? 'btn-primary' : 'btn-ghost'}`}
+          onClick={() => setSubTab('templates')}
+          style={{ fontWeight: 600 }}
+        >
+          <Icon name="edit" size={14} /> Template Editor
+        </button>
+        <button
+          className={`btn btn-sm ${subTab === 'history' ? 'btn-primary' : 'btn-ghost'}`}
+          onClick={() => setSubTab('history')}
+          style={{ fontWeight: 600 }}
+        >
+          <Icon name="clock" size={14} /> Delivery History & Logs
+        </button>
+      </div>
+
+      {subTab === 'admin-email' && <AdminNotificationEmailConfig />}
+      {subTab === 'recipients' && (
+        <>
+          <div style={{ marginBottom: 20 }}>
+            <AdminNotificationEmailConfig />
+          </div>
+          <EmailRecipientManagement />
+        </>
+      )}
+      {subTab === 'templates' && <EmailTemplateEditor />}
+      {subTab === 'history' && <EmailDeliveryHistory />}
+    </div>
+  );
+}
+
+/* ---------------- Combined Users & Roles Container ---------------- */
+function UsersAndRoles() {
+  const [subTab, setSubTab] = useState('users');
+  return (
+    <div>
+      <div style={{ display: 'flex', gap: 8, marginBottom: 20, borderBottom: '1px solid var(--border)', paddingBottom: 12 }}>
+        <button
+          className={`btn btn-sm ${subTab === 'users' ? 'btn-primary' : 'btn-ghost'}`}
+          onClick={() => setSubTab('users')}
+          style={{ fontWeight: 600 }}
+        >
+          <Icon name="user" size={14} /> Login Members
+        </button>
+        <button
+          className={`btn btn-sm ${subTab === 'roles' ? 'btn-primary' : 'btn-ghost'}`}
+          onClick={() => setSubTab('roles')}
+          style={{ fontWeight: 600 }}
+        >
+          <Icon name="shield" size={14} /> Role Permissions
+        </button>
+      </div>
+
+      {subTab === 'users' ? <Users /> : <Roles />}
+    </div>
+  );
+}
+
+/* ---------------- Reorganized Admin Console Tabs ---------------- */
+const CONSOLE_TABS = [
+  ['email', 'Email Management'],
   ['branding', 'Organization Branding'],
   ['idcard', 'ID Card Design'],
-  ['email', 'Approval Email Template'],
-  ['approvers', 'Approval Authorities'],
-  ['users', 'Login members'],
-  ['roles', 'Roles'],
-  ['look', 'Look & feel'],
-  ['pages', 'Pages & fields'],
-  ['hostels', 'Hostels & rooms'],
+  ['users', 'Users & Roles'],
+  ['approvers', 'Approvers Configuration'],
+  ['hostels', 'Hostels & Rooms'],
+  ['look', 'Appearance'],
+  ['pages', 'Pages & Fields'],
 ];
+
 export default function Console() {
-  const [tab, setTab] = useState('branding');
+  const { isSuper } = useStore();
+  const [tab, setTab] = useState('email');
+
+  if (!isSuper) {
+    return (
+      <Card title="Access Restricted" sub="Admin Console requires Super Administrator permissions.">
+        <div style={{ padding: 24, textAlign: 'center', color: '#dc2626' }}>
+          <div style={{ fontSize: 32, marginBottom: 8 }}>🔒</div>
+          <div style={{ fontSize: 16, fontWeight: 700 }}>Super Administrator Access Only</div>
+          <p style={{ fontSize: 13, color: 'var(--muted)', marginTop: 6 }}>
+            You do not have permission to modify system configurations, email recipients, or hostel settings.
+          </p>
+        </div>
+      </Card>
+    );
+  }
+
   return (
     <>
       <div className="tabbar scroll-x">
-        {TABS.map(([id, l]) => <button key={id} className={`tab ${tab === id ? 'active' : ''}`} onClick={() => setTab(id)}>{l}</button>)}
+        {CONSOLE_TABS.map(([id, label]) => (
+          <button
+            key={id}
+            className={`tab ${tab === id ? 'active' : ''}`}
+            onClick={() => setTab(id)}
+          >
+            {label}
+          </button>
+        ))}
       </div>
-      {tab === 'branding' ? <OrganizationBranding />
+
+      {tab === 'email' ? <EmailManagement />
+        : tab === 'branding' ? <OrganizationBranding />
         : tab === 'idcard' ? <IdCardDesignSettings />
-        : tab === 'email' ? <ApprovalEmailTemplateSettings />
-        : tab === 'users' ? <Users />
-        : tab === 'roles' ? <Roles />
+        : tab === 'users' ? <UsersAndRoles />
         : tab === 'approvers' ? <Approvers />
+        : tab === 'hostels' ? <Hostels />
         : tab === 'look' ? <Appearance />
-        : tab === 'pages' ? <PagesAndFields />
-        : <Hostels />}
+        : <PagesAndFields />}
     </>
   );
 }

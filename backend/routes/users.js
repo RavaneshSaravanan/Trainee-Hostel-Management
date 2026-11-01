@@ -2,6 +2,7 @@ import express from 'express';
 import bcrypt from 'bcryptjs';
 import { User } from '../models/User.js';
 import { Role } from '../models/Role.js';
+import { Config } from '../models/Config.js';
 import { bumpRev } from '../models/Meta.js';
 import { auth, requireSuper } from '../middleware/auth.js';
 import { nextId } from '../utils/dates.js';
@@ -88,6 +89,33 @@ router.post('/users', auth, requireSuper, async (req, res) => {
           cur.passwordHash = await bcrypt.hash(String(password), 10);
         }
         await cur.save();
+
+        // Synchronize admin notification email if this user is a superadmin or admin
+        if (cur.roleId === 'superadmin' || cur.username === 'admin') {
+          if (email) {
+            await Config.findOneAndUpdate(
+              { key: 'main' },
+              { $set: { adminNotificationEmail: email } }
+            );
+          }
+        }
+
+        // Synchronize approvers snapshot in Config.approvalConfig
+        const cfg = await Config.findOne({ key: 'main' });
+        if (cfg?.approvalConfig?.approvers?.length > 0) {
+          let approversModified = false;
+          cfg.approvalConfig.approvers = cfg.approvalConfig.approvers.map((appr) => {
+            if (appr.userId === cur.id || appr.username === cur.username) {
+              approversModified = true;
+              return { ...appr, email: email || '', name: cur.name, roleId: cur.roleId };
+            }
+            return appr;
+          });
+          if (approversModified) {
+            cfg.markModified('approvalConfig');
+            await cfg.save();
+          }
+        }
       } else {
         if (!password || String(password).length < 4) {
           return res.status(400).json({ error: 'Password must be at least 4 characters.' });

@@ -526,7 +526,7 @@ export async function exportDashboardPptx({ db, config, session }) {
 
     const shiftData = SHIFTS.map((s) => ({
       shift: `${s} Shift`,
-      count: db.trainees.filter((t) => t.defaultShift === s && t.hostelStatus === 'ACTIVE').length,
+      count: db.attendance.filter((a) => a.date === today && a.shift === s).length,
     }));
 
     // Bar chart on left half (x: 0.6, w: 5.8, y: 1.2 to 6.7)
@@ -640,7 +640,7 @@ export async function exportDashboardPptx({ db, config, session }) {
           { text: 'Contact No.', options: { bold: true, fill: { color: COLOR_HEADER_BG }, color: 'FFFFFF' } },
           { text: 'Hostel & Room', options: { bold: true, fill: { color: COLOR_HEADER_BG }, color: 'FFFFFF' } },
           { text: 'Joining Date', options: { bold: true, fill: { color: COLOR_HEADER_BG }, color: 'FFFFFF' } },
-          { text: 'Shift', options: { bold: true, fill: { color: COLOR_HEADER_BG }, color: 'FFFFFF' } },
+          { text: 'Qualification', options: { bold: true, fill: { color: COLOR_HEADER_BG }, color: 'FFFFFF' } },
           { text: 'Approval Status', options: { bold: true, fill: { color: COLOR_HEADER_BG }, color: 'FFFFFF' } },
         ];
 
@@ -652,7 +652,7 @@ export async function exportDashboardPptx({ db, config, session }) {
             { text: t.mobile || '—', options: { color: '334155', fontSize: 9.5 } },
             { text: t.roomNo ? `${t.hostel || 'Hostel'} / Rm ${t.roomNo}` : 'Unallocated', options: { color: '334155', fontSize: 9.5 } },
             { text: fmtDate(t.joiningDate) || '—', options: { color: '334155', fontSize: 9.5 } },
-            { text: `${t.defaultShift || 'G'} Shift`, options: { color: '334155', fontSize: 9.5 } },
+            { text: t.qualification || 'Trainee', options: { color: '334155', fontSize: 9.5 } },
             {
               text: t.approvalStatus || t.hostelStatus || '—',
               options: {
