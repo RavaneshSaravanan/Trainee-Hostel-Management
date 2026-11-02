@@ -5,6 +5,7 @@ import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import dotenv from 'dotenv';
+import mongoose from 'mongoose';
 import { connectDB, closeDB } from './config/db.js';
 import { seedDatabase } from './seed.js';
 
@@ -41,36 +42,111 @@ function validateEnv() {
   console.log(`[Config] Environment: ${process.env.NODE_ENV || 'development'}, Port: ${PORT}`);
 }
 
-// Security & Parsing
+// Security headers with cross-origin resource access allowed
 app.use(
   helmet({
     contentSecurityPolicy: false,
     crossOriginEmbedderPolicy: false,
+    crossOriginResourcePolicy: { policy: 'cross-origin' },
   })
 );
 
-const clientOrigin = process.env.CLIENT_ORIGIN || 'http://localhost:5173';
-app.use(
-  cors({
-    origin: (origin, callback) => {
-      // Allow requests with no origin (like mobile apps, curl, or same-origin)
-      if (!origin) return callback(null, true);
+// Dynamic CORS configuration supporting Vercel production, preview deployments, and local development
+const defaultOrigins = [
+  'https://trainee-hostel-management.vercel.app',
+  'http://localhost:5173',
+  'http://localhost:3000',
+  'http://127.0.0.1:5173',
+  'http://127.0.0.1:3000',
+];
+
+const envOrigins = process.env.CLIENT_ORIGIN
+  ? process.env.CLIENT_ORIGIN.split(',').map((o) => o.trim().replace(/\/+$/, '')).filter(Boolean)
+  : [];
+
+const allowedOrigins = Array.from(new Set([...defaultOrigins, ...envOrigins]));
+
+const corsOptions = {
+  origin: (origin, callback) => {
+    // Allow non-browser requests (e.g. mobile apps, curl, Postman, server-to-server)
+    if (!origin) return callback(null, true);
+
+    const normalizedOrigin = origin.replace(/\/+$/, '');
+
+    // Allow configured origins
+    if (allowedOrigins.includes(normalizedOrigin)) {
       return callback(null, true);
-    },
-    credentials: true,
-  })
-);
+    }
+
+    // Allow Vercel preview branch deployments
+    if (/^https:\/\/trainee-hostel-management.*\.vercel\.app$/.test(normalizedOrigin)) {
+      return callback(null, true);
+    }
+
+    // In development mode, allow any local origin
+    if (process.env.NODE_ENV !== 'production' && /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(normalizedOrigin)) {
+      return callback(null, true);
+    }
+
+    return callback(null, false);
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin'],
+  optionsSuccessStatus: 200,
+};
+
+// Mount CORS middleware & handle OPTIONS preflight explicitly
+app.use(cors(corsOptions));
+app.options('*', cors(corsOptions));
 
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
-// Health check endpoint
+// Health check endpoint (reports process uptime and MongoDB connection state)
 app.get('/api/health', (req, res) => {
+  const dbStatus = mongoose.connection.readyState;
+  const dbStatusMap = {
+    0: 'disconnected',
+    1: 'connected',
+    2: 'connecting',
+    3: 'disconnecting',
+  };
   res.json({
-    status: 'healthy',
+    status: dbStatus === 1 ? 'healthy' : 'degraded',
+    database: dbStatusMap[dbStatus] || 'unknown',
     timestamp: new Date().toISOString(),
     uptime: process.uptime(),
   });
+});
+
+// Database readiness check for API routes
+app.use('/api', (req, res, next) => {
+  // Allow health check without blocking
+  if (req.path === '/health') return next();
+
+  if (mongoose.connection.readyState === 1) {
+    return next();
+  }
+
+  // If currently connecting, wait briefly
+  if (mongoose.connection.readyState === 2) {
+    let retries = 0;
+    const interval = setInterval(() => {
+      retries++;
+      if (mongoose.connection.readyState === 1) {
+        clearInterval(interval);
+        return next();
+      }
+      if (retries > 25) { // 2.5s wait
+        clearInterval(interval);
+        return res.status(503).json({ error: 'Database is initializing. Please try again in a moment.' });
+      }
+    }, 100);
+    return;
+  }
+
+  return res.status(503).json({ error: 'Database service unavailable. Please retry shortly.' });
 });
 
 // API routes
@@ -84,7 +160,7 @@ app.use('/api', attendanceRoutes);
 app.use('/api', validityRoutes);
 app.use('/api', recordsRoutes);
 
-// Production frontend serving
+// Production frontend serving (if built as monolith)
 const DIST = path.resolve(__dirname, '../frontend/dist');
 if (fs.existsSync(DIST)) {
   app.use(express.static(DIST));
@@ -94,7 +170,7 @@ if (fs.existsSync(DIST)) {
   });
 } else {
   app.get('/', (req, res) => {
-    res.send('API running. Use `npm run dev` in frontend (port 5173) or run `npm run build`.');
+    res.send('Trainee Hostel Management Backend API is running.');
   });
 }
 

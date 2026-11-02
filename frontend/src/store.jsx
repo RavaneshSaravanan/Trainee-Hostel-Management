@@ -91,8 +91,15 @@ export function StoreProvider({ children }) {
       setSyncError('');
       if (!dirty.current) { setDbRaw({ ...EMPTY_DB, ...res.db }); } // pick up rows other devices added
     } catch (e) {
-      if (e.status === 401) dropSession();
-      else { dirty.current = true; setSyncError(e.message); setTimeout(flush, 4000); }
+      if (e.status === 401) {
+        dropSession();
+      } else if (e.status === 400 || e.status === 403 || e.status === 404) {
+        setSyncError(e.message);
+      } else {
+        dirty.current = true;
+        setSyncError(e.message);
+        setTimeout(flush, 5000);
+      }
     } finally { saving.current = false; }
   }, [dropSession]);
 

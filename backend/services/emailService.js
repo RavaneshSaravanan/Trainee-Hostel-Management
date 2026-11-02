@@ -23,8 +23,8 @@ let transporter = null;
  * Strictly uses configured APP_URL or FRONTEND_URL, falling back to CLIENT_ORIGIN.
  */
 export function getAppUrl() {
-  const url = process.env.APP_URL || process.env.FRONTEND_URL || process.env.CLIENT_ORIGIN || 'http://localhost:5173';
-  return url.replace(/\/+$/, '');
+  const raw = process.env.APP_URL || process.env.FRONTEND_URL || (process.env.CLIENT_ORIGIN ? process.env.CLIENT_ORIGIN.split(',')[0] : '') || 'http://localhost:5173';
+  return raw.trim().replace(/\/+$/, '');
 }
 
 /**

@@ -8,7 +8,7 @@ import VerticalIdCard from '../components/VerticalIdCard.jsx';
 import { fmtDate } from '../utils/dates.js';
 import { occupantsOf } from '../utils/summary.js';
 import { isComplete, missingDetails } from '../utils/details.js';
-import { getToken } from '../utils/api.js';
+import { getToken, BASE_URL } from '../utils/api.js';
 
 // Printable sheet of QR cards (one per trainee) — stick them on ID cards / room doors.
 function QrSheet({ list, onClose }) {
@@ -220,7 +220,6 @@ export default function Trainees() {
     try {
       setExporting(true);
       const token = getToken();
-      const BASE_URL = import.meta.env.VITE_API_URL || '';
       const res = await fetch(`${BASE_URL}/api/trainees/export?format=csv`, {
         headers: token ? { Authorization: `Bearer ${token}` } : {},
       });
