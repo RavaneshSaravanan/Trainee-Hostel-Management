@@ -6,7 +6,7 @@ import { fmtDate } from '../utils/dates.js';
 import VerticalIdCard from '../components/VerticalIdCard.jsx';
 
 export default function TraineeReview({ traineeId: propTraineeId }) {
-  const { route, navigate, session, notify } = useStore();
+  const { route, navigate, session, notify, db } = useStore();
   const traineeId = (propTraineeId || route.params.id || '').toUpperCase().trim();
 
   const [loading, setLoading] = useState(true);
@@ -18,6 +18,8 @@ export default function TraineeReview({ traineeId: propTraineeId }) {
   const [rejectionReason, setRejectionReason] = useState('');
   const [showIdCard, setShowIdCard] = useState(false);
   const [sendingEmail, setSendingEmail] = useState(false);
+  const [selectedHostel, setSelectedHostel] = useState('');
+  const [selectedRoom, setSelectedRoom] = useState('');
 
   const loadData = async () => {
     if (!traineeId) {
@@ -50,6 +52,8 @@ export default function TraineeReview({ traineeId: propTraineeId }) {
           traineeId,
           decision,
           rejectionReason: reason,
+          hostel: selectedHostel || undefined,
+          roomNo: selectedRoom || undefined,
         },
       });
       const emailStatusInfo = res.emailResult
@@ -314,7 +318,45 @@ export default function TraineeReview({ traineeId: propTraineeId }) {
             <div style={{ background: '#f5f3ff', borderLeft: '4px solid #7c3aed', padding: '12px 16px', borderRadius: 6, fontSize: 13, marginBottom: 14 }}>
               <div style={{ marginBottom: 4 }}>• <strong>Qualification:</strong> {t.qualification || 'Trainee'}</div>
               <div style={{ marginBottom: 4 }}>• <strong>Joining Date:</strong> {fmtDate(t.joiningDate)}</div>
-              <div>• <strong>Hostel Status:</strong> Will become eligible for Room Allocation</div>
+              <div>• <strong>Hostel Status:</strong> {selectedHostel && selectedRoom ? `Allocated to ${selectedHostel}, Room ${selectedRoom}` : 'Eligible for Room Allocation'}</div>
+            </div>
+
+            <div style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid #e2e8f0', marginBottom: 14 }}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: '#1e293b', marginBottom: 8 }}>
+                Allocate Room & Bed Now (Optional)
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+                <div>
+                  <label className="field-label" style={{ fontSize: 12 }}>Hostel Block</label>
+                  <select
+                    className="input"
+                    value={selectedHostel}
+                    onChange={(e) => {
+                      setSelectedHostel(e.target.value);
+                      setSelectedRoom('');
+                    }}
+                  >
+                    <option value="">Allocate later…</option>
+                    {(db.hostels || []).map((h) => (
+                      <option key={h.id || h.name} value={h.name}>{h.name}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="field-label" style={{ fontSize: 12 }}>Room Number</label>
+                  <select
+                    className="input"
+                    value={selectedRoom}
+                    disabled={!selectedHostel}
+                    onChange={(e) => setSelectedRoom(e.target.value)}
+                  >
+                    <option value="">{selectedHostel ? 'Select room…' : 'Select hostel first'}</option>
+                    {((db.hostels || []).find((h) => h.name === selectedHostel)?.rooms || []).map((r) => (
+                      <option key={r.no} value={r.no}>Room {r.no} (Cap: {r.capacity})</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
             </div>
             <p className="muted" style={{ margin: 0, fontSize: 12 }}>
               Note: This action records your official decision in the permanent audit trail.

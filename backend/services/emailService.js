@@ -63,17 +63,22 @@ function getTransporter() {
 export async function getAdminNotificationEmail() {
   try {
     const cfg = await Config.findOne({ key: 'main' }).lean();
-    if (cfg?.adminNotificationEmail && cfg.adminNotificationEmail.includes('@')) {
+    if (cfg?.adminNotificationEmail && cfg.adminNotificationEmail.includes('@') && !cfg.adminNotificationEmail.endsWith('@hostel.com')) {
       return cfg.adminNotificationEmail.trim().toLowerCase();
     }
-    const admin = await User.findOne({ roleId: 'superadmin', active: true }).sort({ createdAt: 1 }).lean();
+    const admin = await User.findOne({
+      roleId: { $in: ['superadmin', 'admin'] },
+      active: true,
+      email: { $exists: true, $ne: '', $not: /@hostel\.com$/i },
+    }).sort({ createdAt: 1 }).lean();
+
     if (admin?.email && admin.email.includes('@')) {
       return admin.email.trim().toLowerCase();
     }
   } catch (err) {
     console.error('[EmailService] Error retrieving admin notification email:', err.message);
   }
-  return '';
+  return (process.env.ADMIN_EMAIL || process.env.SMTP_USER || 'apollotyres.hostel@gmail.com').trim().toLowerCase();
 }
 
 /**
@@ -385,13 +390,17 @@ export async function sendTraineeWelcomeEmail({ trainee, force = false, triggere
   const appUrl = getAppUrl();
   const verifyUrl = `${appUrl}/#/verify/${encodeURIComponent(trainee.qrId || trainee.traineeId)}`;
 
+  const effectiveHostel = String(trainee.hostel || trainee.hostelName || (trainee.hostelId && trainee.hostelId !== trainee.traineeId ? trainee.hostelId : '') || '').trim();
+  const rawRoom = String(trainee.roomNo || trainee.room || '').trim();
+  const effectiveRoomNo = rawRoom ? (rawRoom.toLowerCase().startsWith('room') ? rawRoom : `Room ${rawRoom}`) : '';
+
   const placeholderData = {
     traineeName: trainee.name,
     traineeId: trainee.traineeId || trainee.qrId,
     qrId: trainee.qrId,
     traineeEmail: trainee.email,
-    hostelName: trainee.hostel,
-    roomNumber: trainee.roomNo,
+    hostelName: effectiveHostel || 'Hostel Campus',
+    roomNumber: effectiveRoomNo || 'To be assigned',
     joiningDate: fmtDate(trainee.joiningDate),
     freeValidityStartDate,
     freeValidityEndDate,
@@ -419,8 +428,12 @@ TRAINEE & ROOM ALLOCATION DETAILS:
 - Trainee Name              : ${trainee.name}
 - Trainee ID                : ${trainee.traineeId || '—'}
 - Unique QR ID              : ${trainee.qrId}
-- Allocated Hostel          : ${trainee.hostel}
-- Allocated Room Number     : Room ${trainee.roomNo}
+- Email Address             : ${trainee.email || "—"}
+- Mobile Number             : ${trainee.mobile || "—"}
+- Guardian Name             : ${trainee.guardianName || "—"}
+- Guardian Contact          : ${trainee.guardianContact || "—"}
+- Allocated Hostel          : ${effectiveHostel || "Hostel Campus"}
+- Allocated Room Number     : ${effectiveRoomNo || "To be assigned"}
 - Official Joining Date     : ${fmtDate(trainee.joiningDate)}
 
 FREE ACCOMMODATION VALIDITY:
@@ -478,12 +491,28 @@ ${footerText}
             <td style="padding: 6px 0; color: #0f172a; font-weight: bold; font-family: monospace;">${trainee.qrId}</td>
           </tr>
           <tr style="border-bottom: 1px solid #f1f5f9;">
+            <td style="padding: 6px 0; color: #64748b;">Email Address:</td>
+            <td style="padding: 6px 0; color: #0f172a; font-weight: bold;">${trainee.email || '—'}</td>
+          </tr>
+          <tr style="border-bottom: 1px solid #f1f5f9;">
+            <td style="padding: 6px 0; color: #64748b;">Mobile Number:</td>
+            <td style="padding: 6px 0; color: #0f172a; font-weight: bold;">${trainee.mobile || '—'}</td>
+          </tr>
+          <tr style="border-bottom: 1px solid #f1f5f9;">
+            <td style="padding: 6px 0; color: #64748b;">Guardian Name:</td>
+            <td style="padding: 6px 0; color: #0f172a; font-weight: bold;">${trainee.guardianName || '—'}</td>
+          </tr>
+          <tr style="border-bottom: 1px solid #f1f5f9;">
+            <td style="padding: 6px 0; color: #64748b;">Guardian Contact No:</td>
+            <td style="padding: 6px 0; color: #0f172a; font-weight: bold;">${trainee.guardianContact || '—'}</td>
+          </tr>
+          <tr style="border-bottom: 1px solid #f1f5f9;">
             <td style="padding: 6px 0; color: #64748b;">Allocated Hostel:</td>
-            <td style="padding: 6px 0; color: #0f172a; font-weight: bold;">${trainee.hostel}</td>
+            <td style="padding: 6px 0; color: #0f172a; font-weight: bold;">${effectiveHostel || "Hostel Campus"}</td>
           </tr>
           <tr style="border-bottom: 1px solid #f1f5f9;">
             <td style="padding: 6px 0; color: #64748b;">Allocated Room:</td>
-            <td style="padding: 6px 0; color: #16a34a; font-weight: bold; font-size: 14px;">Room ${trainee.roomNo}</td>
+            <td style="padding: 6px 0; color: #16a34a; font-weight: bold; font-size: 14px;">${effectiveRoomNo || "To be assigned"}</td>
           </tr>
           <tr>
             <td style="padding: 6px 0; color: #64748b;">Joining Date:</td>
@@ -685,7 +714,10 @@ ${footerText}
   <div style="background: #f8fafc; border-left: 4px solid ${accentColor}; padding: 14px 18px; margin: 18px 0; border-radius: 6px;">
     <p style="margin: 4px 0;"><strong>Full Name:</strong> ${traineeName}</p>
     <p style="margin: 4px 0;"><strong>Trainee ID:</strong> <span style="font-family: monospace; font-weight: bold; color: ${accentColor};">${traineeId}</span></p>
-    <p style="margin: 4px 0;"><strong>Mobile:</strong> ${trainee.mobile || '—'}</p>
+    <p style="margin: 4px 0;"><strong>Email Address:</strong> ${trainee.email || '—'}</p>
+    <p style="margin: 4px 0;"><strong>Mobile Number:</strong> ${trainee.mobile || '—'}</p>
+    <p style="margin: 4px 0;"><strong>Guardian Name:</strong> ${trainee.guardianName || '—'}</p>
+    <p style="margin: 4px 0;"><strong>Guardian Contact:</strong> ${trainee.guardianContact || '—'}</p>
     <p style="margin: 4px 0;"><strong>Department / Qualification:</strong> ${department}</p>
     <p style="margin: 4px 0;"><strong>Joining Date:</strong> ${joiningDate || 'Today'}</p>
   </div>
@@ -710,16 +742,16 @@ ${footerText}
   let approverEmail = '';
   if (approver.userId || approver.id) {
     const liveUser = await User.findOne({ id: approver.userId || approver.id }).lean();
-    if (liveUser?.email) approverEmail = liveUser.email.trim();
+    if (liveUser?.email && !liveUser.email.endsWith('@hostel.com')) approverEmail = liveUser.email.trim();
   }
   if (!approverEmail && approver.username) {
     const liveUser = await User.findOne({ username: approver.username }).lean();
-    if (liveUser?.email) approverEmail = liveUser.email.trim();
+    if (liveUser?.email && !liveUser.email.endsWith('@hostel.com')) approverEmail = liveUser.email.trim();
   }
-  if (!approverEmail && approver.email) {
+  if (!approverEmail && approver.email && !approver.email.endsWith('@hostel.com')) {
     approverEmail = approver.email.trim();
   }
-  if (!approverEmail) {
+  if (!approverEmail || approverEmail.endsWith('@hostel.com')) {
     approverEmail = await getAdminNotificationEmail();
   }
 
@@ -987,9 +1019,13 @@ export async function generateIdCardPdf({ trainee, branding = {}, qrBuffer, veri
       doc.fillColor('#5B21B6').font('Helvetica-Bold').fontSize(7.5).text(badgeText, 30, 162, { align: 'center', width: 180 });
 
       // Details key-values
+      const effectiveHostel = String(trainee.hostel || trainee.hostelName || (trainee.hostelId && trainee.hostelId !== trainee.traineeId ? trainee.hostelId : '') || '').trim();
+      const rawRoom = String(trainee.roomNo || trainee.room || '').trim();
+      const effectiveRoomNo = rawRoom ? (rawRoom.toLowerCase().startsWith('room') ? rawRoom : `Room ${rawRoom}`) : '';
+
       const details = [
-        ['Hostel Block:', trainee.hostel || 'Hostel Campus'],
-        ['Room Number:', trainee.roomNo ? `Room ${trainee.roomNo}` : 'To be assigned'],
+        ['Hostel Block:', effectiveHostel || 'Hostel Campus'],
+        ['Room Number:', effectiveRoomNo || 'To be assigned'],
         ['Mobile Number:', trainee.mobile || '—'],
         ['Joining Date:', fmtDate(trainee.joiningDate)],
       ];
@@ -1074,13 +1110,20 @@ export async function sendTraineeIdCardEmail({ trainee, force = false, isUpdated
   const verifyUrl = `${appUrl}/#/verify/${encodeURIComponent(trainee.qrId || trainee.traineeId)}`;
   const displayJoiningDate = fmtDate(trainee.joiningDate);
 
+  const effectiveHostel = String(trainee.hostel || trainee.hostelName || (trainee.hostelId && trainee.hostelId !== trainee.traineeId ? trainee.hostelId : '') || '').trim();
+  const rawRoom = String(trainee.roomNo || trainee.room || '').trim();
+  const effectiveRoomNo = rawRoom ? (rawRoom.toLowerCase().startsWith('room') ? rawRoom : `Room ${rawRoom}`) : '';
+
   const placeholderData = {
     traineeName: trainee.name,
     traineeId: trainee.traineeId || 'Unassigned',
     qrId: trainee.qrId,
     traineeEmail: trainee.email,
-    hostelName: trainee.hostel || 'Hostel Campus',
-    roomNumber: trainee.roomNo ? `Room ${trainee.roomNo}` : 'To be assigned',
+    traineeMobile: trainee.mobile,
+    guardianName: trainee.guardianName,
+    guardianContact: trainee.guardianContact,
+    hostelName: effectiveHostel || 'Hostel Campus',
+    roomNumber: effectiveRoomNo || 'To be assigned',
     joiningDate: displayJoiningDate,
     organizationName: companyName,
     organizationLogo: effectiveLogo,
@@ -1133,10 +1176,13 @@ ${subtitle.toUpperCase()}
 Name          : ${trainee.name}
 QR ID         : ${trainee.qrId}
 Trainee ID    : ${trainee.traineeId || 'Unassigned'}
-Mobile Number : ${trainee.mobile || '—'}
-Department    : ${trainee.qualification || 'Trainee Operations'}
-Hostel Block  : ${trainee.hostel || 'Hostel Campus'}
-Room Number   : ${trainee.roomNo ? `Room ${trainee.roomNo}` : 'To be assigned'}
+Email Address : ${trainee.email || "—"}
+Mobile Number : ${trainee.mobile || "—"}
+Guardian Name : ${trainee.guardianName || "—"}
+Guardian Phone: ${trainee.guardianContact || "—"}
+Department    : ${trainee.qualification || "Trainee Operations"}
+Hostel Block  : ${effectiveHostel || 'Hostel Campus'}
+Room Number   : ${effectiveRoomNo || 'To be assigned'}
 Joining Date  : ${displayJoiningDate}
 
 Public Verification Link:
@@ -1180,12 +1226,24 @@ ${footerText}
             <td style="padding: 8px 12px; color: #1e1b4b; font-weight: bold;">${trainee.mobile || '—'}</td>
           </tr>
           <tr style="border-bottom: 1px solid #f1f5f9;">
+            <td style="padding: 8px 12px; color: #6d28d9; font-weight: 600;">Email Address:</td>
+            <td style="padding: 8px 12px; color: #1e1b4b; font-weight: bold;">${trainee.email || '—'}</td>
+          </tr>
+          <tr style="border-bottom: 1px solid #f1f5f9;">
+            <td style="padding: 8px 12px; color: #6d28d9; font-weight: 600;">Guardian Name:</td>
+            <td style="padding: 8px 12px; color: #1e1b4b; font-weight: bold;">${trainee.guardianName || '—'}</td>
+          </tr>
+          <tr style="border-bottom: 1px solid #f1f5f9;">
+            <td style="padding: 8px 12px; color: #6d28d9; font-weight: 600;">Guardian Contact No:</td>
+            <td style="padding: 8px 12px; color: #1e1b4b; font-weight: bold;">${trainee.guardianContact || '—'}</td>
+          </tr>
+          <tr style="border-bottom: 1px solid #f1f5f9;">
             <td style="padding: 8px 12px; color: #6d28d9; font-weight: 600;">Hostel Block:</td>
-            <td style="padding: 8px 12px; color: #1e1b4b; font-weight: bold;">${trainee.hostel || 'Hostel Campus'}</td>
+            <td style="padding: 8px 12px; color: #1e1b4b; font-weight: bold;">${effectiveHostel || 'Hostel Campus'}</td>
           </tr>
           <tr style="border-bottom: 1px solid #f1f5f9;">
             <td style="padding: 8px 12px; color: #6d28d9; font-weight: 600;">Room Number:</td>
-            <td style="padding: 8px 12px; color: #1e1b4b; font-weight: bold;">${trainee.roomNo ? `Room ${trainee.roomNo}` : 'Unassigned'}</td>
+            <td style="padding: 8px 12px; color: #1e1b4b; font-weight: bold;">${effectiveRoomNo || 'Unassigned'}</td>
           </tr>
           <tr style="border-bottom: 1px solid #f1f5f9;">
             <td style="padding: 8px 12px; color: #6d28d9; font-weight: 600;">Joining Date:</td>
@@ -1280,4 +1338,32 @@ ${footerText}
     );
     return { ok: false, error: err.message };
   }
+}
+
+
+/**
+ * Sends a 4-digit verification OTP to the user's email during trainee registration.
+ * Expires in 5 minutes.
+ */
+export async function sendRegistrationOtpEmail({ email, otp }) {
+  const subject = `Your Verification Code for Hostel Registration: ${otp}`;
+  const html = `
+    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 24px; border: 1px solid #e2e8f0; border-radius: 8px;">
+      <h2 style="color: #1e293b; margin-top: 0;">Email Verification</h2>
+      <p style="color: #475569; font-size: 15px;">Use the verification code below to complete your Trainee Registration. This code is valid for 5 minutes.</p>
+      <div style="margin: 24px 0; padding: 16px; background-color: #f1f5f9; border-radius: 8px; text-align: center;">
+        <span style="font-size: 32px; font-weight: 700; letter-spacing: 6px; color: #0284c7;">${otp}</span>
+      </div>
+      <p style="color: #64748b; font-size: 13px;">If you did not request this verification code, please ignore this email.</p>
+    </div>
+  `;
+  const text = `Your verification code for Trainee Registration is: ${otp}. It expires in 5 minutes.`;
+  return sendEmail({
+    to: email,
+    subject,
+    html,
+    text,
+    type: 'OTP',
+    triggeredBy: 'Registration OTP Request',
+  });
 }

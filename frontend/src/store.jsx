@@ -267,6 +267,13 @@ export function StoreProvider({ children }) {
       notify('Room allocation denied: Trainee must be approved first.');
       return false;
     }
+
+    // Immediately persist room allocation to backend and trigger official ID Card email delivery
+    api('/api/approval/allocate-room', {
+      method: 'POST',
+      body: { traineeId, hostel, roomNo: room },
+    }).catch((err) => console.warn('allocate-room backend sync notice:', err.message));
+
     setDb((p) => {
       const qrId = nextId('QR', p.trainees.map((t) => t.qrId), 5);
       return {
@@ -308,18 +315,25 @@ export function StoreProvider({ children }) {
     }
   };
 
-  const changeRoom = (traineeId, newHostel, newRoom) =>
-    setDb((p) => {
+  const changeRoom = (traineeId, newHostel, newRoom) => {
+    // Immediately persist room change to backend and trigger updated ID Card email delivery
+    api('/api/approval/allocate-room', {
+      method: 'POST',
+      body: { traineeId, hostel: newHostel, roomNo: newRoom },
+    }).catch((err) => console.warn('allocate-room changeRoom backend sync notice:', err.message));
+
+    return setDb((p) => {
       const t = p.trainees.find((x) => x.traineeId === traineeId);
       return {
         ...p,
         trainees: p.trainees.map((x) => (x.traineeId === traineeId ? { ...x, hostel: newHostel, roomNo: newRoom } : x)),
         roomHistory: [
           ...p.roomHistory,
-          { traineeId, prevHostel: t.hostel, prevRoom: t.roomNo, newHostel, newRoom, changeDate: todayStr(), changedBy: actor() },
+          { traineeId, prevHostel: t ? t.hostel : '', prevRoom: t ? t.roomNo : '', newHostel, newRoom, changeDate: todayStr(), changedBy: actor() },
         ],
       };
     });
+  };
 
   // ---------- Attendance (one record per trainee per date) ----------
   const saveAttendance = (traineeId, date, status, extra = {}) =>
@@ -439,6 +453,27 @@ export function StoreProvider({ children }) {
     }
   };
 
+  const deleteRoom = async (hostelId, roomNo) => {
+    try {
+      const res = await api(`/api/hostels/${encodeURIComponent(hostelId)}/rooms/${encodeURIComponent(roomNo)}`, {
+        method: 'DELETE',
+      });
+      setDb((p) => ({
+        ...p,
+        hostels: p.hostels.map((h) =>
+          h.id === hostelId || h.name === hostelId
+            ? { ...h, rooms: h.rooms.filter((r) => String(r.no) !== String(roomNo)) }
+            : h
+        ),
+      }));
+      notify(res.message || `Room ${roomNo} deleted successfully.`);
+      return { ok: true, message: res.message };
+    } catch (err) {
+      notify(err.message || `Failed to delete room ${roomNo}.`);
+      return { ok: false, error: err.message };
+    }
+  };
+
   // ---------- Super Admin: delete records (Leave / Outing / Resignation) ----------
   const deleteLeaveRecord = async (id) => {
     try {
@@ -537,7 +572,7 @@ export function StoreProvider({ children }) {
     addTrainee, updateTrainee, approveTrainee, rejectTrainee, deleteTrainee, changeRoom,
     saveAttendance, startDay, saveDaySummary, saveLeave, saveOutingVacate, saveResignation, saveRemark,
     deleteLeaveRecord, deleteOutingRecord, deleteResignationRecord,
-    addHostel, addRoom, setRoomCapacity, deleteHostel, saveUser, deleteUser, changePassword,
+    addHostel, addRoom, setRoomCapacity, deleteHostel, deleteRoom, saveUser, deleteUser, changePassword,
   };
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }

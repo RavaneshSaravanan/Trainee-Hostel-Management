@@ -319,7 +319,7 @@ export default function Reports() {
             {f.type !== 'hostel-occupancy' && (
               <>
                 <div><label className="field-label">Shift</label>
-                  <select className="input" value={f.shift} onChange={set('shift')}><option value="">All Shifts</option>{SHIFTS.map((s) => <option key={s}>{s}</option>)}</select>
+                  <select className="input" value={f.shift} onChange={set('shift')}><option value="">All Shifts</option>{SHIFTS.map((s) => <option key={s} value={s}>{s === 'WO' ? 'Week Off (WO)' : s === 'L' ? 'Leave (L)' : `${s} Shift`}</option>)}</select>
                 </div>
                 <div><label className="field-label">Employment Status</label>
                   <select className="input" value={f.employmentStatus} onChange={set('employmentStatus')}><option value="">All</option><option>ACTIVE</option><option>RESIGNED</option></select>

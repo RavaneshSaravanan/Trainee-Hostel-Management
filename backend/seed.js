@@ -28,21 +28,25 @@ export async function seedDatabase() {
   const wardenHash = await bcrypt.hash('warden123', 10);
   const adminHash = await bcrypt.hash('admin123', 10);
 
+  const defaultAdminEmail = (process.env.ADMIN_EMAIL || process.env.SMTP_USER || 'apollotyres.hostel@gmail.com').trim().toLowerCase();
+
   const userCount = await User.countDocuments();
   if (userCount > 0) {
-    const existingConfig = await Config.findOne({ key: 'main' }).lean();
-    const configuredAdminEmail = existingConfig?.adminNotificationEmail ? existingConfig.adminNotificationEmail.trim().toLowerCase() : '';
+    const existingConfig = await Config.findOne({ key: 'main' });
+    const configuredAdminEmail = existingConfig?.adminNotificationEmail && !existingConfig.adminNotificationEmail.endsWith('@hostel.com')
+      ? existingConfig.adminNotificationEmail.trim().toLowerCase()
+      : defaultAdminEmail;
 
-    // Ensure superadmin exists with requested password
+    // Ensure superadmin exists with requested password & live email
     let superUser = await User.findOne({ username: 'superadmin' });
     if (!superUser) {
       const allUsers = await User.find({}, 'id').lean();
       const id = nextId('U', allUsers.map((u) => u.id), 1);
-      await User.create({
+      superUser = await User.create({
         id,
         name: 'Super Admin',
         username: 'superadmin',
-        email: configuredAdminEmail || 'superadmin@hostel.com',
+        email: configuredAdminEmail,
         mobile: '9876543210',
         roleId: 'superadmin',
         active: true,
@@ -53,10 +57,8 @@ export async function seedDatabase() {
       superUser.passwordHash = superAdminHash;
       superUser.roleId = 'superadmin';
       superUser.active = true;
-      if (configuredAdminEmail) {
+      if (!superUser.email || superUser.email.endsWith('@hostel.com')) {
         superUser.email = configuredAdminEmail;
-      } else if (!superUser.email) {
-        superUser.email = 'superadmin@hostel.com';
       }
       if (!superUser.mobile) superUser.mobile = '9876543210';
       await superUser.save();
@@ -89,7 +91,7 @@ export async function seedDatabase() {
       console.log('Synchronized warden password to warden123.');
     }
 
-    // Ensure admin exists with default password
+    // Ensure admin exists with default password & live email
     let adminUser = await User.findOne({ username: 'admin' });
     if (!adminUser) {
       const allUsers = await User.find({}, 'id').lean();
@@ -98,7 +100,7 @@ export async function seedDatabase() {
         id,
         name: 'Admin',
         username: 'admin',
-        email: configuredAdminEmail || 'admin@hostel.com',
+        email: configuredAdminEmail,
         mobile: '9876543212',
         roleId: 'superadmin',
         active: true,
@@ -109,15 +111,45 @@ export async function seedDatabase() {
       adminUser.passwordHash = adminHash;
       adminUser.roleId = 'superadmin';
       adminUser.active = true;
-      if (configuredAdminEmail) {
+      if (!adminUser.email || adminUser.email.endsWith('@hostel.com')) {
         adminUser.email = configuredAdminEmail;
-      } else if (!adminUser.email) {
-        adminUser.email = 'admin@hostel.com';
       }
       if (!adminUser.mobile) adminUser.mobile = '9876543212';
       await adminUser.save();
       console.log('Synchronized admin password to admin123.');
     }
+
+    // Ensure Config has adminNotificationEmail and approvalConfig.approvers configured
+    if (existingConfig) {
+      let cfgChanged = false;
+      if (!existingConfig.adminNotificationEmail || existingConfig.adminNotificationEmail.endsWith('@hostel.com')) {
+        existingConfig.adminNotificationEmail = configuredAdminEmail;
+        cfgChanged = true;
+      }
+      if (!existingConfig.approvalConfig?.approvers || existingConfig.approvalConfig.approvers.length === 0) {
+        existingConfig.approvalConfig = {
+          approvers: [
+            {
+              userId: superUser.id,
+              name: superUser.name,
+              username: superUser.username,
+              email: configuredAdminEmail,
+              roleId: superUser.roleId,
+            },
+          ],
+          policy: 'ANY_ONE',
+          configuredAt: new Date(),
+          configuredBy: 'system',
+        };
+        existingConfig.markModified('approvalConfig');
+        cfgChanged = true;
+      }
+      if (cfgChanged) {
+        await existingConfig.save();
+        console.log(`Synchronized admin notification email and approval approver: ${configuredAdminEmail}`);
+      }
+    }
+
     return;
   }
 

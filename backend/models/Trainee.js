@@ -9,10 +9,14 @@ const traineeSchema = new mongoose.Schema(
     name: { type: String, required: true },
     mobile: { type: String, default: '' },
     email: { type: String, default: '' },
+    passwordHash: { type: String, default: '' },
     dob: { type: String, default: '' },
     gender: { type: String, default: '' },
     qualification: { type: String, default: '' },
     aadhar: { type: String, default: '' },
+    aadharMasked: { type: String, default: '' },
+    aadharEncrypted: { type: String, default: '' },
+    aadharHash: { type: String, default: '' },
     food: { type: String, default: '' },
     photo: { type: String, default: '' },
     photoDriveId: { type: String, default: '', index: true },
@@ -108,13 +112,13 @@ traineeSchema.index(
   }
 );
 
-// Unique partial index on aadhar: duplicate aadhar is strictly not allowed if non-empty
+// Unique partial index on aadharHash: duplicate aadhar is strictly not allowed if non-empty
 traineeSchema.index(
-  { aadhar: 1 },
+  { aadharHash: 1 },
   {
     unique: true,
     partialFilterExpression: {
-      aadhar: { $type: 'string', $gt: '' },
+      aadharHash: { $type: 'string', $gt: '' },
     },
   }
 );

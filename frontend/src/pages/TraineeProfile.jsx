@@ -413,7 +413,13 @@ export default function TraineeProfile() {
   const handleSendEmail = async () => {
     setSendingEmail(true);
     try {
-      const res = await api(`/api/trainees/${encodeURIComponent(traineeKey)}/send-id-card`, { method: 'POST' });
+      const res = await api(`/api/trainees/${encodeURIComponent(traineeKey)}/send-id-card`, {
+        method: 'POST',
+        body: {
+          hostel: t.hostel,
+          roomNo: t.roomNo,
+        },
+      });
       if (res.ok) {
         notify(res.message || 'ID Card delivered to trainee email successfully.');
         updateTrainee(traineeKey, { idCardDelivered: true, idCardDeliveredAt: new Date().toISOString() });

@@ -525,7 +525,7 @@ export async function exportDashboardPptx({ db, config, session }) {
     addSlideHeader(slide, 'Shift Distributions & Today\'s Attendance Breakdown', 'ATTENDANCE MANAGEMENT');
 
     const shiftData = SHIFTS.map((s) => ({
-      shift: `${s} Shift`,
+      shift: s === 'WO' ? 'Week Off' : s === 'L' ? 'Leave' : `${s} Shift`,
       count: db.attendance.filter((a) => a.date === today && a.shift === s).length,
     }));
 

@@ -488,6 +488,23 @@ body { font-family: var(--font-body); }
 .room-chips { display: flex; flex-wrap: wrap; gap: 8px; }
 .room-chip { display: flex; align-items: center; gap: 8px; border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 6px 10px; font-size: 12.5px; font-weight: 600; background: var(--purple-50); }
 .room-chip input { width: 54px; padding: 4px 6px; border: 1px solid var(--gray-300); border-radius: 6px; }
+.room-delete-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--gray-400);
+  padding: 3px 5px;
+  border-radius: 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s ease;
+  line-height: 1;
+}
+.room-delete-btn:hover {
+  color: var(--red, #ef4444);
+  background: rgba(239, 68, 68, 0.12);
+}
 .pw-form { display: flex; flex-direction: column; gap: 8px; }
 .scroll-x { overflow-x: auto; flex-wrap: nowrap; }
 .scroll-x .tab { white-space: nowrap; }
@@ -730,4 +747,128 @@ body { font-family: var(--font-body); }
   .perm-checks { grid-template-columns: 1fr 1fr; }
   .row-actions { flex-wrap: wrap; }
   .alert-banner .btn { width: 100%; }
+}
+
+
+/* ---------------- Form Validation & OTP Enhancements ---------------- */
+.input-error {
+  border-color: #ef4444 !important;
+  box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.15) !important;
+}
+
+.input-valid {
+  border-color: #22c55e !important;
+  box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.15) !important;
+}
+
+.field-error-msg {
+  color: #ef4444;
+  font-size: 12px;
+  font-weight: 500;
+  margin-top: 4px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  line-height: 1.3;
+}
+
+.field-valid-indicator {
+  color: #16a34a;
+  font-size: 12px;
+  font-weight: 500;
+  margin-top: 4px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.password-input-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+  width: 100%;
+}
+
+.password-input-wrap .input {
+  padding-right: 42px;
+}
+
+.password-toggle-btn {
+  position: absolute;
+  right: 10px;
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--gray-500);
+  padding: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  transition: color 0.15s;
+}
+
+.password-toggle-btn:hover {
+  color: var(--gray-800);
+}
+
+.otp-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+  padding: 12px;
+  background: #f8fafc;
+  border: 1px solid var(--gray-200);
+  border-radius: var(--radius-sm);
+}
+
+.otp-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.otp-input {
+  max-width: 130px;
+  text-align: center;
+  letter-spacing: 5px;
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.otp-timer {
+  font-size: 12px;
+  color: var(--gray-500);
+  font-weight: 500;
+}
+
+.verified-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: #dcfce7;
+  color: #15803d;
+  font-size: 11.5px;
+  font-weight: 700;
+  padding: 3px 8px;
+  border-radius: 9999px;
+  border: 1px solid #bbf7d0;
+}
+
+.resend-btn {
+  background: none;
+  border: none;
+  color: var(--purple-600);
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  text-decoration: underline;
+  padding: 0;
+}
+
+.resend-btn:disabled {
+  color: var(--gray-400);
+  cursor: not-allowed;
+  text-decoration: none;
 }

@@ -496,12 +496,30 @@ function PagesAndFields() {
 
 /* ---------------- Hostels & rooms ---------------- */
 function Hostels() {
-  const { db, addHostel, addRoom, setRoomCapacity, deleteHostel, isSuper, notify } = useStore();
+  const { db, addHostel, addRoom, setRoomCapacity, deleteHostel, deleteRoom, isSuper, notify } = useStore();
   const [name, setName] = useState('');
   const [room, setRoom] = useState({});
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [occupiedWarning, setOccupiedWarning] = useState(null);
   const [deleting, setDeleting] = useState(false);
+  const [deleteRoomTarget, setDeleteRoomTarget] = useState(null);
+  const [occupiedRoomWarning, setOccupiedRoomWarning] = useState(null);
+  const [deletingRoom, setDeletingRoom] = useState(false);
+
+  const handleDeleteRoomClick = (h, r) => {
+    const activeOccupants = db.trainees.filter(
+      (t) =>
+        (t.hostel === h.name || t.hostelId === h.id) &&
+        String(t.roomNo).trim() === String(r.no).trim() &&
+        ['ACTIVE', 'ON LEAVE', 'OUTING', 'TEMPORARY VACATE'].includes(t.hostelStatus)
+    );
+
+    if (activeOccupants.length > 0) {
+      setOccupiedRoomWarning({ hostel: h, room: r, occupants: activeOccupants });
+    } else {
+      setDeleteRoomTarget({ hostel: h, room: r });
+    }
+  };
 
   const handleDeleteClick = (h) => {
     const activeOccupants = db.trainees.filter(
@@ -552,9 +570,20 @@ function Hostels() {
           >
             <div className="room-chips">
               {h.rooms.map((r) => (
-                <label className="room-chip" key={r.no}>Room {r.no}
+                <div className="room-chip" key={r.no}>
+                  <span>Room {r.no}</span>
                   <input type="number" min="1" value={r.capacity} onChange={(e) => setRoomCapacity(h.id, r.no, e.target.value)} />
-                </label>
+                  {isSuper && (
+                    <button
+                      type="button"
+                      className="room-delete-btn"
+                      title={`Delete Room ${r.no}`}
+                      onClick={() => handleDeleteRoomClick(h, r)}
+                    >
+                      <Icon name="trash" size={13} />
+                    </button>
+                  )}
+                </div>
               ))}
             </div>
             <form className="inline-form" style={{ marginTop: 12 }} onSubmit={(e) => {
@@ -640,6 +669,79 @@ function Hostels() {
               <div className="info-item"><div className="info-k">Hostel Name</div><div className="info-v">{deleteTarget.name}</div></div>
               <div className="info-item"><div className="info-k">Configured Rooms</div><div className="info-v">{deleteTarget.rooms.length} rooms</div></div>
               <div className="info-item"><div className="info-k">Total Capacity</div><div className="info-v">{deleteTarget.rooms.reduce((s, r) => s + r.capacity, 0)} beds</div></div>
+            </div>
+            <p className="muted" style={{ fontSize: 13, margin: 0 }}>
+              ⚠️ Trainee master records and historical data will be preserved. This action cannot be undone.
+            </p>
+          </div>
+        </Modal>
+      )}
+      {occupiedRoomWarning && (
+        <Modal
+          title={`Cannot Delete Room — Room ${occupiedRoomWarning.room.no} (${occupiedRoomWarning.hostel.name})`}
+          onClose={() => setOccupiedRoomWarning(null)}
+          actions={
+            <button className="btn btn-primary" onClick={() => setOccupiedRoomWarning(null)}>
+              Understood
+            </button>
+          }
+        >
+          <div className="alert-banner bad" style={{ marginBottom: 12 }}>
+            <Icon name="alert" size={18} />
+            <div className="alert-text">
+              <strong>Direct deletion blocked:</strong> Room &ldquo;{occupiedRoomWarning.room.no}&rdquo; in hostel &ldquo;{occupiedRoomWarning.hostel.name}&rdquo; currently has{' '}
+              {occupiedRoomWarning.occupants.length} active resident trainee(s).
+            </div>
+          </div>
+          <p className="muted" style={{ fontSize: 13, marginBottom: 12 }}>
+            Please reassign all active occupants to another room or hostel before deleting this room. Trainee master records and historical data are preserved.
+          </p>
+          <Table
+            headers={['S.No', 'Trainee Name', 'Trainee ID', 'Status']}
+            rows={occupiedRoomWarning.occupants.map((t, idx) => [
+              idx + 1,
+              <strong>{t.name}</strong>,
+              t.traineeId || t.qrId,
+              <Badge key={t.traineeId || t.qrId} status={t.hostelStatus} />,
+            ])}
+          />
+        </Modal>
+      )}
+
+      {deleteRoomTarget && (
+        <Modal
+          title={`Confirm Delete Room — Room ${deleteRoomTarget.room.no}`}
+          onClose={() => !deletingRoom && setDeleteRoomTarget(null)}
+          actions={
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+              <button className="btn btn-ghost" onClick={() => setDeleteRoomTarget(null)} disabled={deletingRoom}>
+                Cancel
+              </button>
+              <button
+                className="btn btn-danger"
+                disabled={deletingRoom}
+                onClick={async () => {
+                  setDeletingRoom(true);
+                  const res = await deleteRoom(deleteRoomTarget.hostel.id, deleteRoomTarget.room.no);
+                  setDeletingRoom(false);
+                  if (res.ok) {
+                    setDeleteRoomTarget(null);
+                  }
+                }}
+              >
+                <Icon name="trash" size={14} /> {deletingRoom ? 'Deleting…' : 'Delete Room'}
+              </button>
+            </div>
+          }
+        >
+          <div style={{ padding: '6px 0' }}>
+            <p style={{ margin: '0 0 12px' }}>
+              Are you sure you want to permanently delete <strong>Room {deleteRoomTarget.room.no}</strong> from hostel <strong>{deleteRoomTarget.hostel.name}</strong>?
+            </p>
+            <div className="info-grid" style={{ marginBottom: 14 }}>
+              <div className="info-item"><div className="info-k">Hostel</div><div className="info-v">{deleteRoomTarget.hostel.name}</div></div>
+              <div className="info-item"><div className="info-k">Room Number</div><div className="info-v">Room {deleteRoomTarget.room.no}</div></div>
+              <div className="info-item"><div className="info-k">Configured Capacity</div><div className="info-v">{deleteRoomTarget.room.capacity} beds</div></div>
             </div>
             <p className="muted" style={{ fontSize: 13, margin: 0 }}>
               ⚠️ Trainee master records and historical data will be preserved. This action cannot be undone.

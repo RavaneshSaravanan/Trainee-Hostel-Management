@@ -8,6 +8,7 @@ import { todayStr } from '../utils/validity.js';
 const router = express.Router();
 
 const INELIGIBLE_STATUSES = ['PENDING REVIEW', 'PENDING_APPROVAL', 'REJECTED', 'RESIGNED', 'PERMANENT VACATE', 'INACTIVE'];
+const formatShift = (s) => (s === 'WO' ? 'Week Off' : s === 'L' ? 'Leave' : `${s} Shift`);
 
 // ---------------- 1. High-Speed Scan / Manual Attendance Submission ----------------
 router.post('/attendance/scan', auth, async (req, res) => {
@@ -79,7 +80,7 @@ router.post('/attendance/scan', auth, async (req, res) => {
       return res.status(409).json({
         ok: false,
         duplicate: true,
-        message: `Already Scanned: ${trainee.name} is already marked for ${cleanShift} Shift on ${cleanDate}.`,
+        message: `Already Scanned: ${trainee.name} is already marked for ${formatShift(cleanShift)} on ${cleanDate}.`,
         trainee: {
           traineeId: trainee.traineeId,
           qrId: trainee.qrId,
@@ -102,7 +103,7 @@ router.post('/attendance/scan', auth, async (req, res) => {
       return res.status(409).json({
         ok: false,
         duplicate: true,
-        message: `Attendance Conflict: ${trainee.name} is already marked for ${existingOtherShift.shift} Shift today.`,
+        message: `Attendance Conflict: ${trainee.name} is already marked for ${formatShift(existingOtherShift.shift)} today.`,
         trainee: {
           traineeId: trainee.traineeId,
           qrId: trainee.qrId,
@@ -131,7 +132,7 @@ router.post('/attendance/scan', auth, async (req, res) => {
 
     return res.json({
       ok: true,
-      message: `✓ Attendance Recorded: ${trainee.name} marked for ${cleanShift} Shift`,
+      message: `✓ Attendance Recorded: ${trainee.name} marked for ${formatShift(cleanShift)}`,
       record: newRecord,
       trainee: {
         traineeId: trainee.traineeId,
@@ -368,7 +369,7 @@ router.post('/attendance/hostel-scan', auth, async (req, res) => {
       return res.status(409).json({
         ok: false,
         duplicate: true,
-        message: `Already Scanned: ${trainee.name} is already marked for ${cleanShift} Shift on ${cleanDate}.`,
+        message: `Already Scanned: ${trainee.name} is already marked for ${formatShift(cleanShift)} on ${cleanDate}.`,
         trainee: {
           traineeId: trainee.traineeId,
           qrId: trainee.qrId,
@@ -400,7 +401,7 @@ router.post('/attendance/hostel-scan', auth, async (req, res) => {
 
     return res.json({
       ok: true,
-      message: `✓ Attendance Recorded: ${trainee.name} marked for ${cleanShift} Shift`,
+      message: `✓ Attendance Recorded: ${trainee.name} marked for ${formatShift(cleanShift)}`,
       record: newRecord,
       trainee: {
         traineeId: trainee.traineeId,

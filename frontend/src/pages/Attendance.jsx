@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { useStore } from '../store.jsx';
-import { ATT_CODES, ATT_LABELS, SHIFTS } from '../data/constants.js';
+import { ATT_CODES, ATT_LABELS, SHIFTS, SHIFT_OPTIONS } from '../data/constants.js';
+
+const getShiftLabel = (s) => (s === 'WO' ? 'Week Off' : s === 'L' ? 'Leave' : `${s} Shift`);
 import { Avatar, Badge, Card, Icon, Table } from '../components/ui.jsx';
 import QrScanner from '../components/QrScanner.jsx';
 import { fmtDate, todayStr } from '../utils/dates.js';
@@ -98,7 +100,12 @@ function Scan() {
         ok: true,
         type: 'SUCCESS',
         trainee: res.trainee,
-        message: `Marked Present (${shift} Shift)`,
+        message:
+          shift === 'WO'
+            ? `Marked Week Off (${res.trainee?.name || cleanInput})`
+            : shift === 'L'
+            ? `Marked Leave (${res.trainee?.name || cleanInput})`
+            : `Marked Present (${shift} Shift)`,
         time: timeStr,
       });
 
@@ -111,7 +118,7 @@ function Scan() {
           photo: res.trainee.photo,
           room: res.trainee.roomNo ? `${res.trainee.hostel} · Room ${res.trainee.roomNo}` : '—',
           shift,
-          status: 'PRESENT',
+          status: shift === 'WO' ? 'WEEK OFF' : shift === 'L' ? 'LEAVE' : 'PRESENT',
           method: method === 'QR_SCAN' ? 'Camera' : 'Manual / Scanner Gun',
         },
         ...prev.slice(0, 49),
@@ -126,7 +133,13 @@ function Scan() {
           ok: false,
           type: 'DUPLICATE',
           trainee: err.data?.trainee,
-          message: err.message || `Already Scanned for ${shift} Shift today`,
+          message:
+            err.message ||
+            (shift === 'WO'
+              ? 'Already Marked for Week Off today'
+              : shift === 'L'
+              ? 'Already Marked for Leave today'
+              : `Already Scanned for ${shift} Shift today`),
           time: timeStr,
         });
 
@@ -196,17 +209,17 @@ function Scan() {
             <div>
               <label className="field-label" style={{ fontWeight: 600 }}>Active Attendance Shift *</label>
               <div className="seg">
-                {['A', 'B', 'C', 'G', '12HRS'].map((s) => (
+                {SHIFT_OPTIONS.map((s) => (
                   <button
-                    key={s}
+                    key={s.id}
                     type="button"
-                    className={`seg-btn ${shift === s ? 'on' : ''}`}
+                    className={`seg-btn ${shift === s.id ? 'on' : ''}`}
                     onClick={() => {
-                      setShift(s);
-                      notify(`Active Shift set to ${s} Shift.`);
+                      setShift(s.id);
+                      notify(`Active Shift set to ${s.label}.`);
                     }}
                   >
-                    {s} Shift
+                    {s.label}
                   </button>
                 ))}
               </div>
@@ -279,7 +292,7 @@ function Scan() {
                 )}
               </div>
               <p className="muted" style={{ fontSize: 13, margin: 0 }}>
-                💡 Position the trainee attendance QR card in front of the camera. The scanner continuously records attendance for <strong>Shift {shift}</strong> with instant audio feedback.
+                💡 Position the trainee attendance QR card in front of the camera. The scanner continuously records attendance for <strong>{getShiftLabel(shift)}</strong> with instant audio feedback.
               </p>
             </div>
           ) : (
@@ -368,11 +381,15 @@ function Scan() {
               <strong>{s.traineeId}</strong>,
               s.name,
               s.room,
-              <span className="chip">{s.shift} Shift</span>,
+              <span className="chip">{getShiftLabel(s.shift)}</span>,
               <span
                 className={`chip ${
                   s.status === 'PRESENT'
                     ? 'chip-green'
+                    : s.status === 'WEEK OFF'
+                    ? 'chip-blue'
+                    : s.status === 'LEAVE'
+                    ? 'chip-amber'
                     : s.status === 'ALREADY SCANNED'
                     ? 'chip-orange'
                     : 'chip-red'
@@ -641,7 +658,7 @@ function HostelTracker() {
       ok: true,
       type: 'SUCCESS',
       trainee,
-      message: `✓ Attendance Recorded: ${trainee.name} (Room ${trainee.roomNo}) marked for ${shift} Shift`,
+      message: `✓ Attendance Recorded: ${trainee.name} (Room ${trainee.roomNo}) marked for ${getShiftLabel(shift)}`,
       time: timeStr,
     });
     setSubmitting(false);
@@ -695,14 +712,14 @@ function HostelTracker() {
             <div>
               <label className="field-label" style={{ fontWeight: 600 }}>Shift</label>
               <div className="seg">
-                {['A', 'B', 'C', 'G', '12HRS'].map((s) => (
+                {SHIFT_OPTIONS.map((s) => (
                   <button
-                    key={s}
+                    key={s.id}
                     type="button"
-                    className={`seg-btn ${shift === s ? 'on' : ''}`}
-                    onClick={() => setShift(s)}
+                    className={`seg-btn ${shift === s.id ? 'on' : ''}`}
+                    onClick={() => setShift(s.id)}
                   >
-                    {s}
+                    {s.short}
                   </button>
                 ))}
               </div>

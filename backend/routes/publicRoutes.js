@@ -1,20 +1,51 @@
 import express from 'express';
 import rateLimit from 'express-rate-limit';
+import bcrypt from 'bcryptjs';
+import jwt from 'jsonwebtoken';
 import { Config } from '../models/Config.js';
 import { Trainee } from '../models/Trainee.js';
+import { Otp } from '../models/Otp.js';
 import { bumpRev } from '../models/Meta.js';
 import { DEFAULT_CONFIG, withDefaults } from '../defaults.js';
 import { nextId, todayStr } from '../utils/dates.js';
 import { addThreeCalendarMonths } from '../utils/validity.js';
-import { sendApprovalRequestEmail } from '../services/emailService.js';
+import { sendApprovalRequestEmail, sendRegistrationOtpEmail, getAdminNotificationEmail } from '../services/emailService.js';
 import { uploadTraineePhoto, getPhotoStreamFromDrive, parsePhotoData } from '../services/googleDriveService.js';
+import {
+  isValidEmail,
+  isValidPassword,
+  isValidMobile,
+  isValidGuardianContact,
+  isValidAadhaar,
+} from '../utils/validators.js';
+import {
+  encryptAadhaar,
+  maskAadhaar,
+  hashAadhaar,
+} from '../utils/encryption.js';
 
 const router = express.Router();
+const JWT_SECRET = process.env.JWT_SECRET || 'trainee_hostel_secret_jwt_key_2026';
+
+function escapeRegex(str) {
+  return String(str || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+// Safely drop obsolete unique index on plain-text aadhar if present in Mongo Atlas
+Trainee.collection.dropIndex('aadhar_1').catch(() => {});
 
 const registerLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 30,
   message: { error: 'Too many registration requests. Please try again later.' },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
+const otpLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 15,
+  message: { error: 'Too many OTP requests. Please try again later.' },
   standardHeaders: true,
   legacyHeaders: false,
 });
@@ -49,8 +80,18 @@ router.get('/public/verify/:traineeId', async (req, res) => {
     }
 
     const cleanId = rawId.toUpperCase();
+    const escapeRegex = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const rx = new RegExp(`^${escapeRegex(rawId)}$`, 'i');
+
     const trainee = await Trainee.findOne({
-      $or: [{ traineeId: cleanId }, { qrId: cleanId }, { hostelId: cleanId }],
+      $or: [
+        { traineeId: cleanId },
+        { qrId: cleanId },
+        { hostelId: cleanId },
+        { traineeId: rx },
+        { qrId: rx },
+        { hostelId: rx },
+      ],
     }).lean();
 
     if (!trainee) {
@@ -59,20 +100,25 @@ router.get('/public/verify/:traineeId', async (req, res) => {
 
     const config = await getConfig();
 
-    // Permitted public details only - NEVER expose aadhar, sensitive contacts, or tokens
+    // Permitted public details only - NEVER expose aadhar number or internal password hashes
     return res.json({
       ok: true,
       appName: config.appName,
       appSub: config.appSub,
       logo: config.logo,
       trainee: {
-        traineeId: trainee.traineeId,
-        hostelId: trainee.hostelId,
+        traineeId: trainee.traineeId || '',
+        hostelId: trainee.hostelId || '',
+        qrId: trainee.qrId || '',
         name: trainee.name,
         photo: trainee.photo || '',
-        gender: trainee.gender,
-        qualification: trainee.qualification || 'Trainee',
+        email: trainee.email || '—',
         mobile: trainee.mobile || '—',
+        guardianName: trainee.guardianName || '—',
+        guardianContact: trainee.guardianContact || '—',
+        gender: trainee.gender || '—',
+        dob: trainee.dob || '—',
+        qualification: trainee.qualification || 'Trainee',
         hostel: trainee.hostel || 'Hostel Campus',
         roomNo: trainee.roomNo || 'Unallocated',
         joiningDate: trainee.joiningDate || '—',
@@ -132,6 +178,155 @@ const serveTraineePhoto = async (req, res) => {
 router.get('/public/photo/:traineeId', serveTraineePhoto);
 router.get('/trainees/:traineeId/photo', serveTraineePhoto);
 
+// ---------------- Check Trainee ID Availability ----------------
+const checkTraineeIdHandler = async (req, res) => {
+  try {
+    const rawId = String((req.method === 'GET' ? req.query.traineeId : req.body?.traineeId) || '').trim();
+    if (!rawId) {
+      return res.json({ available: true, message: '' });
+    }
+
+    const cleanId = rawId.toUpperCase();
+    const exists = await Trainee.findOne({
+      traineeId: { $regex: new RegExp(`^${escapeRegex(cleanId)}$`, 'i') },
+    }).lean();
+
+    if (exists) {
+      return res.json({
+        available: false,
+        error: 'Trainee ID already exists. Please enter a different Trainee ID.',
+      });
+    }
+
+    return res.json({
+      available: true,
+      message: 'Trainee ID is available.',
+    });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+};
+
+router.get('/public/check-trainee-id', checkTraineeIdHandler);
+router.post('/public/check-trainee-id', checkTraineeIdHandler);
+
+// ---------------- Send Registration Email OTP ----------------
+router.post('/public/send-otp', otpLimiter, async (req, res) => {
+  try {
+    const { email } = req.body || {};
+    const cleanEmail = String(email || '').trim().toLowerCase();
+
+    if (!cleanEmail || !isValidEmail(cleanEmail)) {
+      return res.status(400).json({ error: 'Please enter a valid email address.' });
+    }
+
+    // Check if email already registered
+    const existingTrainee = await Trainee.findOne({ email: cleanEmail }).lean();
+    if (existingTrainee) {
+      return res.status(409).json({ error: 'This email is already registered with another trainee.' });
+    }
+
+    // Cooldown check: 60 seconds
+    const recentOtp = await Otp.findOne({
+      identifier: cleanEmail,
+      type: 'trainee-registration',
+      used: false,
+      createdAt: { $gt: new Date(Date.now() - 60 * 1000) },
+    }).lean();
+
+    if (recentOtp) {
+      return res.status(429).json({ error: 'Please wait 60 seconds before requesting a new OTP.' });
+    }
+
+    // Generate 4-digit numeric OTP
+    const otpCode = String(Math.floor(1000 + Math.random() * 9000));
+    const expiresAt = new Date(Date.now() + 5 * 60 * 1000); // 5 minutes
+
+    // Invalidate prior unused registration OTPs for this email
+    await Otp.updateMany(
+      { identifier: cleanEmail, type: 'trainee-registration', used: false },
+      { $set: { used: true } }
+    );
+
+    // Save new OTP
+    await Otp.create({
+      userId: 'anonymous',
+      identifier: cleanEmail,
+      otp: otpCode,
+      type: 'trainee-registration',
+      expiresAt,
+    });
+
+    // Send email without logging the OTP in console
+    await sendRegistrationOtpEmail({ email: cleanEmail, otp: otpCode });
+
+    return res.json({ ok: true, message: 'OTP sent successfully to your email.' });
+  } catch (err) {
+    return res.status(500).json({ error: err.message || 'Failed to send OTP.' });
+  }
+});
+
+// ---------------- Verify Registration Email OTP ----------------
+router.post('/public/verify-otp', otpLimiter, async (req, res) => {
+  try {
+    const { email, otp } = req.body || {};
+    const cleanEmail = String(email || '').trim().toLowerCase();
+    const cleanOtp = String(otp || '').trim();
+
+    if (!cleanEmail || !isValidEmail(cleanEmail)) {
+      return res.status(400).json({ error: 'Please enter a valid email address.' });
+    }
+
+    if (!cleanOtp || !/^\d{4}$/.test(cleanOtp)) {
+      return res.status(400).json({ error: 'Invalid OTP. Please try again.' });
+    }
+
+    const otpDoc = await Otp.findOne({
+      identifier: cleanEmail,
+      type: 'trainee-registration',
+      used: false,
+      expiresAt: { $gt: new Date() },
+    }).sort({ createdAt: -1 });
+
+    if (!otpDoc) {
+      return res.status(400).json({ error: 'Invalid OTP. Please try again.' });
+    }
+
+    // Attempt limit check (max 5)
+    if (otpDoc.attempts >= 5) {
+      otpDoc.used = true;
+      await otpDoc.save();
+      return res.status(400).json({ error: 'Too many failed attempts. Please request a new OTP.' });
+    }
+
+    if (otpDoc.otp !== cleanOtp) {
+      otpDoc.attempts += 1;
+      await otpDoc.save();
+      return res.status(400).json({ error: 'Invalid OTP. Please try again.' });
+    }
+
+    // Successful verification
+    otpDoc.used = true;
+    await otpDoc.save();
+
+    // Issue cryptographic verification token valid for 15 minutes
+    const verificationToken = jwt.sign(
+      { email: cleanEmail, verified: true, purpose: 'trainee-registration' },
+      JWT_SECRET,
+      { expiresIn: '15m' }
+    );
+
+    return res.json({
+      ok: true,
+      message: 'Email verified successfully.',
+      verificationToken,
+    });
+  } catch (err) {
+    return res.status(500).json({ error: err.message || 'Verification failed.' });
+  }
+});
+
+// ---------------- Trainee Registration ----------------
 router.post('/public/register', registerLimiter, async (req, res) => {
   try {
     const config = await getConfig();
@@ -140,40 +335,110 @@ router.post('/public/register', registerLimiter, async (req, res) => {
     }
 
     const d = req.body || {};
+
+    // 1. Mandatory Name Validation
     const name = String(d.name || '').trim();
     if (!name) {
-      return res.status(400).json({ error: 'Trainee name is required.' });
+      return res.status(400).json({ error: 'This field is required.', field: 'name' });
     }
 
-    // 1. Mobile Number Validation: Exactly 10 digits, numbers only
-    const rawMobile = String(d.mobile || '').trim();
-    if (!/^\d{10}$/.test(rawMobile)) {
-      return res.status(400).json({
-        error: 'Mobile number must be exactly 10 digits (numbers only, no alphabets or special characters).',
-      });
+    // 2. Mandatory Email & OTP Verification Validation
+    const email = String(d.email || '').trim().toLowerCase();
+    if (!email) {
+      return res.status(400).json({ error: 'This field is required.', field: 'email' });
+    }
+    if (!isValidEmail(email)) {
+      return res.status(400).json({ error: 'Please enter a valid email address.', field: 'email' });
     }
 
-    // 2. Trainee ID: Optional on initial registration. If provided, must not duplicate
-    const traineeId = String(d.traineeId || '').trim().toUpperCase();
-    if (traineeId) {
-      const exists = await Trainee.findOne({ traineeId });
-      if (exists) {
-        return res.status(409).json({ error: `Trainee ID "${traineeId}" is already registered. Please enter a different ID or leave empty.` });
+    // Verification token check (strict cryptographic verification)
+    const verificationToken = String(d.verificationToken || '').trim();
+    if (!verificationToken) {
+      return res.status(400).json({ error: 'Please verify your email before registration.', field: 'email' });
+    }
+
+    try {
+      const decoded = jwt.verify(verificationToken, JWT_SECRET);
+      if (!decoded.verified || decoded.email !== email || decoded.purpose !== 'trainee-registration') {
+        return res.status(400).json({ error: 'Please verify your email before registration.', field: 'email' });
       }
+    } catch {
+      return res.status(400).json({ error: 'Please verify your email before registration.', field: 'email' });
     }
 
-    // 3. Aadhaar Number Validation: Exactly 12 digits, numbers only
-    const rawAadhar = String(d.aadhar || '').trim();
-    let cleanAadhar = '';
+    // Check duplicate email
+    const existingEmail = await Trainee.findOne({ email }).lean();
+    if (existingEmail) {
+      return res.status(409).json({ error: 'This email is already registered with another trainee.', field: 'email' });
+    }
+
+    // Optional password hashing if provided
+    const password = String(d.password || '');
+    const passwordHash = password ? await bcrypt.hash(password, 10) : '';
+
+    // 4. Mandatory Mobile Number Validation
+    const mobile = String(d.mobile || '').trim();
+    if (!mobile) {
+      return res.status(400).json({ error: 'This field is required.', field: 'mobile' });
+    }
+    if (!isValidMobile(mobile)) {
+      return res.status(400).json({ error: 'Mobile number must contain exactly 10 valid digits.', field: 'mobile' });
+    }
+
+    // 5. Mandatory Date of Birth
+    const dob = String(d.dob || '').trim();
+    if (!dob) {
+      return res.status(400).json({ error: 'This field is required.', field: 'dob' });
+    }
+
+    // 6. Mandatory Gender
+    const gender = String(d.gender || '').trim();
+    if (!gender) {
+      return res.status(400).json({ error: 'This field is required.', field: 'gender' });
+    }
+
+    // 7. Mandatory Guardian Contact
+    const guardianContact = String(d.guardianContact || '').trim();
+    if (!guardianContact) {
+      return res.status(400).json({ error: 'This field is required.', field: 'guardianContact' });
+    }
+    if (!isValidGuardianContact(guardianContact)) {
+      return res.status(400).json({ error: 'Guardian Contact No. must contain exactly 10 digits.', field: 'guardianContact' });
+    }
+
+    // 8. Mandatory Guardian Name
+    const guardianName = String(d.guardianName || '').trim();
+    if (!guardianName) {
+      return res.status(400).json({ error: 'This field is required.', field: 'guardianName' });
+    }
+
+    // 9. Mandatory Joining Date
+    const rawJoiningDate = String(d.joiningDate || '').trim();
+    const joiningDate = rawJoiningDate || todayStr();
+
+    // 10. Aadhaar Number Validation, Verhoeff Checksum & Secure Masked + Encrypted Storage
+    const rawAadhar = String(d.aadhar || '').replace(/\s+/g, '');
+    let aadharMasked = '';
+    let aadharEncrypted = '';
+    let aadharHash = '';
+
     if (rawAadhar) {
-      cleanAadhar = rawAadhar.replace(/\D/g, '');
-      if (cleanAadhar.length !== 12) {
-        return res.status(400).json({ error: 'Aadhaar card number must be exactly 12 digits (numbers only).' });
+      if (!isValidAadhaar(rawAadhar)) {
+        return res.status(400).json({ error: 'Please enter a valid 12-digit Aadhaar number.', field: 'aadhar' });
       }
 
-      // Check duplicate Aadhaar
-      const aadharPattern = new RegExp('^\\D*' + cleanAadhar.split('').join('\\D*') + '\\D*$');
-      const existingAadhar = await Trainee.findOne({ aadhar: { $regex: aadharPattern } });
+      aadharHash = hashAadhaar(rawAadhar);
+      aadharEncrypted = encryptAadhaar(rawAadhar);
+      aadharMasked = maskAadhaar(rawAadhar);
+
+      // Check duplicate Aadhaar using hash and legacy raw value
+      const existingAadhar = await Trainee.findOne({
+        $or: [
+          { aadharHash },
+          { aadhar: rawAadhar },
+        ],
+      }).lean();
+
       if (existingAadhar) {
         return res.status(409).json({
           error: `This Aadhaar card number is already registered with another trainee (${existingAadhar.traineeId || existingAadhar.qrId}). Duplicate Aadhaar is not allowed.`,
@@ -181,33 +446,49 @@ router.post('/public/register', registerLimiter, async (req, res) => {
       }
     }
 
-    // 4. Email Address Validation: Must end with @gmail.com
-    const rawEmail = String(d.email || '').trim().toLowerCase();
-    if (rawEmail) {
-      if (!/^[a-zA-Z0-9._%+-]+@gmail\.com$/.test(rawEmail)) {
-        return res.status(400).json({
-          error: 'Email address must be a valid @gmail.com address (other email domains are rejected).',
+    // 11. Trainee ID (Optional; if supplied must not duplicate, case-insensitive)
+    const rawTraineeId = String(d.traineeId || '').trim();
+    let traineeId = '';
+    if (rawTraineeId) {
+      traineeId = rawTraineeId.toUpperCase();
+      const exists = await Trainee.findOne({
+        traineeId: { $regex: new RegExp(`^${escapeRegex(traineeId)}$`, 'i') },
+      }).lean();
+      if (exists) {
+        return res.status(409).json({
+          error: 'Trainee ID already exists. Please enter a different Trainee ID.',
+          field: 'traineeId',
         });
       }
     }
 
+    // Clean & prepare remaining fields
     const clean = {};
     for (const k of [
-      'name', 'mobile', 'email', 'dob', 'gender', 'qualification', 'aadhar', 'food',
-      'photo', 'address1', 'state', 'guardianName', 'guardianContact',
-      'joiningDate',
+      'qualification', 'food', 'photo', 'address1', 'state',
     ]) {
-      clean[k] = typeof d[k] === 'string' ? d[k].slice(0, k === 'photo' ? 400000 : 200) : '';
+      clean[k] = typeof d[k] === 'string' ? d[k].trim().slice(0, k === 'photo' ? 400000 : 200) : '';
     }
+
     clean.name = name;
-    clean.mobile = rawMobile;
-    clean.email = rawEmail;
-    if (cleanAadhar) clean.aadhar = cleanAadhar;
+    clean.email = email;
+    clean.mobile = mobile;
+    clean.dob = dob;
+    clean.gender = gender;
+    clean.guardianName = guardianName;
+    clean.guardianContact = guardianContact;
+    clean.joiningDate = joiningDate;
+    clean.passwordHash = passwordHash;
+
+    // Secure Aadhaar handling: Plain text is NEVER stored in database
+    clean.aadhar = aadharMasked;
+    clean.aadharMasked = aadharMasked;
+    clean.aadharEncrypted = aadharEncrypted;
+    clean.aadharHash = aadharHash;
 
     const trainees = await Trainee.find({}, 'hostelId qrId').lean();
     const hostelId = nextId('HST', trainees.map((t) => t.hostelId), 4);
-    
-    // Auto-generate guaranteed unique QR ID
+
     let qrId = nextId('QR', trainees.map((t) => t.qrId), 5);
     let counter = 1;
     while (await Trainee.exists({ qrId })) {
@@ -215,10 +496,9 @@ router.post('/public/register', registerLimiter, async (req, res) => {
       counter++;
     }
 
-    const joiningDate = clean.joiningDate || todayStr();
     const freeStayExpiryDate = addThreeCalendarMonths(joiningDate);
 
-    // Upload photograph to Google Drive if provided
+    // Google Drive photo handling
     let photoDriveId = '';
     let photoDriveUrl = '';
     let photoDriveMimeType = 'image/jpeg';
@@ -272,9 +552,44 @@ router.post('/public/register', registerLimiter, async (req, res) => {
       paymentStatus: 'FREE',
     });
 
-    // Notify configured approval authorities by email
-    const approvers = config.approvalConfig?.approvers || [];
-    for (const approver of approvers) {
+    // Notify approval authorities by email (Approvers, Admins & Superadmins)
+    let approversToNotify = (config.approvalConfig?.approvers || []).filter(
+      (a) => a && (a.userId || a.email || a.username)
+    );
+
+    // If no approvers configured yet, notify active superadmin & admin users
+    if (approversToNotify.length === 0) {
+      const adminUsers = await User.find({
+        roleId: { $in: ['superadmin', 'admin'] },
+        active: true,
+      }).lean();
+
+      if (adminUsers.length > 0) {
+        approversToNotify = adminUsers.map((u) => ({
+          userId: u.id,
+          name: u.name,
+          username: u.username,
+          email: u.email,
+          roleId: u.roleId,
+        }));
+      }
+    }
+
+    // Fallback: If still empty, send directly to admin notification email
+    if (approversToNotify.length === 0) {
+      const adminEmail = await getAdminNotificationEmail();
+      approversToNotify = [
+        {
+          userId: 'admin',
+          name: 'Hostel Administrator',
+          username: 'superadmin',
+          email: adminEmail,
+          roleId: 'superadmin',
+        },
+      ];
+    }
+
+    for (const approver of approversToNotify) {
       sendApprovalRequestEmail({ approver, trainee: newTrainee }).catch((err) =>
         console.warn('Approver email alert failed:', err.message)
       );
@@ -284,10 +599,22 @@ router.post('/public/register', registerLimiter, async (req, res) => {
     return res.json({ ok: true, hostelId, traineeId: finalTraineeId, qrId });
   } catch (err) {
     if (err.code === 11000) {
-      if (err.keyPattern?.aadhar) {
-        return res.status(409).json({ error: 'This Aadhar card number is already registered with another trainee.' });
+      if (err.keyPattern?.traineeId) {
+        return res.status(409).json({
+          error: 'Trainee ID already exists. Please enter a different Trainee ID.',
+          field: 'traineeId',
+        });
       }
-      return res.status(409).json({ error: 'This Trainee ID is already registered.' });
+      if (err.keyPattern?.aadharHash || err.keyPattern?.aadhar) {
+        return res.status(409).json({
+          error: 'This Aadhar card number is already registered with another trainee.',
+          field: 'aadhar',
+        });
+      }
+      return res.status(409).json({
+        error: 'Trainee ID already exists. Please enter a different Trainee ID.',
+        field: 'traineeId',
+      });
     }
     return res.status(500).json({ error: err.message });
   }

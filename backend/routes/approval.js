@@ -260,6 +260,13 @@ router.post('/approval/decision', auth, async (req, res) => {
           trainee.freeStayExpiryDate = val.expiryDate;
           trainee.paymentStatus = val.status;
         }
+
+        if (req.body?.hostel && req.body?.roomNo) {
+          trainee.hostel = String(req.body.hostel).trim();
+          trainee.roomNo = String(req.body.roomNo).trim();
+          trainee.hostelStatus = 'ACTIVE';
+          trainee.qrStatus = 'ACTIVE';
+        }
       }
     }
 
@@ -298,11 +305,12 @@ router.post('/approval/decision', auth, async (req, res) => {
       await trainee.save();
     }
 
-    // Deliver official ID card via email once trainee is approved
+    // Deliver official ID card via email once trainee is approved and has allocated room
     let idCardResult = null;
-    if (finalStatus === 'APPROVED' && trainee.email) {
+    const hasRoomAllocated = !!((trainee.hostel || trainee.hostelId) && (trainee.roomNo || trainee.room));
+    if (finalStatus === 'APPROVED' && trainee.email && hasRoomAllocated) {
       try {
-        idCardResult = await sendTraineeIdCardEmail({ trainee });
+        idCardResult = await sendTraineeIdCardEmail({ trainee, force: true, isUpdated: true });
       } catch (err) {
         console.warn('[ID Card Email Error]', err.message);
         idCardResult = { ok: false, error: err.message };
@@ -578,7 +586,18 @@ async function handleIdCardEmailDelivery(req, res) {
       return res.status(404).json({ error: `Trainee "${cleanId}" not found.` });
     }
 
-    const result = await sendTraineeIdCardEmail({ trainee, force: true });
+    // Persist latest hostel and roomNo if passed from frontend
+    if (req.body?.hostel && String(req.body.hostel).trim()) {
+      trainee.hostel = String(req.body.hostel).trim();
+    }
+    if (req.body?.roomNo && String(req.body.roomNo).trim()) {
+      trainee.roomNo = String(req.body.roomNo).trim();
+    }
+    if (req.body?.hostel || req.body?.roomNo) {
+      await trainee.save();
+    }
+
+    const result = await sendTraineeIdCardEmail({ trainee, force: true, isUpdated: true });
     return res.json(result);
   } catch (err) {
     return res.status(500).json({ error: err.message });
@@ -699,6 +718,11 @@ router.post('/trainees/:traineeId/allocate-room', auth, async (req, res) => {
       emailResult = await sendTraineeWelcomeEmail({ trainee, triggeredBy: 'Room Allocation' });
     }
 
+    let idCardResult = null;
+    if (trainee.email) {
+      idCardResult = await sendTraineeIdCardEmail({ trainee, force: true, isUpdated: true });
+    }
+
     await bumpRev();
 
     return res.json({
@@ -706,6 +730,7 @@ router.post('/trainees/:traineeId/allocate-room', auth, async (req, res) => {
       message: `${trainee.name} allocated to ${trainee.hostel}, Room ${trainee.roomNo}.`,
       trainee,
       emailResult,
+      idCardResult,
     });
   } catch (err) {
     return res.status(500).json({ error: err.message });
@@ -987,10 +1012,19 @@ router.get('/admin/email-logs', auth, requireSuper, async (req, res) => {
 router.get('/admin/notification-email', auth, async (req, res) => {
   try {
     const cfg = await Config.findOne({ key: 'main' }).lean();
-    let email = cfg?.adminNotificationEmail ? cfg.adminNotificationEmail.trim().toLowerCase() : '';
+    let email = cfg?.adminNotificationEmail && !cfg.adminNotificationEmail.endsWith('@hostel.com')
+      ? cfg.adminNotificationEmail.trim().toLowerCase()
+      : '';
     if (!email) {
-      const admin = await User.findOne({ roleId: 'superadmin', active: true }).sort({ createdAt: 1 }).lean();
+      const admin = await User.findOne({
+        roleId: { $in: ['superadmin', 'admin'] },
+        active: true,
+        email: { $exists: true, $ne: '', $not: /@hostel\.com$/i },
+      }).sort({ createdAt: 1 }).lean();
       email = admin?.email ? admin.email.trim().toLowerCase() : '';
+    }
+    if (!email) {
+      email = (process.env.ADMIN_EMAIL || process.env.SMTP_USER || 'apollotyres.hostel@gmail.com').trim().toLowerCase();
     }
     return res.json({ adminNotificationEmail: email });
   } catch (err) {

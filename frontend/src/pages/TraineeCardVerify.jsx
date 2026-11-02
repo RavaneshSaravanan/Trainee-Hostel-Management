@@ -5,8 +5,9 @@ import { fmtDate } from '../utils/dates.js';
 
 /**
  * Public Trainee Verification Page (#/verify/:traineeId).
- * Opened when an ID card QR code is scanned using a normal mobile camera or QR reader.
- * Does NOT mark attendance — displays permitted official identity details securely.
+ * Opened when an ID card QR code is scanned using a normal mobile camera or QR reader,
+ * or when the trainee/guardian clicks the "View / Verify Digital ID Card Badge →" link in email.
+ * Does NOT mark attendance — displays permitted official identity and guardian details securely.
  */
 export default function TraineeCardVerify({ traineeId }) {
   const [loading, setLoading] = useState(true);
@@ -36,7 +37,7 @@ export default function TraineeCardVerify({ traineeId }) {
 
   return (
     <div className="public-wrap" style={{ minHeight: '100vh', padding: '30px 16px', display: 'flex', justifyContent: 'center', alignItems: 'center' }}>
-      <div className="card" style={{ maxWidth: 440, width: '100%', padding: 0, overflow: 'hidden', boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04)' }}>
+      <div className="card" style={{ maxWidth: 460, width: '100%', padding: 0, overflow: 'hidden', boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04)' }}>
         {/* Header */}
         <div style={{ background: 'linear-gradient(135deg, #1e293b 0%, #0f172a 100%)', color: '#fff', padding: '18px 20px', display: 'flex', alignItems: 'center', gap: 14 }}>
           {data?.logo ? (
@@ -85,29 +86,51 @@ export default function TraineeCardVerify({ traineeId }) {
               </div>
 
               <h2 style={{ margin: '0 0 4px', fontSize: 20, color: '#0f172a' }}>{data.trainee.name}</h2>
-              <div style={{ display: 'inline-block', background: '#f1f5f9', color: '#1e293b', fontSize: 13, fontWeight: 700, padding: '3px 14px', borderRadius: 12, marginBottom: 18 }}>
-                {data.trainee.traineeId}
+              <div style={{ display: 'inline-flex', alignItems: 'center', gap: 6, background: '#f1f5f9', color: '#1e293b', fontSize: 13, fontWeight: 700, padding: '4px 14px', borderRadius: 12, marginBottom: 18 }}>
+                <span>ID: {data.trainee.traineeId || '—'}</span>
+                {data.trainee.qrId && (
+                  <>
+                    <span style={{ color: '#94a3b8' }}>•</span>
+                    <span style={{ color: '#6366f1' }}>QR: {data.trainee.qrId}</span>
+                  </>
+                )}
               </div>
 
               {/* Details table */}
               <div style={{ borderTop: '1px solid #e2e8f0', borderBottom: '1px solid #e2e8f0', padding: '12px 0', fontSize: 13, textAlign: 'left', lineHeight: 1.6 }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', padding: '3px 0' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', padding: '3px 0', borderBottom: '1px dashed #f1f5f9' }}>
+                  <span style={{ color: '#64748b' }}>Email ID:</span>
+                  <span style={{ fontWeight: 600, color: '#0f172a', wordBreak: 'break-all', textAlign: 'right', maxWidth: '65%' }}>{data.trainee.email || '—'}</span>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', padding: '3px 0', borderBottom: '1px dashed #f1f5f9' }}>
+                  <span style={{ color: '#64748b' }}>Mobile Number:</span>
+                  <span style={{ fontWeight: 600, color: '#0f172a' }}>{data.trainee.mobile || '—'}</span>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', padding: '3px 0', borderBottom: '1px dashed #f1f5f9' }}>
+                  <span style={{ color: '#64748b' }}>Guardian Name:</span>
+                  <span style={{ fontWeight: 600, color: '#0f172a' }}>{data.trainee.guardianName || '—'}</span>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', padding: '3px 0', borderBottom: '1px dashed #f1f5f9' }}>
+                  <span style={{ color: '#64748b' }}>Guardian Contact No:</span>
+                  <span style={{ fontWeight: 600, color: '#0f172a' }}>{data.trainee.guardianContact || '—'}</span>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', padding: '3px 0', borderBottom: '1px dashed #f1f5f9' }}>
+                  <span style={{ color: '#64748b' }}>Gender:</span>
+                  <span style={{ fontWeight: 600, color: '#0f172a' }}>{data.trainee.gender || '—'}</span>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', padding: '3px 0', borderBottom: '1px dashed #f1f5f9' }}>
                   <span style={{ color: '#64748b' }}>Qualification:</span>
-                  <span style={{ fontWeight: 600, color: '#0f172a' }}>{data.trainee.qualification}</span>
+                  <span style={{ fontWeight: 600, color: '#0f172a' }}>{data.trainee.qualification || 'Trainee'}</span>
                 </div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', padding: '3px 0' }}>
-                  <span style={{ color: '#64748b' }}>Phone Number:</span>
-                  <span style={{ fontWeight: 600, color: '#0f172a' }}>{data.trainee.mobile}</span>
-                </div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', padding: '3px 0' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', padding: '3px 0', borderBottom: '1px dashed #f1f5f9' }}>
                   <span style={{ color: '#64748b' }}>Hostel Block:</span>
-                  <span style={{ fontWeight: 600, color: '#0f172a' }}>{data.trainee.hostel}</span>
+                  <span style={{ fontWeight: 600, color: '#0f172a' }}>{data.trainee.hostel || 'Hostel Campus'}</span>
                 </div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', padding: '3px 0' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', padding: '3px 0', borderBottom: '1px dashed #f1f5f9' }}>
                   <span style={{ color: '#64748b' }}>Room Allocation:</span>
                   <span style={{ fontWeight: 600, color: '#0f172a' }}>{data.trainee.roomNo ? `Room ${data.trainee.roomNo}` : 'Unallocated'}</span>
                 </div>
-                <div style={{ display: 'flex', justifyContent: 'space-between', padding: '3px 0' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', padding: '3px 0', borderBottom: '1px dashed #f1f5f9' }}>
                   <span style={{ color: '#64748b' }}>Joining Date:</span>
                   <span style={{ fontWeight: 600, color: '#0f172a' }}>{fmtDate(data.trainee.joiningDate)}</span>
                 </div>

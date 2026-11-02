@@ -16,7 +16,7 @@ import { getRev, bumpRev } from '../models/Meta.js';
 import { DEFAULT_CONFIG, DEFAULT_ROLES, SUPER_ROLE, withDefaults } from '../defaults.js';
 import { addThreeCalendarMonths } from '../utils/validity.js';
 import { fmtDate } from '../utils/dates.js';
-import { sendTraineeWelcomeEmail } from '../services/emailService.js';
+import { sendTraineeWelcomeEmail, sendTraineeIdCardEmail } from '../services/emailService.js';
 
 const router = express.Router();
 
@@ -249,6 +249,60 @@ router.delete('/hostels/:hostelId', auth, requireSuper, async (req, res) => {
   }
 });
 
+// DELETE /api/hostels/:hostelId/rooms/:roomNo (Super Admin only: safe room deletion with active occupancy check)
+router.delete('/hostels/:hostelId/rooms/:roomNo', auth, requireSuper, async (req, res) => {
+  try {
+    const rawHostelId = req.params.hostelId || '';
+    const rawRoomNo = req.params.roomNo || '';
+    const cleanHostelId = String(rawHostelId).trim();
+    const cleanRoomNo = String(rawRoomNo).trim();
+
+    const hostel = await Hostel.findOne({
+      $or: [{ id: cleanHostelId }, { name: cleanHostelId }],
+    });
+
+    if (!hostel) {
+      return res.status(404).json({ error: `Hostel "${cleanHostelId}" not found.` });
+    }
+
+    const roomExists = (hostel.rooms || []).some((r) => String(r.no) === cleanRoomNo);
+    if (!roomExists) {
+      return res.status(404).json({ error: `Room "${cleanRoomNo}" not found in hostel "${hostel.name}".` });
+    }
+
+    // Check if any active trainees are assigned to this room
+    const activeOccupants = await Trainee.find({
+      $or: [{ hostel: hostel.name }, { hostelId: hostel.id }],
+      roomNo: cleanRoomNo,
+      hostelStatus: { $in: ['ACTIVE', 'ON LEAVE', 'OUTING', 'TEMPORARY VACATE'] },
+    }).lean();
+
+    if (activeOccupants.length > 0) {
+      const sampleNames = activeOccupants
+        .slice(0, 5)
+        .map((t) => `${t.name} (${t.traineeId || t.qrId})`)
+        .join(', ');
+      return res.status(400).json({
+        error: `Cannot delete Room "${cleanRoomNo}". There are ${activeOccupants.length} active trainee(s) currently residing here: ${sampleNames}${activeOccupants.length > 5 ? '...' : ''}. Please reassign them to another room before deleting.`,
+        activeCount: activeOccupants.length,
+      });
+    }
+
+    // Atomically pull room from hostel.rooms array
+    await Hostel.updateOne({ _id: hostel._id }, { $pull: { rooms: { no: cleanRoomNo } } });
+    await bumpRev();
+
+    return res.json({
+      ok: true,
+      message: `Room "${cleanRoomNo}" in hostel "${hostel.name}" was successfully deleted.`,
+      hostelId: hostel.id,
+      roomNo: cleanRoomNo,
+    });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
 // PUT /api/state (auth)
 router.put('/state', auth, async (req, res) => {
   try {
@@ -286,9 +340,9 @@ router.put('/state', auth, async (req, res) => {
           })
         );
 
-        // Automatically trigger welcome email when room is allocated to an approved trainee
+        // Automatically trigger welcome email and ID Card email when room is allocated
         const candidates = db.trainees.filter(
-          (t) => t && t.hostel && t.roomNo && t.approvalStatus === 'APPROVED' && !t.welcomeEmailSent
+          (t) => t && t.hostel && t.roomNo && (t.approvalStatus === 'APPROVED' || t.hostelStatus === 'ACTIVE')
         );
         if (candidates.length > 0) {
           const cIds = candidates.map((c) => c.traineeId || c.qrId).filter(Boolean);
@@ -296,13 +350,17 @@ router.put('/state', auth, async (req, res) => {
             $or: [{ traineeId: { $in: cIds } }, { qrId: { $in: cIds } }],
             hostel: { $exists: true, $ne: '' },
             roomNo: { $exists: true, $ne: '' },
-            approvalStatus: 'APPROVED',
-            welcomeEmailSent: false,
           })
-            .then((unSent) => {
-              for (const tr of unSent) {
-                sendTraineeWelcomeEmail({ trainee: tr, triggeredBy: 'Room Allocation' }).catch((err) =>
-                  console.warn('[Welcome Email Auto Trigger Error]', err.message)
+            .then((allocatedTrainees) => {
+              for (const tr of allocatedTrainees) {
+                if (!tr.welcomeEmailSent) {
+                  sendTraineeWelcomeEmail({ trainee: tr, triggeredBy: 'Room Allocation' }).catch((err) =>
+                    console.warn('[Welcome Email Auto Trigger Error]', err.message)
+                  );
+                }
+                // Send or update ID Card email with allocated hostel and room
+                sendTraineeIdCardEmail({ trainee: tr, force: true, isUpdated: true }).catch((err) =>
+                  console.warn('[ID Card Email Auto Trigger Error]', err.message)
                 );
               }
             })
