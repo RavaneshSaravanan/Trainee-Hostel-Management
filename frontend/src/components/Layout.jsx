@@ -15,7 +15,7 @@ export function navItems(config, can) {
 }
 
 export default function Layout({ children }) {
-  const { session, route, navigate, logout, getTrainee, db, config, can, roleName, syncError } = useStore();
+  const { session, route, navigate, logout, getTrainee, db, config, can, roleName, syncError, setSyncError } = useStore();
   const NAV = navItems(config, can);
   const pendingDetails = db.trainees.filter((t) => t.hostelStatus !== 'INACTIVE' && t.employmentStatus === 'ACTIVE' && !isComplete(t, config.customFields)).length;
   const [open, setOpen] = useState(false);
@@ -46,10 +46,11 @@ export default function Layout({ children }) {
       <aside className={`sidebar ${open ? 'open' : ''}`}>
         <div className="side-brand">
           <div className="brand-mark small">{config.logo ? <img src={config.logo} alt="" className="brand-logo" /> : <Icon name="home" size={20} />}</div>
-          <div>
+          <div style={{ flex: 1, minWidth: 0 }}>
             <div className="side-brand-title">{config.appName}</div>
             <div className="side-brand-sub">{config.appSub}</div>
           </div>
+          <button className="icon-btn side-close-btn" onClick={() => setOpen(false)} aria-label="Close navigation" title="Close"><Icon name="x" size={18} /></button>
         </div>
         <nav className="side-nav">
           {NAV.map((n) => (
@@ -72,7 +73,7 @@ export default function Layout({ children }) {
 
       <div className="main">
         <header className="topbar">
-          <button className="icon-btn mobile-menu-btn" onClick={() => setOpen(!open)}><Icon name="grid" size={18} /></button>
+          <button className="icon-btn mobile-menu-btn" onClick={() => setOpen(!open)} aria-label="Toggle navigation menu" title="Open navigation menu"><Icon name="menu" size={20} /></button>
           <div className="topbar-title">{title}</div>
           <div className="topbar-search">
             <Icon name="search" size={16} />
@@ -89,7 +90,25 @@ export default function Layout({ children }) {
           </div>
         </header>
         <main className="content">
-          {syncError && <div className="notice" style={{ color: 'var(--red)' }}>Not saved yet — server unreachable. Retrying… ({syncError})</div>}
+          {syncError && (
+            <div className="notice" style={{ color: 'var(--red)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
+              <span>
+                {syncError.startsWith('Server unreachable')
+                  ? `Not saved yet — server unreachable. Retrying… (${syncError.replace('Server unreachable: ', '')})`
+                  : syncError}
+              </span>
+              <button
+                className="icon-btn"
+                type="button"
+                onClick={() => setSyncError && setSyncError('')}
+                title="Dismiss notice"
+                style={{ color: 'var(--red)', width: 22, height: 22, flexShrink: 0 }}
+                aria-label="Dismiss error notice"
+              >
+                <Icon name="x" size={14} />
+              </button>
+            </div>
+          )}
           {children}
         </main>
       </div>

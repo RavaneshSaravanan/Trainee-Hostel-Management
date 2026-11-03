@@ -18,6 +18,15 @@ import { addThreeCalendarMonths } from '../utils/validity.js';
 
 let transporter = null;
 
+// Sequential dispatch queue to prevent concurrent SMTP socket timeouts
+let emailQueue = Promise.resolve();
+
+function enqueueEmail(fn) {
+  const result = emailQueue.then(fn, fn);
+  emailQueue = result.catch(() => {});
+  return result;
+}
+
 /**
  * Returns the deployed website base URL, ensuring trailing slashes are removed.
  * Strictly uses configured APP_URL or FRONTEND_URL, falling back to CLIENT_ORIGIN.
@@ -46,6 +55,9 @@ function getTransporter() {
         port,
         secure,
         auth: { user, pass },
+        connectionTimeout: 15000,
+        greetingTimeout: 15000,
+        socketTimeout: 20000,
         tls: {
           rejectUnauthorized: process.env.NODE_ENV === 'production',
         },
@@ -201,7 +213,7 @@ export async function sendEmail({
         mailOptions.attachments = attachments;
       }
 
-      const info = await transport.sendMail(mailOptions);
+      const info = await enqueueEmail(() => transport.sendMail(mailOptions));
 
       await Promise.all([
         NotificationLog.create({
@@ -573,7 +585,30 @@ ${footerText}
 `;
 
   try {
+    let pdfBuffer = null;
+    try {
+      const qrBuffer = await QRCode.toBuffer(verifyUrl, {
+        errorCorrectionLevel: 'H',
+        margin: 1,
+        width: 280,
+        color: { dark: '#2E1065', light: '#FFFFFF' },
+      });
+      pdfBuffer = await generateIdCardPdf({ trainee, branding, qrBuffer, verifyUrl });
+    } catch (pdfErr) {
+      console.warn('[Welcome Email ID Card PDF Warning]', pdfErr.message);
+    }
+
+    const attachments = [];
+    if (pdfBuffer) {
+      attachments.push({
+        filename: `Trainee-ID-Card-${trainee.traineeId || trainee.qrId}.pdf`,
+        content: pdfBuffer,
+        contentType: 'application/pdf',
+      });
+    }
+
     const result = await sendEmail({
+      attachments,
       to: email,
       subject,
       text,
@@ -590,18 +625,31 @@ ${footerText}
       },
     });
 
-    await Trainee.updateOne(
-      { _id: trainee._id },
-      {
-        $set: {
-          welcomeEmailSent: true,
-          welcomeEmailSentAt: new Date(),
-          welcomeEmailError: '',
-        },
-      }
-    );
-
-    return { ok: true, status: 'DELIVERED', recipient: email, dispatch: result };
+    if (result && result.ok) {
+      await Trainee.updateOne(
+        { _id: trainee._id },
+        {
+          $set: {
+            welcomeEmailSent: true,
+            welcomeEmailSentAt: new Date(),
+            welcomeEmailError: '',
+          },
+        }
+      );
+      return { ok: true, status: 'DELIVERED', recipient: email, dispatch: result };
+    } else {
+      const errMsg = result?.error || 'Email dispatch failed';
+      await Trainee.updateOne(
+        { _id: trainee._id },
+        {
+          $set: {
+            welcomeEmailSent: false,
+            welcomeEmailError: errMsg,
+          },
+        }
+      );
+      return { ok: false, status: 'FAILED', error: errMsg, recipient: email, dispatch: result };
+    }
   } catch (err) {
     await Trainee.updateOne(
       { _id: trainee._id },
@@ -788,7 +836,9 @@ export function renderDecisionEmailContent({
   rejectionReason = '',
   organizationName = 'APOLLO TYRES LTD',
   organizationLogo = '',
+  template = null,
 }) {
+  const customTpl = template || {};
   const norm = String(decision || trainee?.approvalStatus || '').trim().toUpperCase();
   const isApproved = norm === 'APPROVED' || norm === 'APPROVE';
   const isRejected = norm === 'REJECTED' || norm === 'REJECT';
@@ -798,13 +848,23 @@ export function renderDecisionEmailContent({
   }
 
   const finalDecision = isApproved ? 'APPROVED' : 'REJECTED';
-  const heading = isApproved ? 'REGISTRATION APPROVED' : 'REGISTRATION REJECTED';
+  const placeholderData = {
+    traineeName: trainee.name || '',
+    traineeId: trainee.traineeId || '',
+    qrId: trainee.qrId || '',
+    traineeEmail: trainee.email || '',
+    reviewer: actorName || trainee?.approvedBy || 'Hostel Administrator',
+    organizationName,
+  };
+  const heading = isApproved
+    ? (customTpl.heading ? replaceDynamicPlaceholders(customTpl.heading, placeholderData) : 'REGISTRATION APPROVED')
+    : (customTpl.heading ? replaceDynamicPlaceholders(customTpl.heading, placeholderData) : 'REGISTRATION REJECTED');
   const subject = isApproved
-    ? 'Your Hostel Registration Has Been Approved'
-    : 'Your Hostel Registration Has Been Rejected';
+    ? (customTpl.subject ? replaceDynamicPlaceholders(customTpl.subject, placeholderData) : 'Your Hostel Registration Has Been Approved')
+    : (customTpl.subject ? replaceDynamicPlaceholders(customTpl.subject, placeholderData) : 'Your Hostel Registration Has Been Rejected');
   const bodyText = isApproved
-    ? 'Your hostel registration has been reviewed and approved successfully.'
-    : 'Your hostel registration has been reviewed and rejected.';
+    ? (customTpl.bodyText ? replaceDynamicPlaceholders(customTpl.bodyText, placeholderData) : 'Your hostel registration has been reviewed and approved successfully.')
+    : (customTpl.bodyText ? replaceDynamicPlaceholders(customTpl.bodyText, placeholderData) : 'Your hostel registration has been reviewed and rejected.');
   const reviewer = actorName || trainee?.approvedBy || 'Hostel Administrator';
   const reason = isRejected ? String(rejectionReason || trainee?.rejectionReason || 'Details could not be verified').trim() : '';
 
@@ -895,8 +955,15 @@ export async function sendDecisionNotificationEmail({ trainee, decision, rejecti
   const cfg = await Config.findOne({ key: 'main' }).lean();
   const branding = { ...DEFAULT_ORG_BRANDING, ...(cfg?.orgBranding || {}) };
 
+  const norm = String(decision || trainee?.approvalStatus || '').trim().toUpperCase();
+  const isApproved = norm === 'APPROVED' || norm === 'APPROVE';
+  const selectedTemplate = isApproved
+    ? (cfg?.emailTemplates?.approvalApproved || cfg?.emailTemplates?.approval || null)
+    : (cfg?.emailTemplates?.approvalRejected || cfg?.emailTemplates?.rejection || null);
+
   // Use single source of truth template renderer
   const content = renderDecisionEmailContent({
+    template: selectedTemplate,
     decision,
     trainee,
     actorName,
@@ -905,19 +972,13 @@ export async function sendDecisionNotificationEmail({ trainee, decision, rejecti
     organizationLogo: branding.logo || '',
   });
 
-  // Strict pre-send validation: Ensure subject, heading, body, and decision strictly match
+  // Strict pre-send validation: Ensure heading, body, and decision strictly match decision intent
   if (content.decision === 'APPROVED') {
-    if (content.heading !== 'REGISTRATION APPROVED' ||
-        content.subject !== 'Your Hostel Registration Has Been Approved' ||
-        !content.bodyText.includes('approved successfully') ||
-        content.bannerBg !== '#16a34a') {
+    if (content.bannerBg !== '#16a34a' || String(content.heading).toUpperCase().includes('REJECT') || String(content.subject).toUpperCase().includes('REJECT')) {
       throw new Error('Approval email validation failed: Contradictory content detected.');
     }
   } else if (content.decision === 'REJECTED') {
-    if (content.heading !== 'REGISTRATION REJECTED' ||
-        content.subject !== 'Your Hostel Registration Has Been Rejected' ||
-        !content.bodyText.includes('reviewed and rejected') ||
-        content.bannerBg !== '#dc2626') {
+    if (content.bannerBg !== '#dc2626' || !String(content.heading).toUpperCase().includes('REJECT')) {
       throw new Error('Rejection email validation failed: Contradictory content detected.');
     }
   }
@@ -1315,18 +1376,31 @@ ${footerText}
       metadata: { traineeId: trainee.traineeId, qrId: trainee.qrId, hasPdfAttachment: !!pdfBuffer },
     });
 
-    await Trainee.updateOne(
-      { _id: trainee._id },
-      {
-        $set: {
-          idCardDelivered: true,
-          idCardDeliveredAt: new Date(),
-          idCardDeliveryError: '',
-        },
-      }
-    );
-
-    return { ok: true, status: 'DELIVERED', recipient: email, dispatch: result };
+    if (result && result.ok) {
+      await Trainee.updateOne(
+        { _id: trainee._id },
+        {
+          $set: {
+            idCardDelivered: true,
+            idCardDeliveredAt: new Date(),
+            idCardDeliveryError: '',
+          },
+        }
+      );
+      return { ok: true, status: 'DELIVERED', recipient: email, dispatch: result };
+    } else {
+      const errMsg = result?.error || 'Email dispatch failed';
+      await Trainee.updateOne(
+        { _id: trainee._id },
+        {
+          $set: {
+            idCardDelivered: false,
+            idCardDeliveryError: errMsg,
+          },
+        }
+      );
+      return { ok: false, status: 'FAILED', error: errMsg, recipient: email, dispatch: result };
+    }
   } catch (err) {
     await Trainee.updateOne(
       { _id: trainee._id },

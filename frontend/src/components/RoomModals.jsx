@@ -1,26 +1,46 @@
 import { useState } from 'react';
 import { useStore } from '../store.jsx';
-import { Avatar, Icon, Modal } from './ui.jsx';
+import { Avatar, Badge, Icon, Modal } from './ui.jsx';
 import { occupantsOf } from '../utils/summary.js';
 
 function RoomPicker({ hostel, setHostel, room, setRoom, currentTraineeId }) {
   const { db } = useStore();
-  const h = db.hostels.find((x) => x.name === hostel);
+  const h = db.hostels.find((x) => x.name === hostel || x.id === hostel);
   return (
     <>
-      <label className="field-label">Hostel</label>
-      <select className="input" value={hostel} required onChange={(e) => { setHostel(e.target.value); setRoom(''); }}>
+      <label className="field-label">Hostel Block</label>
+      <select
+        className="input"
+        value={hostel}
+        required
+        onChange={(e) => {
+          setHostel(e.target.value);
+          setRoom('');
+        }}
+      >
         <option value="">Select hostel…</option>
-        {db.hostels.map((x) => <option key={x.id} value={x.name}>{x.name}</option>)}
+        {db.hostels.map((x) => (
+          <option key={x.id} value={x.name}>
+            {x.name}
+          </option>
+        ))}
       </select>
-      <label className="field-label" style={{ marginTop: 12 }}>Room No.</label>
+      <label className="field-label" style={{ marginTop: 12 }}>
+        Room Number
+      </label>
       <select className="input" value={room} required onChange={(e) => setRoom(e.target.value)}>
         <option value="">{h ? 'Select room…' : 'Select hostel first…'}</option>
-        {h && h.rooms.map((r) => {
-          const occ = occupantsOf(db, hostel, r.no).filter((t) => t.traineeId !== currentTraineeId).length;
-          const full = occ >= r.capacity;
-          return <option key={r.no} value={r.no} disabled={full}>{r.no} — {occ}/{r.capacity} occupied{full ? ' (full)' : ''}</option>;
-        })}
+        {h &&
+          h.rooms.map((r) => {
+            const occ = occupantsOf(db, h.name, r.no).filter((t) => t.traineeId !== currentTraineeId).length;
+            const available = Math.max(0, r.capacity - occ);
+            const full = occ >= r.capacity;
+            return (
+              <option key={r.no} value={r.no} disabled={full}>
+                Room {r.no} — {occ}/{r.capacity} beds occupied ({available} available){full ? ' — FULL' : ''}
+              </option>
+            );
+          })}
       </select>
     </>
   );
@@ -31,6 +51,7 @@ export function ApproveModal({ trainee, onClose }) {
   const { approveTrainee, notify, navigate } = useStore();
   const [hostel, setHostel] = useState('');
   const [room, setRoom] = useState('');
+  const [submitting, setSubmitting] = useState(false);
 
   const isRejected = trainee.approvalStatus === 'REJECTED' || trainee.hostelStatus === 'REJECTED';
   const isPending = trainee.approvalStatus === 'PENDING_APPROVAL' || trainee.hostelStatus === 'PENDING REVIEW';
@@ -39,8 +60,8 @@ export function ApproveModal({ trainee, onClose }) {
     <Modal
       title={isRejected ? 'Room Allocation Blocked' : 'Allocate Room & Bed'}
       onClose={onClose}
-      submitLabel={isRejected || isPending ? undefined : 'Confirm Room Allocation'}
-      onSubmit={() => {
+      submitLabel={isRejected || isPending ? undefined : submitting ? 'Allocating…' : 'Confirm Room Allocation'}
+      onSubmit={async () => {
         if (isRejected) {
           notify('Cannot allocate room: Trainee is rejected.');
           return;
@@ -53,17 +74,22 @@ export function ApproveModal({ trainee, onClose }) {
           notify('Please select both a hostel and room number.');
           return;
         }
-        approveTrainee(trainee.traineeId, hostel, room);
-        notify(`${trainee.name} successfully allocated to ${hostel}, Room ${room}.`);
-        onClose();
-        navigate('trainee-profile', { id: trainee.traineeId });
+        setSubmitting(true);
+        const ok = await approveTrainee(trainee.traineeId, hostel, room);
+        setSubmitting(false);
+        if (ok) {
+          onClose();
+          navigate('trainee-profile', { id: trainee.traineeId });
+        }
       }}
     >
       <div className="approve-trainee" style={{ marginBottom: 14 }}>
         <Avatar trainee={trainee} size="md" />
         <div>
           <div className="approve-name">{trainee.name}</div>
-          <div className="approve-sub">{trainee.traineeId} · {trainee.qualification}</div>
+          <div className="approve-sub">
+            {trainee.traineeId} · {trainee.qualification}
+          </div>
         </div>
       </div>
 
@@ -78,7 +104,8 @@ export function ApproveModal({ trainee, onClose }) {
         <div className="alert-banner bad" style={{ margin: 0 }}>
           <Icon name="alert" size={18} />
           <div className="alert-text">
-            <strong>Approval Required:</strong> This trainee is currently pending approval. Please review and approve their registration before assigning a room.
+            <strong>Approval Required:</strong> This trainee is currently pending approval. Please review and approve
+            their registration before assigning a room.
           </div>
           <button
             type="button"
@@ -92,7 +119,13 @@ export function ApproveModal({ trainee, onClose }) {
           </button>
         </div>
       ) : (
-        <RoomPicker hostel={hostel} setHostel={setHostel} room={room} setRoom={setRoom} currentTraineeId={trainee.traineeId} />
+        <RoomPicker
+          hostel={hostel}
+          setHostel={setHostel}
+          room={room}
+          setRoom={setRoom}
+          currentTraineeId={trainee.traineeId}
+        />
       )}
     </Modal>
   );
@@ -103,23 +136,47 @@ export function ChangeRoomModal({ trainee, onClose }) {
   const { changeRoom, notify } = useStore();
   const [hostel, setHostel] = useState(trainee.hostel);
   const [room, setRoom] = useState(trainee.roomNo);
+  const [submitting, setSubmitting] = useState(false);
+
   return (
     <Modal
       title={`Change Room — ${trainee.name}`}
       onClose={onClose}
-      submitLabel="Save Room Change"
-      onSubmit={() => {
-        if (hostel === trainee.hostel && room === trainee.roomNo) { onClose(); return; }
-        changeRoom(trainee.traineeId, hostel, room);
-        notify(`Room updated: ${hostel}, Room ${room}. Previous room kept in history.`);
-        onClose();
+      submitLabel={submitting ? 'Saving…' : 'Save Room Change'}
+      onSubmit={async () => {
+        if (hostel === trainee.hostel && room === trainee.roomNo) {
+          onClose();
+          return;
+        }
+        if (!hostel || !room) {
+          notify('Please select both a hostel and room number.');
+          return;
+        }
+        setSubmitting(true);
+        const ok = await changeRoom(trainee.traineeId, hostel, room);
+        setSubmitting(false);
+        if (ok) {
+          onClose();
+        }
       }}
     >
       <div className="two-col" style={{ marginBottom: 14 }}>
-        <div><label className="field-label">Current Hostel</label><input className="input" value={trainee.hostel || '—'} disabled readOnly /></div>
-        <div><label className="field-label">Current Room</label><input className="input" value={trainee.roomNo || '—'} disabled readOnly /></div>
+        <div>
+          <label className="field-label">Current Hostel</label>
+          <input className="input" value={trainee.hostel || '—'} disabled readOnly />
+        </div>
+        <div>
+          <label className="field-label">Current Room</label>
+          <input className="input" value={trainee.roomNo || '—'} disabled readOnly />
+        </div>
       </div>
-      <RoomPicker hostel={hostel} setHostel={setHostel} room={room} setRoom={setRoom} currentTraineeId={trainee.traineeId} />
+      <RoomPicker
+        hostel={hostel}
+        setHostel={setHostel}
+        room={room}
+        setRoom={setRoom}
+        currentTraineeId={trainee.traineeId}
+      />
     </Modal>
   );
 }
@@ -130,17 +187,31 @@ export function RoomOccupantsModal({ hostel, roomNo, onClose, onMove }) {
   const occupants = occupantsOf(db, hostel, roomNo);
   return (
     <Modal title={`${hostel} — Room ${roomNo}`} onClose={onClose}>
-      <div className="field-label">Current occupants</div>
-      {occupants.length ? occupants.map((o) => (
-        <div className="occupant-row" key={o.traineeId}>
-          <Avatar trainee={o} />
-          <div className="occupant-name">
-            <a className="link" onClick={() => { onClose(); navigate('trainee-profile', { id: o.traineeId }); }}>{o.name}</a>{' '}
-            <span className="muted">({o.traineeId})</span>
+      <div className="field-label">Current occupants ({occupants.length})</div>
+      {occupants.length ? (
+        occupants.map((o) => (
+          <div className="occupant-row" key={o.traineeId}>
+            <Avatar trainee={o} />
+            <div className="occupant-name">
+              <a
+                className="link"
+                onClick={() => {
+                  onClose();
+                  navigate('trainee-profile', { id: o.traineeId });
+                }}
+              >
+                {o.name}
+              </a>{' '}
+              <span className="muted">({o.traineeId})</span>
+            </div>
+            <button type="button" className="btn btn-ghost btn-xs" onClick={() => onMove(o)}>
+              <Icon name="edit" size={13} /> Move
+            </button>
           </div>
-          <button type="button" className="btn btn-ghost btn-xs" onClick={() => onMove(o)}><Icon name="edit" size={13} /> Move</button>
-        </div>
-      )) : <div className="empty-cell">Room is currently vacant.</div>}
+        ))
+      ) : (
+        <div className="empty-cell">Room is currently vacant.</div>
+      )}
     </Modal>
   );
 }

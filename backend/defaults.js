@@ -115,6 +115,26 @@ export const DEFAULT_EMAIL_TEMPLATES = {
     headerBg: '#2E1065',
     accentColor: '#7C3AED',
   },
+  approvalApproved: {
+    subject: 'Your Hostel Registration Has Been Approved — Apollo Tyres Ltd ({{traineeName}})',
+    heading: 'REGISTRATION APPROVED',
+    subheading: 'Official Trainee Registration Review Decision',
+    bodyText: 'Dear {{traineeName}},\n\nYour hostel registration has been reviewed and approved successfully.\n\nA hostel room and ID card will be allocated shortly. Upon room allocation, your official Trainee Identity Card and Welcome Package will be sent to this email address.',
+    footerText: 'Apollo Tyres Ltd · Trainee Hostel Management System · Automated Notification',
+    logoUrl: '',
+    headerBg: '#16A34A',
+    accentColor: '#16A34A',
+  },
+  approvalRejected: {
+    subject: 'Your Hostel Registration Has Been Rejected — Apollo Tyres Ltd ({{traineeName}})',
+    heading: 'REGISTRATION REJECTED',
+    subheading: 'Official Trainee Registration Review Decision',
+    bodyText: 'Dear {{traineeName}},\n\nYour hostel registration has been reviewed and rejected.\n\nIf you believe this decision was made in error or if you have questions regarding the rejection reason, please contact the Hostel Administration office.',
+    footerText: 'Apollo Tyres Ltd · Trainee Hostel Management System · Automated Notification',
+    logoUrl: '',
+    headerBg: '#DC2626',
+    accentColor: '#DC2626',
+  },
 };
 
 export const DEFAULT_EMAIL_RECIPIENTS = [];

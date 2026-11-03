@@ -7,6 +7,12 @@ import { ApprovalLog } from '../models/ApprovalLog.js';
 import { EmailLog } from '../models/EmailLog.js';
 import { bumpRev } from '../models/Meta.js';
 import {
+  allocateTraineeToRoom,
+  getRoomOccupancy,
+  getAllRoomsOccupancy,
+  validateCapacityReduction,
+} from '../services/roomService.js';
+import {
   sendDecisionNotificationEmail,
   sendTraineeIdCardEmail,
   sendTraineeWelcomeEmail,
@@ -262,10 +268,19 @@ router.post('/approval/decision', auth, async (req, res) => {
         }
 
         if (req.body?.hostel && req.body?.roomNo) {
-          trainee.hostel = String(req.body.hostel).trim();
-          trainee.roomNo = String(req.body.roomNo).trim();
-          trainee.hostelStatus = 'ACTIVE';
-          trainee.qrStatus = 'ACTIVE';
+          const allocRes = await allocateTraineeToRoom({
+            traineeId: cleanId,
+            hostelNameOrId: req.body.hostel,
+            roomNo: req.body.roomNo,
+            actorName: req.user.name,
+          });
+          trainee.hostel = allocRes.trainee.hostel;
+          trainee.hostelId = allocRes.trainee.hostelId;
+          trainee.roomNo = allocRes.trainee.roomNo;
+          trainee.hostelStatus = allocRes.trainee.hostelStatus;
+          trainee.qrStatus = allocRes.trainee.qrStatus;
+          if (allocRes.emailResult) emailResult = allocRes.emailResult;
+          if (allocRes.idCardResult) idCardResult = allocRes.idCardResult;
         }
       }
     }
@@ -682,58 +697,86 @@ router.post('/trainees/:traineeId/send-welcome-email', auth, async (req, res) =>
 });
 
 // ---------------- 12. Allocate Room & Trigger Welcome Email ----------------
-router.post('/trainees/:traineeId/allocate-room', auth, async (req, res) => {
+async function handleRoomAllocation(req, res) {
   try {
-    const rawId = req.params.traineeId || '';
+    const rawId = req.params.traineeId || req.body.traineeId || '';
     const cleanId = String(rawId).trim().toUpperCase();
     const { hostel = '', roomNo = '' } = req.body || {};
 
-    if (!hostel || !roomNo) {
-      return res.status(400).json({ error: 'Both hostel and room number are required.' });
-    }
-
-    const trainee = await Trainee.findOne({
-      $or: [{ traineeId: cleanId }, { qrId: cleanId }],
+    const allocResult = await allocateTraineeToRoom({
+      traineeId: cleanId,
+      hostelNameOrId: hostel,
+      roomNo,
+      actorName: req.user ? req.user.name : 'System',
     });
 
-    if (!trainee) {
-      return res.status(404).json({ error: `Trainee "${cleanId}" not found.` });
+    return res.json(allocResult);
+  } catch (err) {
+    console.error('Error in PUT room capacity:', err?.message || err);
+    const status = err.status || err.statusCode || (err.name === 'ValidationError' ? 400 : 500);
+    return res.status(status).json({
+      error: err.message,
+      code: err.code || (status === 400 ? 'VALIDATION_ERROR' : status === 409 ? 'CONFLICT' : 'INTERNAL_SERVER_ERROR'),
+    });
+  }
+}
+router.post('/trainees/:traineeId/allocate-room', auth, handleRoomAllocation);
+router.post('/approval/allocate-room', auth, handleRoomAllocation);
+
+// ---------------- 12b. Dynamic Room Occupancy Dashboard Endpoint ----------------
+router.get('/hostels/occupancy', auth, async (req, res) => {
+  try {
+    const { hostel, room, status } = req.query || {};
+    const occupancyData = await getAllRoomsOccupancy({ hostel, room, status });
+    return res.json({ ok: true, rooms: occupancyData });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------- 12c. Super Admin Room Capacity Configuration ----------------
+router.put('/hostels/:hostelId/rooms/:roomNo/capacity', auth, requireSuper, async (req, res) => {
+  try {
+    const { hostelId = '', roomNo = '' } = req.params;
+    const { capacity } = req.body || {};
+    const cap = Number(capacity);
+
+    if (isNaN(cap) || cap < 1 || !Number.isInteger(cap)) {
+      return res.status(400).json({ error: 'Room capacity must be a positive integer of at least 1.', code: 'INVALID_CAPACITY' });
     }
 
-    if (trainee.approvalStatus === 'REJECTED' || trainee.hostelStatus === 'REJECTED') {
-      return res.status(400).json({ error: 'Cannot allocate room: Trainee is rejected.' });
+    // Validate capacity reduction below occupancy
+    if (typeof validateCapacityReduction === 'function') {
+      await validateCapacityReduction(hostelId, roomNo, cap);
     }
 
-    trainee.hostel = String(hostel).trim();
-    trainee.roomNo = String(roomNo).trim();
-    trainee.hostelStatus = 'ACTIVE';
-    trainee.approvalStatus = 'APPROVED';
-    trainee.qrStatus = 'ACTIVE';
-    if (!trainee.approvedBy && req.user) trainee.approvedBy = req.user.name;
+    const { Hostel } = await import('../models/Hostel.js');
+    const hostel = await Hostel.findOne({
+      $or: [{ id: String(hostelId).trim() }, { name: String(hostelId).trim() }],
+    });
 
-    await trainee.save();
-
-    let emailResult = null;
-    if (!trainee.welcomeEmailSent) {
-      emailResult = await sendTraineeWelcomeEmail({ trainee, triggeredBy: 'Room Allocation' });
+    if (!hostel) {
+      return res.status(404).json({ error: `Hostel "${hostelId}" not found.` });
     }
 
-    let idCardResult = null;
-    if (trainee.email) {
-      idCardResult = await sendTraineeIdCardEmail({ trainee, force: true, isUpdated: true });
+    const roomObj = (hostel.rooms || []).find((r) => String(r.no).trim() === String(roomNo).trim());
+    if (!roomObj) {
+      return res.status(404).json({ error: `Room "${roomNo}" not found in hostel "${hostel.name}".` });
     }
 
+    roomObj.capacity = cap;
+    await hostel.save();
     await bumpRev();
 
     return res.json({
       ok: true,
-      message: `${trainee.name} allocated to ${trainee.hostel}, Room ${trainee.roomNo}.`,
-      trainee,
-      emailResult,
-      idCardResult,
+      message: `Room ${roomNo} capacity updated to ${cap}.`,
+      hostelId: hostel.id,
+      roomNo,
+      capacity: cap,
     });
   } catch (err) {
-    return res.status(500).json({ error: err.message });
+    return res.status(err.status || 500).json({ error: err.message, code: err.code });
   }
 });
 

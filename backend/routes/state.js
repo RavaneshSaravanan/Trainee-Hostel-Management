@@ -17,6 +17,7 @@ import { DEFAULT_CONFIG, DEFAULT_ROLES, SUPER_ROLE, withDefaults } from '../defa
 import { addThreeCalendarMonths } from '../utils/validity.js';
 import { fmtDate } from '../utils/dates.js';
 import { sendTraineeWelcomeEmail, sendTraineeIdCardEmail } from '../services/emailService.js';
+import { validateCapacityReduction } from '../services/roomService.js';
 
 const router = express.Router();
 
@@ -311,6 +312,18 @@ router.put('/state', auth, async (req, res) => {
 
     if (db && typeof db === 'object') {
       if (Array.isArray(db.hostels) && db.hostels.length > 0) {
+        // Enforce capacity rule: cannot reduce room capacity below current active occupancy
+        for (const h of db.hostels) {
+          if (h && Array.isArray(h.rooms)) {
+            for (const r of h.rooms) {
+              if (r && r.no && r.capacity !== undefined) {
+                if (typeof validateCapacityReduction === 'function') {
+                  await validateCapacityReduction(h.id || h.name, r.no, r.capacity);
+                }
+              }
+            }
+          }
+        }
         await Hostel.bulkWrite(
           db.hostels.filter((h) => h && h.id).map((h) => ({
             updateOne: {
@@ -340,32 +353,7 @@ router.put('/state', auth, async (req, res) => {
           })
         );
 
-        // Automatically trigger welcome email and ID Card email when room is allocated
-        const candidates = db.trainees.filter(
-          (t) => t && t.hostel && t.roomNo && (t.approvalStatus === 'APPROVED' || t.hostelStatus === 'ACTIVE')
-        );
-        if (candidates.length > 0) {
-          const cIds = candidates.map((c) => c.traineeId || c.qrId).filter(Boolean);
-          Trainee.find({
-            $or: [{ traineeId: { $in: cIds } }, { qrId: { $in: cIds } }],
-            hostel: { $exists: true, $ne: '' },
-            roomNo: { $exists: true, $ne: '' },
-          })
-            .then((allocatedTrainees) => {
-              for (const tr of allocatedTrainees) {
-                if (!tr.welcomeEmailSent) {
-                  sendTraineeWelcomeEmail({ trainee: tr, triggeredBy: 'Room Allocation' }).catch((err) =>
-                    console.warn('[Welcome Email Auto Trigger Error]', err.message)
-                  );
-                }
-                // Send or update ID Card email with allocated hostel and room
-                sendTraineeIdCardEmail({ trainee: tr, force: true, isUpdated: true }).catch((err) =>
-                  console.warn('[ID Card Email Auto Trigger Error]', err.message)
-                );
-              }
-            })
-            .catch(() => {});
-        }
+        // State sync completed cleanly without redundant email triggers
       }
 
       if (Array.isArray(db.attendance) && db.attendance.length > 0) {
@@ -501,7 +489,12 @@ router.put('/state', auth, async (req, res) => {
     const updatedState = await buildStateForUser(req.user);
     return res.json(updatedState);
   } catch (err) {
-    return res.status(500).json({ error: err.message });
+    console.error('Error in PUT /api/state:', err?.message || err);
+    const status = err.status || err.statusCode || (err.name === 'ValidationError' ? 400 : 500);
+    return res.status(status).json({
+      error: err.message || 'Failed to save application state',
+      code: err.code || (status === 400 ? 'VALIDATION_ERROR' : status === 409 ? 'CONFLICT' : 'INTERNAL_SERVER_ERROR'),
+    });
   }
 });
 

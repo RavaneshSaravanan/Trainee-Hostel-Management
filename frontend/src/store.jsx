@@ -93,11 +93,13 @@ export function StoreProvider({ children }) {
     } catch (e) {
       if (e.status === 401) {
         dropSession();
-      } else if (e.status === 400 || e.status === 403 || e.status === 404) {
-        setSyncError(e.message);
+      } else if (e.status === 400 || e.status === 403 || e.status === 404 || e.status === 409) {
+        dirty.current = false;
+        setSyncError(e.message || 'Validation error');
+        notify(e.message || 'Failed to save changes.');
       } else {
         dirty.current = true;
-        setSyncError(e.message);
+        setSyncError(`Server unreachable: ${e.message}`);
         setTimeout(flush, 5000);
       }
     } finally { saving.current = false; }
@@ -264,7 +266,7 @@ export function StoreProvider({ children }) {
   };
 
   // Allocate room and activate an approved trainee (QR already exists).
-  const approveTrainee = (traineeId, hostel, room) => {
+  const approveTrainee = async (traineeId, hostel, room) => {
     const target = db.trainees.find((t) => t.traineeId === traineeId);
     if (target && target.approvalStatus === 'REJECTED') {
       notify('Room allocation denied: Trainee registration is rejected.');
@@ -275,28 +277,45 @@ export function StoreProvider({ children }) {
       return false;
     }
 
-    // Immediately persist room allocation to backend and trigger official ID Card email delivery
-    api('/api/approval/allocate-room', {
-      method: 'POST',
-      body: { traineeId, hostel, roomNo: room },
-    }).catch((err) => console.warn('allocate-room backend sync notice:', err.message));
+    try {
+      const res = await api('/api/approval/allocate-room', {
+        method: 'POST',
+        body: { traineeId, hostel, roomNo: room },
+      });
 
-    setDb((p) => {
-      const qrId = nextId('QR', p.trainees.map((t) => t.qrId), 5);
-      return {
-        ...p,
-        trainees: p.trainees.map((t) =>
-          t.traineeId === traineeId
-            ? { ...t, hostel, roomNo: room, hostelStatus: 'ACTIVE', approvalStatus: 'APPROVED', qrStatus: 'ACTIVE', qrId: t.qrId || qrId, approvedBy: t.approvedBy || actor() }
-            : t
-        ),
-        roomHistory: [
-          ...p.roomHistory,
-          { traineeId, prevHostel: '', prevRoom: '', newHostel: hostel, newRoom: room, changeDate: todayStr(), changedBy: actor() },
-        ],
-      };
-    });
-    return true;
+      setDb((p) => {
+        const qrId = nextId('QR', p.trainees.map((t) => t.qrId), 5);
+        return {
+          ...p,
+          trainees: p.trainees.map((t) =>
+            t.traineeId === traineeId
+              ? {
+                  ...t,
+                  hostel,
+                  roomNo: room,
+                  hostelStatus: 'ACTIVE',
+                  approvalStatus: 'APPROVED',
+                  qrStatus: 'ACTIVE',
+                  qrId: t.qrId || qrId,
+                  approvedBy: t.approvedBy || actor(),
+                  welcomeEmailSent: res.trainee?.welcomeEmailSent ?? t.welcomeEmailSent,
+                  idCardDelivered: res.trainee?.idCardDelivered ?? t.idCardDelivered,
+                }
+              : t
+          ),
+          roomHistory: [
+            ...p.roomHistory,
+            { traineeId, prevHostel: '', prevRoom: '', newHostel: hostel, newRoom: room, changeDate: todayStr(), changedBy: actor() },
+          ],
+        };
+      });
+
+      notify(res.message || `${target?.name || traineeId} successfully allocated to ${hostel}, Room ${room}.`);
+      return true;
+    } catch (err) {
+      notify(err.message || 'Room allocation failed.');
+      return false;
+    }
   };
 
   const rejectTrainee = (traineeId) =>
@@ -322,24 +341,40 @@ export function StoreProvider({ children }) {
     }
   };
 
-  const changeRoom = (traineeId, newHostel, newRoom) => {
-    // Immediately persist room change to backend and trigger updated ID Card email delivery
-    api('/api/approval/allocate-room', {
-      method: 'POST',
-      body: { traineeId, hostel: newHostel, roomNo: newRoom },
-    }).catch((err) => console.warn('allocate-room changeRoom backend sync notice:', err.message));
+  const changeRoom = async (traineeId, newHostel, newRoom) => {
+    try {
+      const res = await api('/api/approval/allocate-room', {
+        method: 'POST',
+        body: { traineeId, hostel: newHostel, roomNo: newRoom },
+      });
 
-    return setDb((p) => {
-      const t = p.trainees.find((x) => x.traineeId === traineeId);
-      return {
-        ...p,
-        trainees: p.trainees.map((x) => (x.traineeId === traineeId ? { ...x, hostel: newHostel, roomNo: newRoom } : x)),
-        roomHistory: [
-          ...p.roomHistory,
-          { traineeId, prevHostel: t ? t.hostel : '', prevRoom: t ? t.roomNo : '', newHostel, newRoom, changeDate: todayStr(), changedBy: actor() },
-        ],
-      };
-    });
+      setDb((p) => {
+        const t = p.trainees.find((x) => x.traineeId === traineeId);
+        return {
+          ...p,
+          trainees: p.trainees.map((x) =>
+            x.traineeId === traineeId
+              ? {
+                  ...x,
+                  hostel: newHostel,
+                  roomNo: newRoom,
+                  idCardDelivered: res.trainee?.idCardDelivered ?? x.idCardDelivered,
+                }
+              : x
+          ),
+          roomHistory: [
+            ...p.roomHistory,
+            { traineeId, prevHostel: t ? t.hostel : '', prevRoom: t ? t.roomNo : '', newHostel, newRoom, changeDate: todayStr(), changedBy: actor() },
+          ],
+        };
+      });
+
+      notify(res.message || `Room updated: ${newHostel}, Room ${newRoom}. Previous room kept in history.`);
+      return true;
+    } catch (err) {
+      notify(err.message || 'Room transfer failed.');
+      return false;
+    }
   };
 
   // ---------- Attendance (one record per trainee per date) ----------
@@ -442,8 +477,57 @@ export function StoreProvider({ children }) {
   const addHostel = (name) => setDb((p) => ({ ...p, hostels: [...p.hostels, { id: nextId('H', p.hostels.map((h) => h.id), 1), name, rooms: [] }] }));
   const addRoom = (hostelId, no, capacity) =>
     setDb((p) => ({ ...p, hostels: p.hostels.map((h) => (h.id === hostelId ? { ...h, rooms: [...h.rooms, { no, capacity: Number(capacity) || 1 }] } : h)) }));
-  const setRoomCapacity = (hostelId, no, capacity) =>
-    setDb((p) => ({ ...p, hostels: p.hostels.map((h) => (h.id === hostelId ? { ...h, rooms: h.rooms.map((r) => (r.no === no ? { ...r, capacity: Number(capacity) || 1 } : r)) } : h)) }));
+  const setRoomCapacity = async (hostelId, no, capacity) => {
+    const h = db.hostels.find((x) => x.id === hostelId || x.name === hostelId);
+    const occupants = (db.trainees || []).filter(
+      (t) =>
+        (t.hostel === (h ? h.name : hostelId) || t.hostelId === (h ? h.id : hostelId)) &&
+        String(t.roomNo).trim() === String(no).trim() &&
+        ['ACTIVE', 'ON LEAVE', 'OUTING', 'TEMPORARY VACATE'].includes(t.hostelStatus) &&
+        t.employmentStatus !== 'RESIGNED'
+    );
+    const cap = Number(capacity);
+
+    if (isNaN(cap) || cap < 1 || !Number.isInteger(cap)) {
+      const msg = 'Room capacity must be a positive integer of at least 1.';
+      notify(msg);
+      return { ok: false, error: msg };
+    }
+
+    if (cap < occupants.length) {
+      const msg = `Cannot reduce room capacity below current occupancy of ${occupants.length}.`;
+      notify(msg);
+      return { ok: false, error: msg };
+    }
+
+    try {
+      const res = await api(`/api/hostels/${encodeURIComponent(hostelId)}/rooms/${encodeURIComponent(no)}/capacity`, {
+        method: 'PUT',
+        body: { capacity: cap },
+      });
+
+      // Update store only after server confirms the update
+      setDb((p) => ({
+        ...p,
+        hostels: p.hostels.map((hostel) =>
+          hostel.id === hostelId || hostel.name === hostelId
+            ? {
+                ...hostel,
+                rooms: hostel.rooms.map((r) => (r.no === no ? { ...r, capacity: cap } : r)),
+              }
+            : hostel
+        ),
+      }));
+
+      notify(res.message || `Room ${no} capacity updated to ${cap}.`);
+      setSyncError('');
+      return { ok: true, capacity: cap };
+    } catch (err) {
+      const errMsg = err.message || 'Failed to update room capacity';
+      notify(errMsg);
+      return { ok: false, error: errMsg };
+    }
+  };
 
   const deleteHostel = async (hostelId) => {
     try {
@@ -572,7 +656,7 @@ export function StoreProvider({ children }) {
   const changePassword = (oldPassword, newPassword) => api('/api/me/password', { method: 'POST', body: { oldPassword, newPassword } });
 
   const value = {
-    db, config, roles, users, session, route, toast, booting, syncError, isSuper, roleName, can,
+    db, config, roles, users, session, route, toast, booting, syncError, setSyncError, isSuper, roleName, can,
     setConfig, setRoles,
     login, logout, navigate, notify,
     getTrainee, actor,

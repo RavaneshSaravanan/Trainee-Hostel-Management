@@ -494,9 +494,52 @@ function PagesAndFields() {
   );
 }
 
+function RoomCapacityInput({ hostelId, roomNo, initialCapacity, onSave }) {
+  const [val, setVal] = useState(initialCapacity);
+  const [hasError, setHasError] = useState(false);
+
+  useEffect(() => {
+    setVal(initialCapacity);
+    setHasError(false);
+  }, [initialCapacity]);
+
+  const commit = async (newVal) => {
+    const trimmed = String(newVal).trim();
+    if (trimmed === '' || Number(trimmed) === Number(initialCapacity)) return;
+    const res = await onSave(hostelId, roomNo, trimmed);
+    if (!res || res.ok === false) {
+      setHasError(true);
+    } else {
+      setHasError(false);
+    }
+  };
+
+  return (
+    <input
+      type="number"
+      min="1"
+      className={`input ${hasError ? 'input-error' : ''}`}
+      style={{ width: 56, padding: '4px 6px', textAlign: 'center' }}
+      value={val}
+      onChange={(e) => {
+        setVal(e.target.value);
+        setHasError(false);
+      }}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') e.target.blur();
+      }}
+      onBlur={() => commit(val)}
+      title="Edit room bed capacity (press Enter or click away to save)"
+    />
+  );
+}
+
 /* ---------------- Hostels & rooms ---------------- */
 function Hostels() {
-  const { db, addHostel, addRoom, setRoomCapacity, deleteHostel, deleteRoom, isSuper, notify } = useStore();
+  const { db, addHostel, addRoom, setRoomCapacity, deleteHostel, deleteRoom, isSuper, notify, navigate } = useStore();
+  const [filterHostel, setFilterHostel] = useState('ALL');
+  const [filterRoom, setFilterRoom] = useState('');
+  const [filterStatus, setFilterStatus] = useState('ALL');
   const [name, setName] = useState('');
   const [room, setRoom] = useState({});
   const [deleteTarget, setDeleteTarget] = useState(null);
@@ -572,7 +615,7 @@ function Hostels() {
               {h.rooms.map((r) => (
                 <div className="room-chip" key={r.no}>
                   <span>Room {r.no}</span>
-                  <input type="number" min="1" value={r.capacity} onChange={(e) => setRoomCapacity(h.id, r.no, e.target.value)} />
+                  <RoomCapacityInput hostelId={h.id} roomNo={r.no} initialCapacity={r.capacity} onSave={setRoomCapacity} />
                   {isSuper && (
                     <button
                       type="button"
@@ -600,6 +643,190 @@ function Hostels() {
           </Card>
         ))
       )}
+
+      {/* Room Management & Occupancy Capacity Control Dashboard */}
+      {(() => {
+        const roomsList = [];
+        db.hostels.forEach((h) => {
+          (h.rooms || []).forEach((r) => {
+            const activeOccupants = db.trainees.filter(
+              (t) =>
+                (t.hostel === h.name || t.hostelId === h.id) &&
+                String(t.roomNo).trim() === String(r.no).trim() &&
+                ['ACTIVE', 'ON LEAVE', 'OUTING', 'TEMPORARY VACATE'].includes(t.hostelStatus) &&
+                t.employmentStatus !== 'RESIGNED'
+            );
+            const capacity = Number(r.capacity) || 0;
+            const occupied = activeOccupants.length;
+            const available = Math.max(0, capacity - occupied);
+            const status = occupied >= capacity ? 'FULL' : 'AVAILABLE';
+
+            roomsList.push({
+              hostelId: h.id,
+              hostelName: h.name,
+              roomNo: String(r.no),
+              capacity,
+              occupied,
+              available,
+              status,
+              occupants: activeOccupants,
+            });
+          });
+        });
+
+        const filtered = roomsList.filter((rm) => {
+          if (filterHostel !== 'ALL' && rm.hostelId !== filterHostel && rm.hostelName !== filterHostel) return false;
+          if (filterRoom.trim() && !rm.roomNo.toLowerCase().includes(filterRoom.trim().toLowerCase())) return false;
+          if (filterStatus === 'FULL' && rm.status !== 'FULL') return false;
+          if (filterStatus === 'AVAILABLE' && rm.status !== 'AVAILABLE') return false;
+          return true;
+        });
+
+        const totalCapacityBeds = roomsList.reduce((acc, r) => acc + r.capacity, 0);
+        const totalOccupiedBeds = roomsList.reduce((acc, r) => acc + r.occupied, 0);
+        const totalAvailableBeds = Math.max(0, totalCapacityBeds - totalOccupiedBeds);
+        const fullRoomsCount = roomsList.filter((r) => r.status === 'FULL').length;
+
+        return (
+          <Card
+            title="Room Management & Occupancy Dashboard"
+            sub="Real-time capacity tracking strictly computed from active MongoDB allocations. Over-allocation is prevented by system mutex locks."
+          >
+            {/* KPI summary tiles */}
+            <div className="mini-kpi-grid" style={{ marginBottom: 16 }}>
+              <div className="mini-kpi">
+                <div className="mini-kpi-value">{totalCapacityBeds}</div>
+                <div className="mini-kpi-label">Total Beds</div>
+              </div>
+              <div className="mini-kpi">
+                <div className="mini-kpi-value">{totalOccupiedBeds}</div>
+                <div className="mini-kpi-label">Occupied Beds</div>
+              </div>
+              <div className="mini-kpi">
+                <div className="mini-kpi-value" style={{ color: 'var(--green, #16a34a)' }}>{totalAvailableBeds}</div>
+                <div className="mini-kpi-label">Available Beds</div>
+              </div>
+              <div className="mini-kpi">
+                <div className="mini-kpi-value" style={{ color: fullRoomsCount > 0 ? 'var(--red, #ef4444)' : 'var(--purple-700)' }}>{fullRoomsCount}</div>
+                <div className="mini-kpi-label">Full Rooms</div>
+              </div>
+            </div>
+
+            {/* Filter controls */}
+            <div className="filter-bar" style={{ padding: '0 0 14px 0' }}>
+              <select
+                className="input"
+                style={{ maxWidth: 200 }}
+                value={filterHostel}
+                onChange={(e) => setFilterHostel(e.target.value)}
+              >
+                <option value="ALL">All Hostels ({db.hostels.length})</option>
+                {db.hostels.map((h) => (
+                  <option key={h.id} value={h.name}>{h.name}</option>
+                ))}
+              </select>
+
+              <input
+                className="input"
+                style={{ maxWidth: 180 }}
+                placeholder="Search Room No…"
+                value={filterRoom}
+                onChange={(e) => setFilterRoom(e.target.value)}
+              />
+
+              <select
+                className="input"
+                style={{ maxWidth: 180 }}
+                value={filterStatus}
+                onChange={(e) => setFilterStatus(e.target.value)}
+              >
+                <option value="ALL">All Statuses</option>
+                <option value="FULL">FULL Only</option>
+                <option value="AVAILABLE">AVAILABLE Only</option>
+              </select>
+
+              {(filterHostel !== 'ALL' || filterRoom || filterStatus !== 'ALL') && (
+                <button
+                  className="btn btn-ghost btn-sm"
+                  onClick={() => {
+                    setFilterHostel('ALL');
+                    setFilterRoom('');
+                    setFilterStatus('ALL');
+                  }}
+                >
+                  Clear Filters
+                </button>
+              )}
+            </div>
+
+            {/* Real Data Table */}
+            <Table
+              headers={['Hostel', 'Room', 'Capacity', 'Occupied', 'Available', 'Status', 'Current Occupants']}
+              empty="No rooms match the selected filters."
+              rows={filtered.map((rm) => [
+                <strong>{rm.hostelName}</strong>,
+                `Room ${rm.roomNo}`,
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <RoomCapacityInput hostelId={rm.hostelId} roomNo={rm.roomNo} initialCapacity={rm.capacity} onSave={setRoomCapacity} />
+                  <span className="muted" style={{ fontSize: 11 }}>beds</span>
+                </div>,
+                <span style={{ fontWeight: 700, color: rm.occupied > 0 ? 'var(--purple-700)' : 'var(--gray-500)' }}>
+                  {rm.occupied}
+                </span>,
+                <span style={{ fontWeight: 700, color: rm.available === 0 ? 'var(--red, #ef4444)' : 'var(--green, #16a34a)' }}>
+                  {rm.available}
+                </span>,
+                rm.status === 'FULL' ? (
+                  <span
+                    style={{
+                      background: 'var(--red-bg, #fee2e2)',
+                      color: 'var(--red, #b91c1c)',
+                      fontWeight: 800,
+                      fontSize: 11,
+                      padding: '3px 8px',
+                      borderRadius: 9999,
+                      letterSpacing: 0.5,
+                    }}
+                  >
+                    FULL
+                  </span>
+                ) : (
+                  <span
+                    style={{
+                      background: 'var(--green-bg, #dcfce7)',
+                      color: 'var(--green, #15803d)',
+                      fontWeight: 800,
+                      fontSize: 11,
+                      padding: '3px 8px',
+                      borderRadius: 9999,
+                      letterSpacing: 0.5,
+                    }}
+                  >
+                    AVAILABLE
+                  </span>
+                ),
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, maxWidth: 320 }}>
+                  {rm.occupants.length > 0 ? (
+                    rm.occupants.map((occ) => (
+                      <span
+                        key={occ.traineeId || occ.qrId}
+                        className="chip"
+                        style={{ cursor: 'pointer', fontSize: 11, padding: '2px 8px' }}
+                        title={`Click to view profile of ${occ.name} (${occ.hostelStatus})`}
+                        onClick={() => navigate('trainee-profile', { id: occ.traineeId || occ.qrId })}
+                      >
+                        {occ.name}
+                      </span>
+                    ))
+                  ) : (
+                    <span className="muted" style={{ fontSize: 12 }}>None</span>
+                  )}
+                </div>,
+              ])}
+            />
+          </Card>
+        );
+      })()}
 
       {occupiedWarning && (
         <Modal
@@ -1598,6 +1825,8 @@ const TEMPLATE_TABS = [
   ['idCard', 'Trainee ID Card Email'],
   ['idCardUpdated', 'ID Card Updated Email'],
   ['approval', 'Approval Request Email'],
+  ['approvalApproved', 'Approval Decision (Approved)'],
+  ['approvalRejected', 'Approval Decision (Rejected)'],
 ];
 
 function EmailTemplateEditor() {
