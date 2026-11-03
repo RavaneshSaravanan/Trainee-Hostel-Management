@@ -289,7 +289,11 @@ router.post('/public/send-otp', otpLimiter, async (req, res) => {
         : (emailResult?.error || 'Failed to deliver verification email. Please check your email address and try again.');
 
       console.error(`[OTP Dispatch Failed] Could not deliver to ${maskEmail(cleanEmail)}: ${emailResult?.error || 'Unknown dispatch error'}`);
-      return res.status(503).json({ error: errMsg });
+      return res.status(400).json({
+        ok: false,
+        error: errMsg,
+        code: 'OTP_DELIVERY_FAILED',
+      });
     }
 
     console.log(`[OTP Dispatch Success] Delivered to ${maskEmail(cleanEmail)}`);

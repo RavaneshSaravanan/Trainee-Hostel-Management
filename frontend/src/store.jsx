@@ -111,20 +111,90 @@ export function StoreProvider({ children }) {
     return () => clearTimeout(h);
   }, [db, config, roles, session, flush]);
 
-  // ---------- poll other devices ----------
+  // ---------- Smart multi-device revision polling with exponential backoff ----------
   useEffect(() => {
     if (!session) return undefined;
-    const id = setInterval(async () => {
-      if (dirty.current || saving.current) return;
+
+    let isMounted = true;
+    let pollTimeout = null;
+    let consecutiveFailures = 0;
+
+    const poll = async () => {
+      if (!isMounted) return;
+
+      // 1. Skip polling when tab is backgrounded
+      if (typeof document !== 'undefined' && document.hidden) {
+        pollTimeout = setTimeout(poll, 15000);
+        return;
+      }
+
+      // 2. Skip polling when offline
+      if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+        pollTimeout = setTimeout(poll, 15000);
+        return;
+      }
+
+      // 3. Skip polling if local edits are pending save
+      if (dirty.current || saving.current) {
+        pollTimeout = setTimeout(poll, 8000);
+        return;
+      }
+
       try {
-        const { rev: r } = await api('/api/rev');
-        if (r !== rev.current && !dirty.current && !saving.current) applyServer(await api('/api/state'));
+        const res = await api('/api/rev');
+        const r = res?.rev;
+        if (typeof r === 'number' && r !== rev.current && !dirty.current && !saving.current) {
+          applyServer(await api('/api/state'));
+        }
         setSyncError('');
-      } catch (e) { if (e.status === 401) dropSession(); }
-    }, 6000);
-    return () => clearInterval(id);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [session]);
+        consecutiveFailures = 0;
+        if (isMounted) pollTimeout = setTimeout(poll, 10000);
+      } catch (e) {
+        if (e.status === 401) {
+          dropSession();
+          return;
+        }
+        consecutiveFailures++;
+        // Exponential backoff on server or network error: 15s -> 30s -> 60s max
+        const backoff = Math.min(15000 * Math.pow(1.5, consecutiveFailures - 1), 60000);
+        if (isMounted) pollTimeout = setTimeout(poll, backoff);
+      }
+    };
+
+    // Initial poll after short delay
+    pollTimeout = setTimeout(poll, 8000);
+
+    // Wake up immediately when tab is refocused or network reconnects
+    const onVisibilityChange = () => {
+      if (typeof document !== 'undefined' && !document.hidden) {
+        clearTimeout(pollTimeout);
+        poll();
+      }
+    };
+    const onOnline = () => {
+      clearTimeout(pollTimeout);
+      consecutiveFailures = 0;
+      poll();
+    };
+
+    if (typeof document !== 'undefined') {
+      document.addEventListener('visibilitychange', onVisibilityChange);
+    }
+    if (typeof window !== 'undefined') {
+      window.addEventListener('online', onOnline);
+    }
+
+    return () => {
+      isMounted = false;
+      clearTimeout(pollTimeout);
+      if (typeof document !== 'undefined') {
+        document.removeEventListener('visibilitychange', onVisibilityChange);
+      }
+      if (typeof window !== 'undefined') {
+        window.removeEventListener('online', onOnline);
+      }
+    };
+  }, [session, dropSession]);
 
   // ---------- auth + permissions ----------
   const role = session ? roles.find((r) => r.id === session.roleId) : null;

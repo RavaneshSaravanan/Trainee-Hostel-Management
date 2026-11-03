@@ -131,31 +131,34 @@ app.get('/api/health', (req, res) => {
 
 // Database readiness check for API routes
 app.use('/api', (req, res, next) => {
-  // Allow health check without blocking
-  if (req.path === '/health') return next();
+  // Allow health check and revision polling without blocking
+  if (req.path === '/health' || req.path === '/rev' || req.path === '/reviews/summary') return next();
 
   if (mongoose.connection.readyState === 1) {
     return next();
   }
 
-  // If currently connecting, wait briefly
-  if (mongoose.connection.readyState === 2) {
-    let retries = 0;
-    const interval = setInterval(() => {
-      retries++;
-      if (mongoose.connection.readyState === 1) {
-        clearInterval(interval);
-        return next();
-      }
-      if (retries > 25) { // 2.5s wait
-        clearInterval(interval);
-        return res.status(503).json({ error: 'Database is initializing. Please try again in a moment.' });
-      }
-    }, 100);
-    return;
+  // If disconnected, trigger reconnection
+  if (mongoose.connection.readyState === 0) {
+    connectDB().catch((err) => console.warn('[Auto-reconnect warning]', err.message));
   }
 
-  return res.status(503).json({ error: 'Database service unavailable. Please retry shortly.' });
+  // If connecting or reconnecting, wait briefly up to 3 seconds
+  let retries = 0;
+  const interval = setInterval(() => {
+    retries++;
+    if (mongoose.connection.readyState === 1) {
+      clearInterval(interval);
+      return next();
+    }
+    if (retries > 30) { // 3s wait
+      clearInterval(interval);
+      return res.status(503).json({
+        error: 'Database connection in progress. Please retry in a moment.',
+        code: 'DB_CONNECTING',
+      });
+    }
+  }, 100);
 });
 
 // API routes
@@ -198,14 +201,24 @@ let httpServer = null;
 
 export async function startServer() {
   validateEnv();
-  await connectDB();
-  await seedDatabase();
-  await verifySmtpConnection().catch((err) => {
-    console.warn('[Startup] Non-fatal SMTP verification warning:', err.message);
-  });
+
+  // Bind HTTP server immediately so Render detects port binding
   httpServer = app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Hostel backend running on http://localhost:${PORT}`);
+    console.log(`Hostel backend running on port ${PORT}`);
   });
+
+  try {
+    await connectDB();
+    await seedDatabase();
+  } catch (dbErr) {
+    console.error('[Startup DB Warning] Initial MongoDB connection postponed:', dbErr.message);
+    console.log('[Startup DB] Background readiness middleware will connect on incoming requests.');
+  }
+
+  await verifySmtpConnection().catch((err) => {
+    console.warn('[Startup] Non-fatal Email verification warning:', err.message);
+  });
+
   return httpServer;
 }
 

@@ -128,8 +128,8 @@ router.post('/approval/config', auth, requireSuper, async (req, res) => {
   }
 });
 
-// ---------------- 3. Get Trainees Pending Approval (Authorized Approvers) ----------------
-router.get('/approval/pending', auth, async (req, res) => {
+// ---------------- 3. Get Trainees Pending Approval / Reviews (Authorized Approvers) ----------------
+router.get(['/approval/pending', '/reviews', '/approval/reviews'], auth, async (req, res) => {
   try {
     const authorized = await isAuthorizedApprover(req.user.id);
     if (!authorized) {
@@ -144,14 +144,20 @@ router.get('/approval/pending', auth, async (req, res) => {
       ],
     }).sort({ createdAt: -1 }).lean();
 
-    return res.json({ pending });
+    const safeReviews = pending || [];
+    return res.json({
+      ok: true,
+      pending: safeReviews,
+      reviews: safeReviews,
+      count: safeReviews.length,
+    });
   } catch (err) {
-    return res.status(500).json({ error: err.message });
+    return res.status(500).json({ error: err.message, pending: [], reviews: [], count: 0 });
   }
 });
 
 // ---------------- 4. Review Trainee Details by ID (Authorized Approvers) ----------------
-router.get('/approval/review/:traineeId', auth, async (req, res) => {
+router.get(['/approval/review/:traineeId', '/reviews/:traineeId', '/approval/reviews/:traineeId'], auth, async (req, res) => {
   try {
     const authorized = await isAuthorizedApprover(req.user.id);
     if (!authorized) {
