@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import express from 'express';
 import rateLimit from 'express-rate-limit';
 import bcrypt from 'bcryptjs';
@@ -5,6 +6,7 @@ import jwt from 'jsonwebtoken';
 import { Config } from '../models/Config.js';
 import { Trainee } from '../models/Trainee.js';
 import { Otp } from '../models/Otp.js';
+import { User } from '../models/User.js';
 import { bumpRev } from '../models/Meta.js';
 import { DEFAULT_CONFIG, withDefaults } from '../defaults.js';
 import { nextId, todayStr } from '../utils/dates.js';
@@ -25,6 +27,17 @@ import {
 } from '../utils/encryption.js';
 
 const router = express.Router();
+
+function maskEmail(email) {
+  if (!email || typeof email !== 'string') return '***';
+  const parts = email.split('@');
+  if (parts.length !== 2) return '***';
+  const name = parts[0];
+  const domain = parts[1];
+  const visible = name.slice(0, 2);
+  return `${visible}***@${domain}`;
+}
+
 const JWT_SECRET = process.env.JWT_SECRET || 'trainee_hostel_secret_jwt_key_2026';
 
 function escapeRegex(str) {
@@ -220,7 +233,7 @@ router.post('/public/send-otp', otpLimiter, async (req, res) => {
       return res.status(400).json({ error: 'Please enter a valid email address.' });
     }
 
-    // Check if email already registered
+    // Check if email already registered with an active trainee
     const existingTrainee = await Trainee.findOne({ email: cleanEmail }).lean();
     if (existingTrainee) {
       return res.status(409).json({ error: 'This email is already registered with another trainee.' });
@@ -235,12 +248,16 @@ router.post('/public/send-otp', otpLimiter, async (req, res) => {
     }).lean();
 
     if (recentOtp) {
-      return res.status(429).json({ error: 'Please wait 60 seconds before requesting a new OTP.' });
+      const waitSeconds = Math.max(1, Math.ceil((new Date(recentOtp.createdAt).getTime() + 60 * 1000 - Date.now()) / 1000));
+      return res.status(429).json({ error: `Please wait ${waitSeconds} seconds before requesting a new OTP.` });
     }
 
-    // Generate 4-digit numeric OTP
-    const otpCode = String(Math.floor(1000 + Math.random() * 9000));
+    // Generate cryptographically secure 4-digit numeric OTP (1000 - 9999)
+    const otpCode = String(crypto.randomInt(1000, 10000));
     const expiresAt = new Date(Date.now() + 5 * 60 * 1000); // 5 minutes
+
+    // Hash OTP before storing for security
+    const hashedOtp = await bcrypt.hash(otpCode, 10);
 
     // Invalidate prior unused registration OTPs for this email
     await Otp.updateMany(
@@ -249,19 +266,36 @@ router.post('/public/send-otp', otpLimiter, async (req, res) => {
     );
 
     // Save new OTP
-    await Otp.create({
+    const newOtpDoc = await Otp.create({
       userId: 'anonymous',
       identifier: cleanEmail,
-      otp: otpCode,
+      otp: hashedOtp,
       type: 'trainee-registration',
       expiresAt,
     });
 
-    // Send email without logging the OTP in console
-    await sendRegistrationOtpEmail({ email: cleanEmail, otp: otpCode });
+    console.log(`[OTP Generated] 4-digit code created for ${maskEmail(cleanEmail)} (expires in 5 min)`);
 
+    // Dispatch email
+    const emailResult = await sendRegistrationOtpEmail({ email: cleanEmail, otp: otpCode });
+
+    if (!emailResult || !emailResult.ok) {
+      // Invalidate the created OTP so the user is not locked out by cooldown
+      await Otp.deleteOne({ _id: newOtpDoc._id });
+
+      const isUnconfigured = emailResult?.status === 'DEV_SIMULATED' && process.env.NODE_ENV === 'production';
+      const errMsg = isUnconfigured
+        ? 'SMTP email service is not configured on the server. Please contact hostel administration.'
+        : (emailResult?.error || 'Failed to deliver verification email. Please check your email address and try again.');
+
+      console.error(`[OTP Dispatch Failed] Could not deliver to ${maskEmail(cleanEmail)}: ${emailResult?.error || 'Unknown dispatch error'}`);
+      return res.status(502).json({ error: errMsg });
+    }
+
+    console.log(`[OTP Dispatch Success] Delivered to ${maskEmail(cleanEmail)}`);
     return res.json({ ok: true, message: 'OTP sent successfully to your email.' });
   } catch (err) {
+    console.error('[OTP Route Error]', err.message);
     return res.status(500).json({ error: err.message || 'Failed to send OTP.' });
   }
 });
@@ -278,7 +312,7 @@ router.post('/public/verify-otp', otpLimiter, async (req, res) => {
     }
 
     if (!cleanOtp || !/^\d{4}$/.test(cleanOtp)) {
-      return res.status(400).json({ error: 'Invalid OTP. Please try again.' });
+      return res.status(400).json({ error: 'Invalid OTP. Please enter a 4-digit code.' });
     }
 
     const otpDoc = await Otp.findOne({
@@ -289,23 +323,42 @@ router.post('/public/verify-otp', otpLimiter, async (req, res) => {
     }).sort({ createdAt: -1 });
 
     if (!otpDoc) {
-      return res.status(400).json({ error: 'Invalid OTP. Please try again.' });
+      console.warn(`[OTP Verification Failed] No active OTP found for ${maskEmail(cleanEmail)} (expired or used)`);
+      return res.status(400).json({ error: 'Verification code has expired or is invalid. Please request a new code.' });
     }
 
     // Attempt limit check (max 5)
     if (otpDoc.attempts >= 5) {
       otpDoc.used = true;
       await otpDoc.save();
-      return res.status(400).json({ error: 'Too many failed attempts. Please request a new OTP.' });
+      console.warn(`[OTP Blocked] Max attempts exceeded for ${maskEmail(cleanEmail)}`);
+      return res.status(400).json({ error: 'Too many failed attempts. Please request a new code.' });
     }
 
-    if (otpDoc.otp !== cleanOtp) {
+    // Support both hashed (bcrypt) and legacy plain text OTPs
+    let isMatch = false;
+    if (otpDoc.otp && (otpDoc.otp.startsWith('$2a') || otpDoc.otp.startsWith('$2b'))) {
+      isMatch = await bcrypt.compare(cleanOtp, otpDoc.otp);
+    } else {
+      isMatch = (otpDoc.otp === cleanOtp);
+    }
+
+    if (!isMatch) {
       otpDoc.attempts += 1;
+      if (otpDoc.attempts >= 5) {
+        otpDoc.used = true;
+      }
       await otpDoc.save();
-      return res.status(400).json({ error: 'Invalid OTP. Please try again.' });
+      const remaining = Math.max(0, 5 - otpDoc.attempts);
+      console.warn(`[OTP Failed] Incorrect code for ${maskEmail(cleanEmail)} (${remaining} attempts left)`);
+      return res.status(400).json({
+        error: remaining > 0
+          ? `Incorrect OTP. You have ${remaining} attempt${remaining === 1 ? '' : 's'} remaining.`
+          : 'Too many failed attempts. Please request a new OTP.',
+      });
     }
 
-    // Successful verification
+    // Successful verification: mark used to prevent reuse
     otpDoc.used = true;
     await otpDoc.save();
 
@@ -316,17 +369,19 @@ router.post('/public/verify-otp', otpLimiter, async (req, res) => {
       { expiresIn: '15m' }
     );
 
+    console.log(`[OTP Verification Success] Email verified for ${maskEmail(cleanEmail)}`);
+
     return res.json({
       ok: true,
       message: 'Email verified successfully.',
       verificationToken,
     });
   } catch (err) {
+    console.error('[OTP Verification Error]', err.message);
     return res.status(500).json({ error: err.message || 'Verification failed.' });
   }
 });
 
-// ---------------- Trainee Registration ----------------
 router.post('/public/register', registerLimiter, async (req, res) => {
   try {
     const config = await getConfig();

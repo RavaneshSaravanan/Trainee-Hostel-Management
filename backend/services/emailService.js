@@ -40,25 +40,34 @@ export function getAppUrl() {
  * Configures and returns live Nodemailer SMTP transporter.
  * Sourced from environment variables: SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SMTP_SECURE, SMTP_FROM.
  */
-function getTransporter() {
+export function getTransporter() {
   const host = process.env.SMTP_HOST;
   const user = process.env.SMTP_USER;
-  const pass = process.env.SMTP_PASS;
+  const rawPass = process.env.SMTP_PASS;
 
-  if (host && user && pass) {
+  if (host && user && rawPass) {
     if (!transporter) {
       const port = Number(process.env.SMTP_PORT) || 587;
-      const secure = process.env.SMTP_SECURE === 'true' || port === 465;
+      // Gmail and STARTTLS on port 587 strictly require secure: false. Port 465 requires secure: true.
+      const secure = port === 465 ? true : (String(process.env.SMTP_SECURE).trim().toLowerCase() === 'true' && port !== 587);
+
+      const cleanHost = host.trim();
+      const cleanUser = user.trim().replace(/^["']|["']$/g, '');
+      const cleanPass = rawPass.trim().replace(/^["']|["']$/g, '');
 
       transporter = nodemailer.createTransport({
-        host,
+        host: cleanHost,
         port,
         secure,
-        auth: { user, pass },
+        auth: {
+          user: cleanUser,
+          pass: cleanPass,
+        },
         connectionTimeout: 15000,
         greetingTimeout: 15000,
         socketTimeout: 20000,
         tls: {
+          minVersion: 'TLSv1.2',
           rejectUnauthorized: process.env.NODE_ENV === 'production',
         },
       });
@@ -66,6 +75,37 @@ function getTransporter() {
     return transporter;
   }
   return null;
+}
+
+/**
+ * Verifies live SMTP connectivity and credentials using transporter.verify().
+ * Call during server startup or diagnostics.
+ */
+export async function verifySmtpConnection() {
+  const transport = getTransporter();
+  if (!transport) {
+    const isProd = process.env.NODE_ENV === 'production';
+    if (isProd) {
+      console.warn('[SMTP WARNING] SMTP is not configured in production (missing SMTP_HOST, SMTP_USER, or SMTP_PASS). Email dispatch will fail.');
+    } else {
+      console.log('[SMTP] Development mode: SMTP is not configured. Outgoing emails will be logged only.');
+    }
+    return { ok: false, status: 'NOT_CONFIGURED', error: 'SMTP credentials missing' };
+  }
+
+  try {
+    await transport.verify();
+    console.log(`[SMTP] Connection established and verified successfully with ${process.env.SMTP_HOST}:${process.env.SMTP_PORT || 587}`);
+    return { ok: true, status: 'CONNECTED' };
+  } catch (err) {
+    console.error('[SMTP] Connection verification failed:', err.message);
+    if (err.code === 'EAUTH') {
+      console.error('[SMTP AUTH ERROR] Invalid SMTP username or password. Check that 2-Step Verification is ON in Google Account and use a 16-character App Password.');
+    } else if (err.code === 'ETIMEDOUT' || err.code === 'ESOCKET') {
+      console.error('[SMTP TIMEOUT] Connection to mail server timed out. Check port 587 and firewall settings.');
+    }
+    return { ok: false, status: 'FAILED', error: err.message, code: err.code };
+  }
 }
 
 /**
@@ -167,11 +207,16 @@ export async function sendEmail({
   triggeredBy = 'System',
   metadata = {},
 }) {
-  const from = process.env.SMTP_FROM || 'Apollo Tyres Ltd Hostel Administration <noreply@hostel.com>';
+  const user = process.env.SMTP_USER;
+  const defaultFrom = user
+    ? `Apollo Tyres Ltd Hostel Administration <${user}>`
+    : 'Apollo Tyres Ltd Hostel Administration <noreply@hostel.com>';
+  const rawFrom = process.env.SMTP_FROM || defaultFrom;
+  const from = rawFrom.trim().replace(/^["']|["']$/g, '');
   const transport = getTransporter();
 
-  // Merge with dynamically configured recipients for this email type
-  const additional = await getRecipientsForType(type);
+  // For OTP verification emails, strictly send ONLY to the recipient, do not merge additional admin recipients
+  const additional = type === 'OTP' ? { to: [], cc: [], bcc: [] } : await getRecipientsForType(type);
   const primaryToList = Array.isArray(to) ? to : [to];
   const finalTo = Array.from(new Set([...primaryToList, ...(additional.to || [])])).filter(Boolean);
   const initialCc = Array.isArray(cc) ? cc : [cc];
@@ -277,6 +322,14 @@ export async function sendEmail({
   }
 
   // Development / Unconfigured SMTP mode: log cleanly and persist audit record
+  if (!transport) {
+    const isProd = process.env.NODE_ENV === 'production';
+    if (isProd) {
+      const errMessage = 'SMTP transporter is not configured in production environment (Missing SMTP_HOST, SMTP_USER, or SMTP_PASS)';
+      console.error(`[EMAIL DISPATCH FAILED] ${errMessage}`);
+      return { ok: false, status: 'FAILED', error: errMessage, to: finalTo };
+    }
+  }
   console.log(`\n======================================================`);
   console.log(`[Email Simulated] (Configure SMTP_HOST in .env for live dispatch)`);
   console.log(`To      : ${finalTo.join(', ')}`);
@@ -1420,7 +1473,7 @@ ${footerText}
  * Expires in 5 minutes.
  */
 export async function sendRegistrationOtpEmail({ email, otp }) {
-  const subject = `Your Verification Code for Hostel Registration: ${otp}`;
+  const subject = 'Your Trainee Hostel Registration Verification Code';
   const html = `
     <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 24px; border: 1px solid #e2e8f0; border-radius: 8px;">
       <h2 style="color: #1e293b; margin-top: 0;">Email Verification</h2>
@@ -1441,3 +1494,4 @@ export async function sendRegistrationOtpEmail({ email, otp }) {
     triggeredBy: 'Registration OTP Request',
   });
 }
+

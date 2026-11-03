@@ -8,6 +8,7 @@ import dotenv from 'dotenv';
 import mongoose from 'mongoose';
 import { connectDB, closeDB } from './config/db.js';
 import { seedDatabase } from './seed.js';
+import { verifySmtpConnection, getTransporter } from './services/emailService.js';
 
 import authRoutes from './routes/auth.js';
 import publicRoutes from './routes/publicRoutes.js';
@@ -24,6 +25,9 @@ dotenv.config();
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT || 5000;
 const app = express();
+
+// Trust reverse proxy (Render, Vercel, etc.) for accurate client IPs and rate limiting
+app.set('trust proxy', 1);
 
 // Validate required environment variables at startup
 function validateEnv() {
@@ -112,9 +116,11 @@ app.get('/api/health', (req, res) => {
     2: 'connecting',
     3: 'disconnecting',
   };
+  const smtpConfigured = !!getTransporter();
   res.json({
     status: dbStatus === 1 ? 'healthy' : 'degraded',
     database: dbStatusMap[dbStatus] || 'unknown',
+    smtpConfigured,
     timestamp: new Date().toISOString(),
     uptime: process.uptime(),
   });
@@ -191,6 +197,9 @@ export async function startServer() {
   validateEnv();
   await connectDB();
   await seedDatabase();
+  await verifySmtpConnection().catch((err) => {
+    console.warn('[Startup] Non-fatal SMTP verification warning:', err.message);
+  });
   httpServer = app.listen(PORT, '0.0.0.0', () => {
     console.log(`Hostel backend running on http://localhost:${PORT}`);
   });
