@@ -8,7 +8,7 @@ import dotenv from 'dotenv';
 import mongoose from 'mongoose';
 import { connectDB, closeDB } from './config/db.js';
 import { seedDatabase } from './seed.js';
-import { verifySmtpConnection, getTransporter } from './services/emailService.js';
+import { verifySmtpConnection, getTransporter, getEmailProvider, isEmailConfigured } from './services/emailService.js';
 
 import authRoutes from './routes/auth.js';
 import publicRoutes from './routes/publicRoutes.js';
@@ -116,11 +116,14 @@ app.get('/api/health', (req, res) => {
     2: 'connecting',
     3: 'disconnecting',
   };
-  const smtpConfigured = !!getTransporter();
+  const provider = getEmailProvider();
+  const emailConfigured = isEmailConfigured();
   res.json({
     status: dbStatus === 1 ? 'healthy' : 'degraded',
     database: dbStatusMap[dbStatus] || 'unknown',
-    smtpConfigured,
+    emailConfigured,
+    emailProvider: provider,
+    smtpConfigured: !!getTransporter(),
     timestamp: new Date().toISOString(),
     uptime: process.uptime(),
   });

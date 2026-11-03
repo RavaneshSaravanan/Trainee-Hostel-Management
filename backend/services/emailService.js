@@ -2,6 +2,7 @@ import nodemailer from 'nodemailer';
 import jwt from 'jsonwebtoken';
 import QRCode from 'qrcode';
 import PDFDocument from 'pdfkit';
+import mongoose from 'mongoose';
 import { NotificationLog } from '../models/NotificationLog.js';
 import { EmailLog } from '../models/EmailLog.js';
 import { Config } from '../models/Config.js';
@@ -28,12 +29,168 @@ function enqueueEmail(fn) {
 }
 
 /**
+ * Safely persists audit logs to MongoDB without hanging or crashing if the DB is disconnected.
+ */
+async function safeAuditLog(entries = []) {
+  try {
+    if (mongoose.connection && mongoose.connection.readyState === 1) {
+      await Promise.all(
+        entries.map((fn) =>
+          fn().catch((err) => console.warn('[Audit Log Warning]', err.message))
+        )
+      );
+    }
+  } catch (err) {
+    console.warn('[Audit Log System Warning]', err.message);
+  }
+}
+
+/**
  * Returns the deployed website base URL, ensuring trailing slashes are removed.
  * Strictly uses configured APP_URL or FRONTEND_URL, falling back to CLIENT_ORIGIN.
  */
 export function getAppUrl() {
   const raw = process.env.APP_URL || process.env.FRONTEND_URL || (process.env.CLIENT_ORIGIN ? process.env.CLIENT_ORIGIN.split(',')[0] : '') || 'http://localhost:5173';
   return raw.trim().replace(/\/+$/, '');
+}
+
+/**
+ * Detects the active email dispatch provider.
+ * Returns 'brevo', 'resend', 'smtp', or 'none'.
+ * Brevo and Resend use HTTPS (Port 443), which works seamlessly on Render Free Tier.
+ */
+export function getEmailProvider() {
+  if (process.env.BREVO_API_KEY || process.env.SENDINBLUE_API_KEY) return 'brevo';
+  if (process.env.RESEND_API_KEY) return 'resend';
+  if (process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS) return 'smtp';
+  return 'none';
+}
+
+/**
+ * Returns true if any email service (Brevo, Resend, or SMTP) is configured.
+ */
+export function isEmailConfigured() {
+  return getEmailProvider() !== 'none';
+}
+
+/**
+ * Sends email via Brevo HTTPS REST API (Port 443 - Render Free tier compatible).
+ * Brevo allows 300 free emails/day with no custom domain verification requirement.
+ */
+async function sendViaBrevo({ from, to, cc = [], bcc = [], subject, html, text, attachments = [] }) {
+  const apiKey = (process.env.BREVO_API_KEY || process.env.SENDINBLUE_API_KEY || '').trim();
+  if (!apiKey) throw new Error('BREVO_API_KEY is not configured');
+
+  let senderName = 'Apollo Tyres Ltd Hostel Administration';
+  let senderEmail = process.env.SMTP_USER || process.env.BREVO_SENDER_EMAIL || 'apollotyres.hostel@gmail.com';
+
+  if (from) {
+    const match = from.match(/^(.*?)(?:<(.+?)>)?$/);
+    if (match) {
+      if (match[1]?.trim() && match[2]?.trim()) {
+        senderName = match[1].trim();
+        senderEmail = match[2].trim();
+      } else if (match[1]?.trim().includes('@')) {
+        senderEmail = match[1].trim();
+      }
+    }
+  }
+
+  const payload = {
+    sender: { name: senderName, email: senderEmail },
+    to: (Array.isArray(to) ? to : [to]).map((email) => ({ email })),
+    subject,
+    htmlContent: html || text,
+  };
+  if (text) payload.textContent = text;
+  if (Array.isArray(cc) && cc.length > 0) payload.cc = cc.map((email) => ({ email }));
+  if (Array.isArray(bcc) && bcc.length > 0) payload.bcc = bcc.map((email) => ({ email }));
+
+  if (Array.isArray(attachments) && attachments.length > 0) {
+    payload.attachment = attachments.map((att) => {
+      let base64 = '';
+      if (Buffer.isBuffer(att.content)) {
+        base64 = att.content.toString('base64');
+      } else if (typeof att.content === 'string') {
+        base64 = Buffer.from(att.content).toString('base64');
+      }
+      return {
+        name: att.filename || 'attachment',
+        content: base64,
+      };
+    });
+  }
+
+  const res = await fetch('https://api.brevo.com/v3/smtp/email', {
+    method: 'POST',
+    headers: {
+      'api-key': apiKey,
+      'Content-Type': 'application/json',
+      'Accept': 'application/json',
+    },
+    body: JSON.stringify(payload),
+  });
+
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const msg = data.message || data.error || `Brevo HTTP error ${res.status}`;
+    throw new Error(msg);
+  }
+
+  return { messageId: data.messageId || `brevo-${Date.now()}` };
+}
+
+/**
+ * Sends email via Resend HTTPS REST API (Port 443 - Render Free tier compatible).
+ * Resend provides 3,000 free emails/month.
+ */
+async function sendViaResend({ from, to, cc = [], bcc = [], subject, html, text, attachments = [] }) {
+  const apiKey = (process.env.RESEND_API_KEY || '').trim();
+  if (!apiKey) throw new Error('RESEND_API_KEY is not configured');
+
+  const resendFrom = process.env.RESEND_FROM || (from && from.includes('@resend.dev') ? from : 'Apollo Tyres Ltd <onboarding@resend.dev>');
+
+  const payload = {
+    from: resendFrom,
+    to: Array.isArray(to) ? to : [to],
+    subject,
+    html: html || text,
+  };
+  if (text) payload.text = text;
+  if (Array.isArray(cc) && cc.length > 0) payload.cc = cc;
+  if (Array.isArray(bcc) && bcc.length > 0) payload.bcc = bcc;
+
+  if (Array.isArray(attachments) && attachments.length > 0) {
+    payload.attachments = attachments.map((att) => {
+      let base64 = '';
+      if (Buffer.isBuffer(att.content)) {
+        base64 = att.content.toString('base64');
+      } else if (typeof att.content === 'string') {
+        base64 = Buffer.from(att.content).toString('base64');
+      }
+      return {
+        filename: att.filename || 'attachment',
+        content: base64,
+      };
+    });
+  }
+
+  const res = await fetch('https://api.resend.com/emails', {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${apiKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(payload),
+  });
+
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const msg = data.message || `Resend HTTP error ${res.status}`;
+    throw new Error(msg);
+  }
+
+  return { messageId: data.id || `resend-${Date.now()}` };
 }
 
 /**
@@ -63,9 +220,9 @@ export function getTransporter() {
           user: cleanUser,
           pass: cleanPass,
         },
-        connectionTimeout: 15000,
-        greetingTimeout: 15000,
-        socketTimeout: 20000,
+        connectionTimeout: 8000,
+        greetingTimeout: 8000,
+        socketTimeout: 10000,
         tls: {
           minVersion: 'TLSv1.2',
           rejectUnauthorized: process.env.NODE_ENV === 'production',
@@ -78,34 +235,47 @@ export function getTransporter() {
 }
 
 /**
- * Verifies live SMTP connectivity and credentials using transporter.verify().
+ * Verifies live email service connectivity and credentials.
+ * Checks Brevo HTTPS, Resend HTTPS, or Nodemailer SMTP depending on active provider.
  * Call during server startup or diagnostics.
  */
 export async function verifySmtpConnection() {
-  const transport = getTransporter();
-  if (!transport) {
-    const isProd = process.env.NODE_ENV === 'production';
-    if (isProd) {
-      console.warn('[SMTP WARNING] SMTP is not configured in production (missing SMTP_HOST, SMTP_USER, or SMTP_PASS). Email dispatch will fail.');
-    } else {
-      console.log('[SMTP] Development mode: SMTP is not configured. Outgoing emails will be logged only.');
-    }
-    return { ok: false, status: 'NOT_CONFIGURED', error: 'SMTP credentials missing' };
+  const provider = getEmailProvider();
+
+  if (provider === 'brevo') {
+    console.log('[EMAIL] Provider: Brevo HTTPS REST API (Port 443 — Render Free Tier compatible).');
+    return { ok: true, status: 'CONNECTED', provider: 'brevo' };
   }
 
-  try {
-    await transport.verify();
-    console.log(`[SMTP] Connection established and verified successfully with ${process.env.SMTP_HOST}:${process.env.SMTP_PORT || 587}`);
-    return { ok: true, status: 'CONNECTED' };
-  } catch (err) {
-    console.error('[SMTP] Connection verification failed:', err.message);
-    if (err.code === 'EAUTH') {
-      console.error('[SMTP AUTH ERROR] Invalid SMTP username or password. Check that 2-Step Verification is ON in Google Account and use a 16-character App Password.');
-    } else if (err.code === 'ETIMEDOUT' || err.code === 'ESOCKET') {
-      console.error('[SMTP TIMEOUT] Connection to mail server timed out. Check port 587 and firewall settings.');
-    }
-    return { ok: false, status: 'FAILED', error: err.message, code: err.code };
+  if (provider === 'resend') {
+    console.log('[EMAIL] Provider: Resend HTTPS REST API (Port 443 — Render Free Tier compatible).');
+    return { ok: true, status: 'CONNECTED', provider: 'resend' };
   }
+
+  if (provider === 'smtp') {
+    const transport = getTransporter();
+    try {
+      await transport.verify();
+      console.log(`[SMTP] Connection established and verified successfully with ${process.env.SMTP_HOST}:${process.env.SMTP_PORT || 587}`);
+      return { ok: true, status: 'CONNECTED', provider: 'smtp' };
+    } catch (err) {
+      console.error('[SMTP] Connection verification failed:', err.message);
+      if (err.code === 'EAUTH') {
+        console.error('[SMTP AUTH ERROR] Invalid SMTP username or password. Check that 2-Step Verification is ON in Google Account and use a 16-character App Password.');
+      } else if (err.code === 'ETIMEDOUT' || err.code === 'ESOCKET' || err.message?.includes('timeout')) {
+        console.warn('[SMTP WARNING] Connection to mail server timed out. Note: Render Free Tier blocks outbound SMTP ports 25, 465, and 587. Configure BREVO_API_KEY or RESEND_API_KEY in Render to send emails over HTTPS (Port 443).');
+      }
+      return { ok: false, status: 'FAILED', error: err.message, code: err.code, provider: 'smtp' };
+    }
+  }
+
+  const isProd = process.env.NODE_ENV === 'production';
+  if (isProd) {
+    console.warn('[EMAIL WARNING] No email provider configured in production (Missing BREVO_API_KEY, RESEND_API_KEY, or SMTP credentials). Email dispatch will fail.');
+  } else {
+    console.log('[SMTP] Development mode: No email provider configured. Outgoing emails will be logged only.');
+  }
+  return { ok: false, status: 'NOT_CONFIGURED', error: 'Email credentials missing', provider: 'none' };
 }
 
 /**
@@ -213,7 +383,7 @@ export async function sendEmail({
     : 'Apollo Tyres Ltd Hostel Administration <noreply@hostel.com>';
   const rawFrom = process.env.SMTP_FROM || defaultFrom;
   const from = rawFrom.trim().replace(/^["']|["']$/g, '');
-  const transport = getTransporter();
+  const provider = getEmailProvider();
 
   // For OTP verification emails, strictly send ONLY to the recipient, do not merge additional admin recipients
   const additional = type === 'OTP' ? { to: [], cc: [], bcc: [] } : await getRecipientsForType(type);
@@ -230,6 +400,7 @@ export async function sendEmail({
   const diagnosticInfo = {
     timestamp: new Date().toISOString(),
     emailType: type,
+    provider,
     decision: metadata?.decision || (type === 'APPROVAL_DECISION' ? metadata?.decision : undefined),
     traineeId: traineeId || metadata?.traineeId || '',
     intendedRecipients: {
@@ -243,33 +414,47 @@ export async function sendEmail({
   };
   console.log(`[EMAIL DISPATCH INITIATED] ${JSON.stringify(diagnosticInfo)}`);
 
-  if (transport) {
+  if (provider === 'brevo' || provider === 'resend' || provider === 'smtp') {
     try {
-      const mailOptions = {
-        from,
-        to: finalTo,
-        subject,
-        html,
-        text,
-      };
-      if (finalCc.length > 0) mailOptions.cc = finalCc;
-      if (finalBcc.length > 0) mailOptions.bcc = finalBcc;
-      if (Array.isArray(attachments) && attachments.length > 0) {
-        mailOptions.attachments = attachments;
+      let dispatchResult;
+      if (provider === 'brevo') {
+        dispatchResult = await enqueueEmail(() =>
+          sendViaBrevo({ from, to: finalTo, cc: finalCc, bcc: finalBcc, subject, html, text, attachments })
+        );
+      } else if (provider === 'resend') {
+        dispatchResult = await enqueueEmail(() =>
+          sendViaResend({ from, to: finalTo, cc: finalCc, bcc: finalBcc, subject, html, text, attachments })
+        );
+      } else {
+        const transport = getTransporter();
+        const mailOptions = {
+          from,
+          to: finalTo,
+          subject,
+          html,
+          text,
+        };
+        if (finalCc.length > 0) mailOptions.cc = finalCc;
+        if (finalBcc.length > 0) mailOptions.bcc = finalBcc;
+        if (Array.isArray(attachments) && attachments.length > 0) {
+          mailOptions.attachments = attachments;
+        }
+
+        dispatchResult = await enqueueEmail(() => transport.sendMail(mailOptions));
       }
 
-      const info = await enqueueEmail(() => transport.sendMail(mailOptions));
+      const messageId = dispatchResult.messageId || `${provider}-${Date.now()}`;
 
-      await Promise.all([
-        NotificationLog.create({
+      await safeAuditLog([
+        () => NotificationLog.create({
           type,
           recipient: recipientString,
           subject,
           content: text || html,
           status: 'SENT',
-          metadata: { ...metadata, to: finalTo, cc: finalCc, bcc: finalBcc, messageId: info.messageId },
+          metadata: { ...metadata, to: finalTo, cc: finalCc, bcc: finalBcc, messageId, provider },
         }),
-        EmailLog.create({
+        () => EmailLog.create({
           recipient: recipientString,
           to: finalTo,
           cc: finalCc,
@@ -281,26 +466,31 @@ export async function sendEmail({
           traineeName,
           triggeredBy,
           content: html || text,
-          metadata: { ...metadata, html, text, messageId: info.messageId },
+          metadata: { ...metadata, html, text, messageId, provider },
         }),
       ]);
 
-      console.log(`[EMAIL DISPATCH COMPLETED] ${JSON.stringify({ ...diagnosticInfo, status: 'SENT', messageId: info.messageId })}`);
-      return { ok: true, status: 'SENT', messageId: info.messageId, to: finalTo, cc: finalCc, bcc: finalBcc };
+      console.log(`[EMAIL DISPATCH COMPLETED] ${JSON.stringify({ ...diagnosticInfo, status: 'SENT', messageId, provider })}`);
+      return { ok: true, status: 'SENT', messageId, to: finalTo, cc: finalCc, bcc: finalBcc, provider };
     } catch (err) {
-      console.error(`[EMAIL DISPATCH FAILED] ${JSON.stringify({ ...diagnosticInfo, status: 'FAILED', error: err.message })}`);
+      let friendlyError = err.message;
+      if (provider === 'smtp' && (err.code === 'ETIMEDOUT' || err.code === 'ESOCKET' || err.message?.includes('timeout'))) {
+        friendlyError = 'SMTP connection timed out. On Render Free hosting, outbound SMTP ports 25, 465, and 587 are blocked. Please configure BREVO_API_KEY or RESEND_API_KEY in Render environment variables to send emails over HTTPS (Port 443).';
+      }
 
-      await Promise.all([
-        NotificationLog.create({
+      console.error(`[EMAIL DISPATCH FAILED] ${JSON.stringify({ ...diagnosticInfo, status: 'FAILED', error: friendlyError, provider })}`);
+
+      await safeAuditLog([
+        () => NotificationLog.create({
           type,
           recipient: recipientString,
           subject,
           content: text || html,
           status: 'FAILED',
-          error: err.message,
-          metadata: { ...metadata, to: finalTo, cc: finalCc, bcc: finalBcc },
+          error: friendlyError,
+          metadata: { ...metadata, to: finalTo, cc: finalCc, bcc: finalBcc, provider },
         }),
-        EmailLog.create({
+        () => EmailLog.create({
           recipient: recipientString,
           to: finalTo,
           cc: finalCc,
@@ -308,26 +498,26 @@ export async function sendEmail({
           subject,
           emailType: type,
           status: 'FAILED',
-          error: err.message,
+          error: friendlyError,
           traineeId,
           traineeName,
           triggeredBy,
           content: html || text,
-          metadata: { ...metadata, html, text },
+          metadata: { ...metadata, html, text, provider },
         }),
       ]);
 
-      return { ok: false, status: 'FAILED', error: err.message, to: finalTo, cc: finalCc, bcc: finalBcc };
+      return { ok: false, status: 'FAILED', error: friendlyError, to: finalTo, cc: finalCc, bcc: finalBcc, provider };
     }
   }
 
-  // Development / Unconfigured SMTP mode: log cleanly and persist audit record
-  if (!transport) {
+  // Development / Unconfigured mode: log cleanly and persist audit record
+  if (provider === 'none') {
     const isProd = process.env.NODE_ENV === 'production';
     if (isProd) {
-      const errMessage = 'SMTP transporter is not configured in production environment (Missing SMTP_HOST, SMTP_USER, or SMTP_PASS)';
+      const errMessage = 'Email service is not configured on the server. Please configure BREVO_API_KEY, RESEND_API_KEY, or SMTP credentials in environment variables.';
       console.error(`[EMAIL DISPATCH FAILED] ${errMessage}`);
-      return { ok: false, status: 'FAILED', error: errMessage, to: finalTo };
+      return { ok: false, status: 'FAILED', error: errMessage, to: finalTo, provider: 'none' };
     }
   }
   console.log(`\n======================================================`);
@@ -340,8 +530,8 @@ export async function sendEmail({
   console.log(`Message : \n${text || html}`);
   console.log(`======================================================\n`);
 
-  await Promise.all([
-    NotificationLog.create({
+  await safeAuditLog([
+    () => NotificationLog.create({
       type,
       recipient: recipientString,
       subject,
@@ -349,7 +539,7 @@ export async function sendEmail({
       status: 'DEV_SIMULATED',
       metadata: { ...metadata, to: finalTo, cc: finalCc, bcc: finalBcc },
     }),
-    EmailLog.create({
+    () => EmailLog.create({
       recipient: recipientString,
       to: finalTo,
       cc: finalCc,

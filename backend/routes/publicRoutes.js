@@ -285,11 +285,11 @@ router.post('/public/send-otp', otpLimiter, async (req, res) => {
 
       const isUnconfigured = emailResult?.status === 'DEV_SIMULATED' && process.env.NODE_ENV === 'production';
       const errMsg = isUnconfigured
-        ? 'SMTP email service is not configured on the server. Please contact hostel administration.'
+        ? 'Email service is not configured on the server. Please contact hostel administration.'
         : (emailResult?.error || 'Failed to deliver verification email. Please check your email address and try again.');
 
       console.error(`[OTP Dispatch Failed] Could not deliver to ${maskEmail(cleanEmail)}: ${emailResult?.error || 'Unknown dispatch error'}`);
-      return res.status(502).json({ error: errMsg });
+      return res.status(503).json({ error: errMsg });
     }
 
     console.log(`[OTP Dispatch Success] Delivered to ${maskEmail(cleanEmail)}`);
