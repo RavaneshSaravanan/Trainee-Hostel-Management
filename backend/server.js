@@ -131,8 +131,13 @@ app.get('/api/health', (req, res) => {
 
 // Database readiness check for API routes
 app.use('/api', (req, res, next) => {
-  // Allow health check and revision polling without blocking
-  if (req.path === '/health' || req.path === '/rev' || req.path === '/reviews/summary') return next();
+  // Allow health check, public config, and revision polling without blocking
+  if (
+    req.path === '/health' ||
+    req.path === '/public' ||
+    req.path === '/rev' ||
+    req.path === '/reviews/summary'
+  ) return next();
 
   if (mongoose.connection.readyState === 1) {
     return next();

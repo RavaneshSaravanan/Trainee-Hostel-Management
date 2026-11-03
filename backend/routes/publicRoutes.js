@@ -275,6 +275,11 @@ router.post('/public/send-otp', otpLimiter, async (req, res) => {
     });
 
     console.log(`[OTP Generated] 4-digit code created for ${maskEmail(cleanEmail)} (expires in 5 min)`);
+    if (process.env.NODE_ENV !== 'production') {
+      console.log(`\n---------------------------------------------------------`);
+      console.log(`[LOCAL DEV OTP CODE] Email: ${cleanEmail} | OTP: ${otpCode}`);
+      console.log(`---------------------------------------------------------\n`);
+    }
 
     // Dispatch email
     const emailResult = await sendRegistrationOtpEmail({ email: cleanEmail, otp: otpCode });

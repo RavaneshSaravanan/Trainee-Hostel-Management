@@ -507,6 +507,19 @@ export async function sendEmail({
         }),
       ]);
 
+      // In development mode, if live dispatch fails (e.g. offline, port 587 firewall), fall back to simulation so registration is never blocked
+      if (process.env.NODE_ENV !== 'production') {
+        console.warn(`[DEV SMTP NOTICE] Dispatch via ${provider} failed (${err.message}). Falling back to simulation mode for local testing.`);
+        console.log(`\n======================================================`);
+        console.log(`[Email Simulated - Local Dev Fallback]`);
+        console.log(`To      : ${finalTo.join(', ')}`);
+        console.log(`Subject : ${subject}`);
+        console.log(`Type    : ${type}`);
+        console.log(`Message : \n${text || html}`);
+        console.log(`======================================================\n`);
+        return { ok: true, status: 'DEV_SIMULATED', messageId: `dev-fallback-${Date.now()}`, to: finalTo, cc: finalCc, bcc: finalBcc, provider: 'simulation' };
+      }
+
       return { ok: false, status: 'FAILED', error: friendlyError, to: finalTo, cc: finalCc, bcc: finalBcc, provider };
     }
   }

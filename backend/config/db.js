@@ -90,11 +90,12 @@ export async function connectDB() {
         err.message
       );
 
-      // Local MongoDB fallback
-      if (isLocal && !isAtlas) {
+      // Local development fallback: If primary database fails to connect, spin up embedded MongoDB so dev server is not blocked
+      const isDev = process.env.NODE_ENV !== 'production';
+      if (isDev) {
         try {
           console.warn(
-            '[Database] Local MongoDB unavailable. Starting embedded MongoDB...'
+            '[Database] Primary MongoDB connection failed. Starting embedded in-memory MongoDB for local development...'
           );
 
           const { MongoMemoryServer } = await import(
@@ -113,8 +114,16 @@ export async function connectDB() {
           });
 
           console.log(
-            `[Database] Embedded MongoDB Connected Successfully: ${conn.connection.host}/${conn.connection.name}`
+            `[Database] Embedded In-Memory MongoDB Connected Successfully: ${conn.connection.host}/${conn.connection.name}`
           );
+
+          // Seed default collections if empty
+          try {
+            const { seedDatabase } = await import('../seed.js');
+            await seedDatabase();
+          } catch (seedErr) {
+            console.warn('[Database] Embedded seed notice:', seedErr.message);
+          }
 
           return conn;
         } catch (memoryError) {
