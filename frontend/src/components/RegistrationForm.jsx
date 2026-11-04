@@ -86,6 +86,7 @@ export default function RegistrationForm({
   const [emailVerified, setEmailVerified] = useState(false);
   const [verificationToken, setVerificationToken] = useState('');
   const [otp, setOtp] = useState('');
+  const [otpTargetEmail, setOtpTargetEmail] = useState('');
   const [otpSent, setOtpSent] = useState(false);
   const [otpCooldown, setOtpCooldown] = useState(0);
   const [otpSending, setOtpSending] = useState(false);
@@ -211,12 +212,14 @@ export default function RegistrationForm({
 
     // If email changes, invalidate OTP verification status
     if (field === 'email') {
-      if (emailVerified) {
+      if (emailVerified || otpSent) {
         setEmailVerified(false);
         setVerificationToken('');
         setOtpSent(false);
         setOtp('');
         setOtpMessage('');
+        setOtpError('');
+        setOtpTargetEmail('');
       }
     }
 
@@ -262,6 +265,7 @@ export default function RegistrationForm({
         auth: false,
       });
       setOtpSent(true);
+      setOtpTargetEmail(cleanEmail);
       setOtpCooldown(60);
       setOtpMessage(res.message || 'OTP sent successfully to your email.');
     } catch (err) {
@@ -281,10 +285,12 @@ export default function RegistrationForm({
     setOtpVerifying(true);
     setOtpError('');
 
+    const targetEmail = (otpTargetEmail || values.email).trim().toLowerCase();
+
     try {
       const res = await api('/api/public/verify-otp', {
         method: 'POST',
-        body: { email: values.email.trim(), otp: cleanOtp },
+        body: { email: targetEmail, otp: cleanOtp },
         auth: false,
       });
 
@@ -300,6 +306,7 @@ export default function RegistrationForm({
         setOtpError(ERROR_MESSAGES.OTP_INVALID);
       }
     } catch (err) {
+      console.warn('[OTP Verification Failed]:', err.message);
       setOtpError(err.message || ERROR_MESSAGES.OTP_INVALID);
     } finally {
       setOtpVerifying(false);
@@ -480,27 +487,38 @@ export default function RegistrationForm({
                 onBlur={() => handleBlur('email')}
                 placeholder="user@gmail.com"
                 style={{ flex: 1 }}
+                disabled={emailVerified || (otpSent && otpCooldown > 0)}
                 required
               />
               {emailVerified ? (
                 <span className="verified-badge">
                   <Icon name="check" size={13} /> Email Verified
                 </span>
+              ) : otpSent ? (
+                <button
+                  type="button"
+                  className="btn btn-ghost btn-sm"
+                  onClick={() => {
+                    setOtpSent(false);
+                    setOtp('');
+                    setOtpMessage('');
+                    setOtpError('');
+                    setOtpTargetEmail('');
+                  }}
+                  style={{ whiteSpace: 'nowrap' }}
+                  title="Click to change email address"
+                >
+                  Change Email
+                </button>
               ) : (
                 <button
                   type="button"
                   className="btn btn-ghost btn-sm"
                   onClick={handleSendOtp}
-                  disabled={otpSending || (otpSent && otpCooldown > 0)}
+                  disabled={otpSending}
                   style={{ whiteSpace: 'nowrap' }}
                 >
-                  {otpSending
-                    ? 'Sending…'
-                    : otpSent && otpCooldown > 0
-                    ? `Resend in ${otpCooldown}s`
-                    : otpSent
-                    ? 'Resend OTP'
-                    : 'Send OTP'}
+                  {otpSending ? 'Sending…' : 'Send OTP'}
                 </button>
               )}
             </div>
@@ -509,7 +527,7 @@ export default function RegistrationForm({
             {otpSent && !emailVerified && (
               <div className="otp-wrap">
                 <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--gray-800)' }}>
-                  Enter the 4-digit OTP sent to {values.email}:
+                  Enter the 4-digit OTP sent to {otpTargetEmail || values.email}:
                 </div>
                 <div className="otp-row">
                   <input
@@ -522,7 +540,16 @@ export default function RegistrationForm({
                       setOtp(v);
                       if (otpError) setOtpError('');
                     }}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault();
+                        if (otp.length === 4 && !otpVerifying) {
+                          handleVerifyOtp();
+                        }
+                      }
+                    }}
                     placeholder="••••"
+                    autoFocus
                   />
                   <button
                     type="button"
