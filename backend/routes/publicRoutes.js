@@ -11,7 +11,13 @@ import { bumpRev } from '../models/Meta.js';
 import { DEFAULT_CONFIG, withDefaults } from '../defaults.js';
 import { nextId, todayStr } from '../utils/dates.js';
 import { addThreeCalendarMonths } from '../utils/validity.js';
-import { sendApprovalRequestEmail, sendRegistrationOtpEmail, getAdminNotificationEmail } from '../services/emailService.js';
+import {
+  sendApprovalRequestEmail,
+  sendRegistrationOtpEmail,
+  sendRegistrationConfirmationEmail,
+  sendApprovalRequestNotification,
+  getAdminNotificationEmail,
+} from '../services/emailService.js';
 import { uploadTraineePhoto, getPhotoStreamFromDrive, parsePhotoData } from '../services/googleDriveService.js';
 import {
   isValidEmail,
@@ -616,48 +622,15 @@ router.post('/public/register', registerLimiter, async (req, res) => {
       paymentStatus: 'FREE',
     });
 
-    // Notify approval authorities by email (Approvers, Admins & Superadmins)
-    let approversToNotify = (config.approvalConfig?.approvers || []).filter(
-      (a) => a && (a.userId || a.email || a.username)
+    // 1. Dispatch Email 2: Trainee Registration Confirmation
+    sendRegistrationConfirmationEmail({ trainee: newTrainee }).catch((err) =>
+      console.warn('[Registration Confirmation Dispatch Error]', err.message)
     );
 
-    // If no approvers configured yet, notify active superadmin & admin users
-    if (approversToNotify.length === 0) {
-      const adminUsers = await User.find({
-        roleId: { $in: ['superadmin', 'admin'] },
-        active: true,
-      }).lean();
-
-      if (adminUsers.length > 0) {
-        approversToNotify = adminUsers.map((u) => ({
-          userId: u.id,
-          name: u.name,
-          username: u.username,
-          email: u.email,
-          roleId: u.roleId,
-        }));
-      }
-    }
-
-    // Fallback: If still empty, send directly to admin notification email
-    if (approversToNotify.length === 0) {
-      const adminEmail = await getAdminNotificationEmail();
-      approversToNotify = [
-        {
-          userId: 'admin',
-          name: 'Hostel Administrator',
-          username: 'superadmin',
-          email: adminEmail,
-          roleId: 'superadmin',
-        },
-      ];
-    }
-
-    for (const approver of approversToNotify) {
-      sendApprovalRequestEmail({ approver, trainee: newTrainee }).catch((err) =>
-        console.warn('Approver email alert failed:', err.message)
-      );
-    }
+    // 2. Dispatch Email 3: Admin AND Warden Approval Request Notification (BOTH recipients)
+    sendApprovalRequestNotification({ trainee: newTrainee }).catch((err) =>
+      console.warn('[Admin/Warden Approval Notification Dispatch Error]', err.message)
+    );
 
     await bumpRev();
     return res.json({ ok: true, hostelId, traineeId: finalTraineeId, qrId });

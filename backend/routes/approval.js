@@ -279,14 +279,13 @@ router.post('/approval/decision', auth, async (req, res) => {
             hostelNameOrId: req.body.hostel,
             roomNo: req.body.roomNo,
             actorName: req.user.name,
+            skipEmails: true, // Prevent duplicate email dispatch; handled after decision save
           });
           trainee.hostel = allocRes.trainee.hostel;
           trainee.hostelId = allocRes.trainee.hostelId;
           trainee.roomNo = allocRes.trainee.roomNo;
           trainee.hostelStatus = allocRes.trainee.hostelStatus;
           trainee.qrStatus = allocRes.trainee.qrStatus;
-          if (allocRes.emailResult) emailResult = allocRes.emailResult;
-          if (allocRes.idCardResult) idCardResult = allocRes.idCardResult;
         }
       }
     }
@@ -304,13 +303,41 @@ router.post('/approval/decision', auth, async (req, res) => {
       metadata: { finalStatus, policy, totalApprovals: trainee.approvals.length },
     });
 
-    // Send email notification to trainee if email provided and a definitive decision is recorded in MongoDB
     let emailResult = null;
-    if (['APPROVED', 'REJECTED'].includes(finalStatus) && trainee.email) {
+    let idCardResult = null;
+    let welcomeResult = null;
+
+    if (finalStatus === 'APPROVED' && trainee.email) {
+      const hasRoomAllocated = !!((trainee.hostel || trainee.hostelId) && (trainee.roomNo || trainee.room));
+
+      // Email 4: Approval Confirmation + Trainee ID Card (with guaranteed PDF buffer attachment)
+      if (hasRoomAllocated && !trainee.idCardDelivered) {
+        try {
+          idCardResult = await sendTraineeIdCardEmail({ trainee, force: false, isUpdated: false });
+        } catch (err) {
+          console.warn('[ID Card Email Error]', err.message);
+          idCardResult = { ok: false, error: err.message };
+        }
+      }
+
+      // Email 5: Welcome Email ("Welcome to Apollo Tyres – Thanks for Joining Us!")
+      if (hasRoomAllocated && !trainee.welcomeEmailSent) {
+        try {
+          welcomeResult = await sendTraineeWelcomeEmail({
+            trainee,
+            force: false,
+            triggeredBy: `Approval Decision (${req.user.name || req.user.username})`,
+          });
+        } catch (err) {
+          console.warn('[Welcome Email Error]', err.message);
+          welcomeResult = { ok: false, error: err.message };
+        }
+      }
+    } else if (finalStatus === 'REJECTED' && trainee.email) {
       try {
         emailResult = await sendDecisionNotificationEmail({
           trainee,
-          decision: finalStatus,
+          decision: 'REJECTED',
           rejectionReason: String(rejectionReason).trim(),
           actorName: req.user.name,
         });
@@ -318,24 +345,12 @@ router.post('/approval/decision', auth, async (req, res) => {
         trainee.approvalEmailSentAt = emailResult?.ok ? new Date() : undefined;
         trainee.approvalEmailError = emailResult?.ok ? '' : (emailResult?.error || 'Email dispatch failed');
       } catch (err) {
-        console.error('[Decision Notification Error]', err.message);
+        console.error('[Rejection Notification Error]', err.message);
         trainee.approvalEmailSent = false;
         trainee.approvalEmailError = err.message;
         emailResult = { ok: false, error: err.message };
       }
       await trainee.save();
-    }
-
-    // Deliver official ID card via email once trainee is approved and has allocated room
-    let idCardResult = null;
-    const hasRoomAllocated = !!((trainee.hostel || trainee.hostelId) && (trainee.roomNo || trainee.room));
-    if (finalStatus === 'APPROVED' && trainee.email && hasRoomAllocated) {
-      try {
-        idCardResult = await sendTraineeIdCardEmail({ trainee, force: true, isUpdated: true });
-      } catch (err) {
-        console.warn('[ID Card Email Error]', err.message);
-        idCardResult = { ok: false, error: err.message };
-      }
     }
 
     await bumpRev();
@@ -346,6 +361,7 @@ router.post('/approval/decision', auth, async (req, res) => {
       trainee,
       emailResult,
       idCardResult,
+      welcomeResult,
     });
   } catch (err) {
     return res.status(500).json({ error: err.message });

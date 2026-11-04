@@ -65,7 +65,11 @@ export async function seedDatabase() {
       console.log('Synchronized superadmin password to superadmin123.');
     }
 
-    // Ensure warden exists with requested password
+    // Ensure warden exists with requested password & live email
+    const configuredWardenEmail = process.env.WARDEN_EMAIL && !process.env.WARDEN_EMAIL.endsWith('@hostel.com')
+      ? process.env.WARDEN_EMAIL.trim().toLowerCase()
+      : configuredAdminEmail;
+
     let wardenUser = await User.findOne({ username: 'warden' });
     if (!wardenUser) {
       const allUsers = await User.find({}, 'id').lean();
@@ -74,7 +78,7 @@ export async function seedDatabase() {
         id,
         name: 'Warden',
         username: 'warden',
-        email: 'warden@hostel.com',
+        email: configuredWardenEmail,
         mobile: '9876543211',
         roleId: 'warden',
         active: true,
@@ -85,7 +89,9 @@ export async function seedDatabase() {
       wardenUser.passwordHash = wardenHash;
       wardenUser.roleId = 'warden';
       wardenUser.active = true;
-      if (!wardenUser.email) wardenUser.email = 'warden@hostel.com';
+      if (!wardenUser.email || wardenUser.email.endsWith('@hostel.com')) {
+        wardenUser.email = configuredWardenEmail;
+      }
       if (!wardenUser.mobile) wardenUser.mobile = '9876543211';
       await wardenUser.save();
       console.log('Synchronized warden password to warden123.');

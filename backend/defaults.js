@@ -75,8 +75,18 @@ export const DEFAULT_EMAIL_TEMPLATE = {
 };
 
 export const DEFAULT_EMAIL_TEMPLATES = {
+  registrationConfirmation: {
+    subject: 'Registration Successful – Application Under Review | Apollo Tyres Ltd',
+    heading: 'REGISTRATION RECEIVED',
+    subheading: 'Apollo Tyres Ltd — Trainee Hostel Operations',
+    bodyText: 'Dear {{traineeName}},\n\nYour trainee registration application for the Apollo Tyres Ltd Hostel has been successfully received and submitted for administrative approval.\n\nOur Hostel Warden and HR Administration are currently verifying your details and will assign your hostel block and room number shortly.\n\nOnce approved, you will receive an official Approval Confirmation email with your Digital ID Card attached as a printable PDF, along with your Welcome Packet containing room accommodation details.',
+    footerText: 'Apollo Tyres Ltd · Hostel Administration & Trainee Operations',
+    logoUrl: '',
+    headerBg: '#2E1065',
+    accentColor: '#7C3AED',
+  },
   welcome: {
-    subject: 'Welcome to Apollo Tyres Ltd — Hostel & Room Allocation: {{traineeName}} ({{traineeId}})',
+    subject: 'Welcome to Apollo Tyres – Thanks for Joining Us!',
     heading: 'Welcome to Apollo Tyres Ltd',
     subheading: 'Official Hostel Admission & Room Allocation Confirmation',
     bodyText: 'Dear {{traineeName}},\n\nCongratulations on joining Apollo Tyres Ltd!\nWe are delighted to welcome you to our organization and trainee residential community.\n\nYour hostel room allocation and onboarding details are confirmed below.\nPlease review the accommodation rules and keep your Digital ID Card handy for campus and hostel access.',
@@ -86,10 +96,10 @@ export const DEFAULT_EMAIL_TEMPLATES = {
     accentColor: '#7C3AED',
   },
   idCard: {
-    subject: 'Official Trainee Identity Card — Apollo Tyres Ltd ({{traineeName}})',
+    subject: 'Approval Confirmation & Official Trainee ID Card — Apollo Tyres Ltd ({{traineeName}})',
     heading: 'APOLLO TYRES LTD',
-    subheading: 'TRAINEE IDENTITY CARD',
-    bodyText: 'Dear {{traineeName}},\n\nCongratulations! Your trainee registration with Apollo Tyres Ltd has been officially approved.\nYour official digital Trainee Identity Card is issued below. You can use your secure QR code badge for hostel entry and daily attendance verification.',
+    subheading: 'OFFICIAL TRAINEE IDENTITY CARD & APPROVAL CONFIRMATION',
+    bodyText: 'Dear {{traineeName}},\n\nCongratulations! Your trainee registration with Apollo Tyres Ltd has been officially approved.\nYour official digital Trainee Identity Card is issued and attached below as a printable PDF.\nYou can use your secure QR code badge for hostel entry and daily attendance verification.',
     footerText: 'Authorized Trainee ID Card · Apollo Tyres Ltd · Hostel Operations',
     logoUrl: '',
     headerBg: '#2E1065',

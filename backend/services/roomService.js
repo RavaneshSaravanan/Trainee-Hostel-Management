@@ -145,6 +145,7 @@ export async function allocateTraineeToRoom({
   hostelNameOrId,
   roomNo,
   actorName = 'System',
+  skipEmails = false,
 }) {
   const cleanTraineeId = String(traineeId || '').trim().toUpperCase();
   const cleanRoomNo = String(roomNo || '').trim();
@@ -253,32 +254,34 @@ export async function allocateTraineeToRoom({
 
     await bumpRev();
 
-    // Trigger Welcome Email if not yet sent and trainee is approved
+    // Trigger Welcome Email and ID Card Email only if skipEmails is false
     let emailResult = null;
-    if (!trainee.welcomeEmailSent && trainee.email) {
-      try {
-        emailResult = await sendTraineeWelcomeEmail({
-          trainee,
-          triggeredBy: isTransfer ? 'Room Transfer' : 'Room Allocation',
-        });
-      } catch (err) {
-        console.warn('[Welcome Email Auto Trigger Error]', err.message);
-        emailResult = { ok: false, error: err.message };
-      }
-    }
-
-    // Trigger ID Card Email (updated or initial)
     let idCardResult = null;
-    if (trainee.email) {
-      try {
-        idCardResult = await sendTraineeIdCardEmail({
-          trainee,
-          force: true,
-          isUpdated: isTransfer,
-        });
-      } catch (err) {
-        console.warn('[ID Card Email Auto Trigger Error]', err.message);
-        idCardResult = { ok: false, error: err.message };
+
+    if (!skipEmails) {
+      if (!trainee.welcomeEmailSent && trainee.email) {
+        try {
+          emailResult = await sendTraineeWelcomeEmail({
+            trainee,
+            triggeredBy: isTransfer ? 'Room Transfer' : 'Room Allocation',
+          });
+        } catch (err) {
+          console.warn('[Welcome Email Auto Trigger Error]', err.message);
+          emailResult = { ok: false, error: err.message };
+        }
+      }
+
+      if (trainee.email && (!trainee.idCardDelivered || isTransfer)) {
+        try {
+          idCardResult = await sendTraineeIdCardEmail({
+            trainee,
+            force: false,
+            isUpdated: isTransfer,
+          });
+        } catch (err) {
+          console.warn('[ID Card Email Auto Trigger Error]', err.message);
+          idCardResult = { ok: false, error: err.message };
+        }
       }
     }
 

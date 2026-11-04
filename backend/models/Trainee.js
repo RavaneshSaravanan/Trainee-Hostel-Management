@@ -81,6 +81,27 @@ const traineeSchema = new mongoose.Schema(
       default: () => [],
     },
 
+    // Registration Confirmation Email tracking
+    registrationConfirmationSent: { type: Boolean, default: false },
+    registrationConfirmationSentAt: { type: Date },
+    registrationConfirmationError: { type: String, default: '' },
+
+    // Admin & Warden Approval Request Notification tracking
+    approvalNotificationSent: { type: Boolean, default: false },
+    approvalNotificationSentAt: { type: Date },
+    approvalNotificationRecipients: {
+      type: [
+        {
+          email: String,
+          role: String,
+          status: { type: String, enum: ['SENT', 'FAILED', 'SKIPPED'] },
+          sentAt: { type: Date, default: Date.now },
+          error: String,
+        },
+      ],
+      default: () => [],
+    },
+
     // ID Card Issuance & Email Delivery tracking
     idCardIssued: { type: Boolean, default: false },
     idCardIssuedAt: { type: Date },

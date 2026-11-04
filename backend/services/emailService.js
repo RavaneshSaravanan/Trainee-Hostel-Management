@@ -8,6 +8,7 @@ import { EmailLog } from '../models/EmailLog.js';
 import { Config } from '../models/Config.js';
 import { Trainee } from '../models/Trainee.js';
 import { User } from '../models/User.js';
+import { isValidEmail } from '../utils/validators.js';
 import {
   DEFAULT_EMAIL_TEMPLATE,
   DEFAULT_EMAIL_TEMPLATES,
@@ -385,14 +386,26 @@ export async function sendEmail({
   const from = rawFrom.trim().replace(/^["']|["']$/g, '');
   const provider = getEmailProvider();
 
-  // For OTP verification emails, strictly send ONLY to the recipient, do not merge additional admin recipients
-  const additional = type === 'OTP' ? { to: [], cc: [], bcc: [] } : await getRecipientsForType(type);
+  // For direct trainee transactional emails (OTP, Registration Confirmation), strictly send ONLY to the recipient, do not merge additional admin recipients
+  const isDirectTraineeOnly = type === 'OTP' || type === 'REGISTRATION_CONFIRMATION';
+  const additional = isDirectTraineeOnly ? { to: [], cc: [], bcc: [] } : await getRecipientsForType(type);
   const primaryToList = Array.isArray(to) ? to : [to];
-  const finalTo = Array.from(new Set([...primaryToList, ...(additional.to || [])])).filter(Boolean);
+  const finalTo = Array.from(new Set([...primaryToList, ...(additional.to || [])]))
+    .map((e) => String(e || '').trim().toLowerCase())
+    .filter((e) => isValidEmail(e));
   const initialCc = Array.isArray(cc) ? cc : [cc];
-  const finalCc = Array.from(new Set([...initialCc, ...(additional.cc || [])])).filter(Boolean);
+  const finalCc = Array.from(new Set([...initialCc, ...(additional.cc || [])]))
+    .map((e) => String(e || '').trim().toLowerCase())
+    .filter((e) => isValidEmail(e));
   const initialBcc = Array.isArray(bcc) ? bcc : [bcc];
-  const finalBcc = Array.from(new Set([...initialBcc, ...(additional.bcc || [])])).filter(Boolean);
+  const finalBcc = Array.from(new Set([...initialBcc, ...(additional.bcc || [])]))
+    .map((e) => String(e || '').trim().toLowerCase())
+    .filter((e) => isValidEmail(e));
+
+  if (finalTo.length === 0) {
+    console.warn(`[EMAIL DISPATCH SKIPPED] No valid recipient email address found for type ${type}. Primary: ${JSON.stringify(to)}`);
+    return { ok: false, status: 'SKIPPED_NO_RECIPIENT', error: 'No valid recipient email address' };
+  }
 
   const recipientString = finalTo.join(', ');
 
@@ -588,11 +601,7 @@ export async function sendTraineeWelcomeEmail({ trainee, force = false, triggere
   // 1. Mandatory details validation
   const missingFields = [];
   if (!trainee.name) missingFields.push('Name');
-  if (!trainee.mobile) missingFields.push('Mobile');
   if (!trainee.email) missingFields.push('Email');
-  if (!trainee.gender) missingFields.push('Gender');
-  if (!trainee.qualification) missingFields.push('Qualification');
-  if (!trainee.aadhar) missingFields.push('Aadhaar');
   if (!trainee.joiningDate) missingFields.push('Joining Date');
 
   if (missingFields.length > 0) {
@@ -603,13 +612,13 @@ export async function sendTraineeWelcomeEmail({ trainee, force = false, triggere
     };
   }
 
-  // 2. Email format validation (@gmail.com strictly required)
+  // 2. Email format validation (any valid RFC 5322 email address)
   const email = String(trainee.email || '').trim().toLowerCase();
-  if (!email.endsWith('@gmail.com')) {
+  if (!email || !isValidEmail(email)) {
     return {
       ok: false,
       reason: 'INVALID_EMAIL',
-      message: 'Welcome email skipped: Registered email must be a valid @gmail.com address.',
+      message: 'Welcome email skipped: Registered email must be a valid email address.',
     };
   }
 
@@ -677,7 +686,8 @@ export async function sendTraineeWelcomeEmail({ trainee, force = false, triggere
     idCardAttachment: verifyUrl,
   };
 
-  const subject = replaceDynamicPlaceholders(welcomeTpl.subject, placeholderData);
+  const defaultSubject = 'Welcome to Apollo Tyres – Thanks for Joining Us!';
+  const subject = replaceDynamicPlaceholders(welcomeTpl?.subject || defaultSubject, placeholderData);
   const heading = replaceDynamicPlaceholders(welcomeTpl.heading, placeholderData);
   const subheading = replaceDynamicPlaceholders(welcomeTpl.subheading, placeholderData);
   const bodyText = replaceDynamicPlaceholders(welcomeTpl.bodyText, placeholderData);
@@ -1042,21 +1052,29 @@ ${footerText}
 </div>
 `;
 
-  // Resolve approver email dynamically from live User records in MongoDB or Config
+  // Resolve approver email dynamically from live User records in MongoDB, Config, or environment
   let approverEmail = '';
   if (approver.userId || approver.id) {
     const liveUser = await User.findOne({ id: approver.userId || approver.id }).lean();
-    if (liveUser?.email && !liveUser.email.endsWith('@hostel.com')) approverEmail = liveUser.email.trim();
+    if (liveUser?.email && isValidEmail(liveUser.email) && !liveUser.email.endsWith('@hostel.com')) {
+      approverEmail = liveUser.email.trim();
+    }
   }
   if (!approverEmail && approver.username) {
     const liveUser = await User.findOne({ username: approver.username }).lean();
-    if (liveUser?.email && !liveUser.email.endsWith('@hostel.com')) approverEmail = liveUser.email.trim();
+    if (liveUser?.email && isValidEmail(liveUser.email) && !liveUser.email.endsWith('@hostel.com')) {
+      approverEmail = liveUser.email.trim();
+    }
   }
-  if (!approverEmail && approver.email && !approver.email.endsWith('@hostel.com')) {
+  if (!approverEmail && approver.email && isValidEmail(approver.email) && !approver.email.endsWith('@hostel.com')) {
     approverEmail = approver.email.trim();
   }
   if (!approverEmail || approverEmail.endsWith('@hostel.com')) {
-    approverEmail = await getAdminNotificationEmail();
+    if (approver.roleId === 'warden' && process.env.WARDEN_EMAIL && isValidEmail(process.env.WARDEN_EMAIL)) {
+      approverEmail = process.env.WARDEN_EMAIL.trim().toLowerCase();
+    } else {
+      approverEmail = await getAdminNotificationEmail();
+    }
   }
 
   if (!approverEmail || !approverEmail.includes('@')) {
@@ -1381,18 +1399,18 @@ export async function generateIdCardPdf({ trainee, branding = {}, qrBuffer, veri
 export async function sendTraineeIdCardEmail({ trainee, force = false, isUpdated = false }) {
   if (!trainee) return { ok: false, error: 'No trainee provided' };
 
-  // 1. Validate email address format (@gmail.com strictly required)
+  // 1. Validate email address format (any valid RFC 5322 email address)
   const email = String(trainee.email || '').trim().toLowerCase();
-  if (!email || !email.endsWith('@gmail.com')) {
+  if (!email || !isValidEmail(email)) {
     return {
       ok: false,
       reason: 'INVALID_EMAIL',
-      message: 'ID Card delivery skipped: Registered email must be a valid @gmail.com address.',
+      message: 'ID Card delivery skipped: Registered email must be a valid email address.',
     };
   }
 
   // 2. Pending Record Handling: Do NOT send while incomplete or pending
-  const isApproved = trainee.approvalStatus === 'APPROVED';
+  const isApproved = trainee.approvalStatus === 'APPROVED' || trainee.hostelStatus === 'APPROVED';
   const isNotPending = trainee.hostelStatus !== 'PENDING REVIEW' && trainee.hostelStatus !== 'PENDING_APPROVAL';
   const isNotRejected = trainee.approvalStatus !== 'REJECTED' && trainee.hostelStatus !== 'REJECTED';
 
@@ -1605,18 +1623,32 @@ ${footerText}
     try {
       pdfBuffer = await generateIdCardPdf({ trainee, branding, qrBuffer, verifyUrl });
     } catch (pdfErr) {
-      console.warn('[ID Card PDF Generation Warning]', pdfErr.message);
+      console.error('[ID Card PDF Generation Failed]', pdfErr.message);
+      return {
+        ok: false,
+        reason: 'PDF_GENERATION_FAILED',
+        error: `Failed to generate ID card PDF: ${pdfErr.message}`,
+      };
     }
 
-    const attachments = [];
-    if (pdfBuffer) {
-      const filename = `Trainee-ID-Card-${trainee.traineeId || trainee.qrId}.pdf`;
-      attachments.push({
+    // Strictly verify PDF buffer exists and has content before dispatching
+    if (!pdfBuffer || !Buffer.isBuffer(pdfBuffer) || pdfBuffer.length === 0) {
+      console.error('[ID Card PDF Verification Failed] Buffer is empty or invalid.');
+      return {
+        ok: false,
+        reason: 'PDF_GENERATION_FAILED',
+        error: 'ID Card PDF buffer could not be generated. Email dispatch aborted to prevent sending without attachment.',
+      };
+    }
+
+    const filename = `Apollo-Trainee-ID-Card-${trainee.traineeId || trainee.qrId}.pdf`;
+    const attachments = [
+      {
         filename,
         content: pdfBuffer,
         contentType: 'application/pdf',
-      });
-    }
+      },
+    ];
 
     const emailType = isUpdated ? 'ID_CARD_UPDATED' : 'ID_CARD';
     const result = await sendEmail({
@@ -1696,5 +1728,358 @@ export async function sendRegistrationOtpEmail({ email, otp }) {
     type: 'OTP',
     triggeredBy: 'Registration OTP Request',
   });
+}
+
+/**
+ * Sends Registration Successful Confirmation email to the trainee upon completing registration.
+ * Confirms receipt and informs trainee that Warden & HR Admin review is in progress.
+ */
+export async function sendRegistrationConfirmationEmail({ trainee, force = false }) {
+  if (!trainee) return { ok: false, error: 'No trainee provided' };
+
+  const email = String(trainee.email || '').trim().toLowerCase();
+  if (!email || !isValidEmail(email)) {
+    return {
+      ok: false,
+      reason: 'INVALID_EMAIL',
+      message: 'Registration confirmation skipped: Invalid email address.',
+    };
+  }
+
+  // Idempotency: Avoid sending duplicate confirmation emails
+  if (trainee.registrationConfirmationSent && !force) {
+    return {
+      ok: true,
+      reason: 'ALREADY_SENT',
+      message: 'Registration confirmation email has already been sent to this trainee.',
+      sentAt: trainee.registrationConfirmationSentAt,
+    };
+  }
+
+  const cfg = await Config.findOne({ key: 'main' }).lean();
+  const regTpl = {
+    ...DEFAULT_EMAIL_TEMPLATES.registrationConfirmation,
+    ...(cfg?.emailTemplates?.registrationConfirmation || {}),
+  };
+  const branding = { ...DEFAULT_ORG_BRANDING, ...(cfg?.orgBranding || {}) };
+  const orgName = branding.orgName || 'APOLLO TYRES LTD';
+  const orgLogo = regTpl.logoUrl || branding.logo || cfg?.logo || '';
+  const appUrl = getAppUrl();
+  const verifyUrl = `${appUrl}/#/verify/${encodeURIComponent(trainee.qrId || trainee.traineeId)}`;
+  const displayJoiningDate = fmtDate(trainee.joiningDate);
+
+  const placeholderData = {
+    traineeName: trainee.name,
+    traineeId: trainee.traineeId || trainee.qrId,
+    qrId: trainee.qrId,
+    traineeEmail: trainee.email,
+    traineeMobile: trainee.mobile,
+    guardianName: trainee.guardianName,
+    guardianContact: trainee.guardianContact,
+    joiningDate: displayJoiningDate,
+    organizationName: orgName,
+    organizationLogo: orgLogo,
+    idCardAttachment: verifyUrl,
+  };
+
+  const subject = replaceDynamicPlaceholders(
+    regTpl.subject || 'Registration Successful – Application Under Review | Apollo Tyres Ltd',
+    placeholderData
+  );
+  const heading = replaceDynamicPlaceholders(regTpl.heading || 'REGISTRATION RECEIVED', placeholderData);
+  const subheading = replaceDynamicPlaceholders(regTpl.subheading || `${orgName} — Trainee Hostel Operations`, placeholderData);
+  const bodyText = replaceDynamicPlaceholders(
+    regTpl.bodyText || `Dear ${trainee.name},\n\nYour trainee registration application for the Apollo Tyres Ltd Hostel has been successfully received and submitted for administrative approval.\n\nOur Hostel Warden and HR Administration are currently verifying your details and will assign your hostel block and room number shortly.\n\nOnce approved, you will receive an official Approval Confirmation email with your Digital ID Card attached as a printable PDF, along with your Welcome Packet containing room accommodation details.`,
+    placeholderData
+  );
+  const footerText = replaceDynamicPlaceholders(
+    regTpl.footerText || `${orgName} · Dedicated to Trainee Safety and Operational Excellence`,
+    placeholderData
+  );
+
+  const headerBg = regTpl.headerBg || '#2E1065';
+  const accentColor = regTpl.accentColor || '#7C3AED';
+
+  const text = `
+Dear ${trainee.name},
+
+${bodyText}
+
+TRAINEE REGISTRATION SUMMARY:
+- Trainee Name         : ${trainee.name}
+- Reference ID         : ${trainee.traineeId || trainee.qrId}
+- Unique QR ID         : ${trainee.qrId}
+- Mobile Number        : ${trainee.mobile || '—'}
+- Email Address        : ${trainee.email}
+- Guardian Name        : ${trainee.guardianName || '—'}
+- Guardian Contact     : ${trainee.guardianContact || '—'}
+- Qualification        : ${trainee.qualification || 'Trainee Operations'}
+- Scheduled Joining    : ${displayJoiningDate || 'Immediate'}
+- Application Status   : PENDING REVIEW & ROOM ALLOCATION
+
+WHAT TO EXPECT NEXT:
+1. The Hostel Warden and HR Administration will review your credentials and allocate your hostel block and room number.
+2. Upon approval, your official Digital Trainee ID Card (PDF) will be delivered to this email address.
+3. You will also receive an onboarding Welcome Packet with room guidelines and free-stay validity details.
+
+Public Verification Link:
+${verifyUrl}
+
+${footerText}
+`;
+
+  const html = `
+<div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 24px; border: 1px solid #e2e8f0; border-radius: 10px; background: #ffffff;">
+  <div style="background: ${headerBg}; color: #ffffff; padding: 20px; border-radius: 8px 8px 0 0; margin: -24px -24px 20px -24px; display: flex; align-items: center; justify-content: space-between;">
+    <div>
+      <h2 style="margin: 0; font-size: 20px; color: #ffffff;">${heading}</h2>
+      <p style="margin: 4px 0 0 0; font-size: 13px; color: #ddd6fe;">${subheading}</p>
+    </div>
+    ${orgLogo ? `<img src="${orgLogo}" alt="${orgName}" style="max-height: 42px; max-width: 130px; object-fit: contain; margin-left: 12px;" />` : ''}
+  </div>
+
+  <p style="font-size: 15px; color: #1e293b;">Dear <strong>${trainee.name}</strong>,</p>
+  <div style="font-size: 14px; color: #334155; line-height: 1.6; white-space: pre-line; margin: 12px 0;">${bodyText}</div>
+
+  <div style="background: #f8fafc; border-left: 4px solid ${accentColor}; padding: 14px 18px; margin: 18px 0; border-radius: 6px;">
+    <h3 style="margin: 0 0 10px 0; font-size: 14px; color: #1e1b4b; text-transform: uppercase; letter-spacing: 0.5px;">Registration Summary</h3>
+    <table style="width: 100%; border-collapse: collapse; font-size: 13.5px;">
+      <tbody>
+        <tr><td style="padding: 4px 0; color: #64748b; width: 40%;"><strong>Full Name:</strong></td><td style="padding: 4px 0; color: #1e293b;">${trainee.name}</td></tr>
+        <tr><td style="padding: 4px 0; color: #64748b;"><strong>Reference ID:</strong></td><td style="padding: 4px 0; color: ${accentColor}; font-weight: bold; font-family: monospace;">${trainee.traineeId || trainee.qrId}</td></tr>
+        <tr><td style="padding: 4px 0; color: #64748b;"><strong>QR Identifier:</strong></td><td style="padding: 4px 0; color: #1e293b; font-family: monospace;">${trainee.qrId}</td></tr>
+        <tr><td style="padding: 4px 0; color: #64748b;"><strong>Mobile Number:</strong></td><td style="padding: 4px 0; color: #1e293b;">${trainee.mobile || '—'}</td></tr>
+        <tr><td style="padding: 4px 0; color: #64748b;"><strong>Department:</strong></td><td style="padding: 4px 0; color: #1e293b;">${trainee.qualification || 'Trainee Operations'}</td></tr>
+        <tr><td style="padding: 4px 0; color: #64748b;"><strong>Scheduled Joining:</strong></td><td style="padding: 4px 0; color: #1e293b;">${displayJoiningDate || 'Immediate'}</td></tr>
+        <tr><td style="padding: 4px 0; color: #64748b;"><strong>Application Status:</strong></td><td style="padding: 4px 0; color: #d97706; font-weight: bold;">UNDER REVIEW</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div style="background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 8px; padding: 14px; margin: 20px 0; font-size: 13px; color: #1e40af;">
+    <strong>Next Steps:</strong>
+    <ol style="margin: 8px 0 0 0; padding-left: 20px;">
+      <li>Hostel Warden and HR Administration will review your application.</li>
+      <li>Your room number and hostel block will be assigned upon approval.</li>
+      <li>Your official Digital Trainee ID Card (PDF attachment) will be emailed directly to you.</li>
+    </ol>
+  </div>
+
+  <div style="margin: 24px 0; text-align: center;">
+    <a href="${verifyUrl}" style="background: ${accentColor}; color: #ffffff; text-decoration: none; padding: 12px 24px; border-radius: 8px; font-weight: bold; font-size: 14px; display: inline-block;">
+      View Registration Badge Online →
+    </a>
+  </div>
+
+  <p style="font-size: 12px; color: #94a3b8; border-top: 1px solid #e2e8f0; padding-top: 14px; margin-top: 24px; text-align: center;">
+    ${footerText}
+  </p>
+</div>
+`;
+
+  try {
+    const result = await sendEmail({
+      to: email,
+      subject,
+      text,
+      html,
+      type: 'REGISTRATION_CONFIRMATION',
+      traineeId: trainee.traineeId || trainee.qrId,
+      traineeName: trainee.name,
+      triggeredBy: 'Trainee Registration Submission',
+      metadata: { traineeId: trainee.traineeId, qrId: trainee.qrId },
+    });
+
+    if (result && result.ok) {
+      await Trainee.updateOne(
+        { _id: trainee._id },
+        {
+          $set: {
+            registrationConfirmationSent: true,
+            registrationConfirmationSentAt: new Date(),
+            registrationConfirmationError: '',
+          },
+        }
+      );
+      return { ok: true, status: 'SENT', recipient: email };
+    } else {
+      const errMsg = result?.error || 'Email dispatch failed';
+      await Trainee.updateOne(
+        { _id: trainee._id },
+        {
+          $set: {
+            registrationConfirmationSent: false,
+            registrationConfirmationError: errMsg,
+          },
+        }
+      );
+      return { ok: false, status: 'FAILED', error: errMsg, recipient: email };
+    }
+  } catch (err) {
+    await Trainee.updateOne(
+      { _id: trainee._id },
+      {
+        $set: {
+          registrationConfirmationSent: false,
+          registrationConfirmationError: err.message,
+        },
+      }
+    );
+    return { ok: false, error: err.message };
+  }
+}
+
+/**
+ * Sends approval request notifications to BOTH Admin AND Warden upon new trainee registration.
+ * Ensures neither recipient is omitted, and tracks recipient-level delivery.
+ */
+export async function sendApprovalRequestNotification({ trainee, force = false }) {
+  if (!trainee) return { ok: false, error: 'No trainee provided' };
+
+  if (trainee.approvalNotificationSent && !force) {
+    return {
+      ok: true,
+      reason: 'ALREADY_SENT',
+      message: 'Approval notification already sent for this trainee.',
+      sentAt: trainee.approvalNotificationSentAt,
+    };
+  }
+
+  const cfg = await Config.findOne({ key: 'main' }).lean();
+  const defaultAdminEmail = (process.env.ADMIN_EMAIL || process.env.SMTP_USER || 'apollotyres.hostel@gmail.com').trim().toLowerCase();
+  const defaultWardenEmail = (process.env.WARDEN_EMAIL || defaultAdminEmail).trim().toLowerCase();
+
+  // 1. Resolve Admin recipients
+  const adminUsers = await User.find({
+    roleId: { $in: ['superadmin', 'admin'] },
+    active: true,
+  }).lean();
+
+  let adminRecipients = adminUsers
+    .filter((u) => u.email && isValidEmail(u.email) && !u.email.endsWith('@hostel.com'))
+    .map((u) => ({
+      userId: u.id,
+      name: u.name,
+      username: u.username,
+      email: u.email.trim().toLowerCase(),
+      roleId: u.roleId || 'admin',
+    }));
+
+  if (adminRecipients.length === 0) {
+    const adminEmail = (cfg?.adminNotificationEmail && isValidEmail(cfg.adminNotificationEmail) && !cfg.adminNotificationEmail.endsWith('@hostel.com'))
+      ? cfg.adminNotificationEmail.trim().toLowerCase()
+      : defaultAdminEmail;
+
+    adminRecipients.push({
+      userId: 'admin',
+      name: 'Hostel Administrator',
+      username: 'admin',
+      email: adminEmail,
+      roleId: 'admin',
+    });
+  }
+
+  // 2. Resolve Warden recipients
+  const wardenUsers = await User.find({
+    roleId: 'warden',
+    active: true,
+  }).lean();
+
+  let wardenRecipients = wardenUsers
+    .filter((u) => u.email && isValidEmail(u.email) && !u.email.endsWith('@hostel.com'))
+    .map((u) => ({
+      userId: u.id,
+      name: u.name,
+      username: u.username,
+      email: u.email.trim().toLowerCase(),
+      roleId: 'warden',
+    }));
+
+  if (wardenRecipients.length === 0) {
+    const wardenEmail = (process.env.WARDEN_EMAIL && isValidEmail(process.env.WARDEN_EMAIL))
+      ? process.env.WARDEN_EMAIL.trim().toLowerCase()
+      : defaultWardenEmail;
+
+    wardenRecipients.push({
+      userId: 'warden',
+      name: 'Hostel Warden',
+      username: 'warden',
+      email: wardenEmail,
+      roleId: 'warden',
+    });
+  }
+
+  // Merge custom approvers configured in Config.approvalConfig
+  if (Array.isArray(cfg?.approvalConfig?.approvers)) {
+    for (const app of cfg.approvalConfig.approvers) {
+      if (app && app.email && isValidEmail(app.email)) {
+        const cleanEmail = app.email.trim().toLowerCase();
+        if (app.roleId === 'warden') {
+          if (!wardenRecipients.some((w) => w.email === cleanEmail)) {
+            wardenRecipients.push({
+              userId: app.userId || 'custom_warden',
+              name: app.name || 'Warden',
+              username: app.username || 'warden',
+              email: cleanEmail,
+              roleId: 'warden',
+            });
+          }
+        } else {
+          if (!adminRecipients.some((a) => a.email === cleanEmail)) {
+            adminRecipients.push({
+              userId: app.userId || 'custom_admin',
+              name: app.name || 'Administrator',
+              username: app.username || 'admin',
+              email: cleanEmail,
+              roleId: app.roleId || 'admin',
+            });
+          }
+        }
+      }
+    }
+  }
+
+  // Combine Admin and Warden recipients
+  const allApprovers = [...adminRecipients, ...wardenRecipients];
+  const results = [];
+
+  for (const approver of allApprovers) {
+    try {
+      const res = await sendApprovalRequestEmail({ approver, trainee });
+      results.push({
+        email: approver.email,
+        role: approver.roleId,
+        status: res?.ok ? 'SENT' : 'FAILED',
+        error: res?.ok ? '' : (res?.error || 'Dispatch failed'),
+      });
+    } catch (err) {
+      results.push({
+        email: approver.email,
+        role: approver.roleId,
+        status: 'FAILED',
+        error: err.message,
+      });
+    }
+  }
+
+  const anySent = results.some((r) => r.status === 'SENT');
+
+  await Trainee.updateOne(
+    { _id: trainee._id },
+    {
+      $set: {
+        approvalNotificationSent: anySent,
+        approvalNotificationSentAt: anySent ? new Date() : undefined,
+        approvalNotificationRecipients: results,
+      },
+    }
+  );
+
+  return {
+    ok: anySent,
+    results,
+    adminCount: adminRecipients.length,
+    wardenCount: wardenRecipients.length,
+  };
 }
 
