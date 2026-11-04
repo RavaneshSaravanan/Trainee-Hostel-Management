@@ -53,18 +53,29 @@ export function StoreProvider({ children }) {
     setUsers(s.users || []);
   };
 
-  const dropSession = useCallback(() => { setToken(''); setSession(null); setRoute({ view: 'dashboard', params: {} }); }, []);
+  const dropSession = useCallback(() => {
+    setToken('');
+    try { localStorage.removeItem('hostel_me'); } catch {}
+    setSession(null);
+    setRoute({ view: 'dashboard', params: {} });
+  }, []);
 
   // ---------- boot: restore login, or load public look (for the login screen) ----------
   useEffect(() => {
     (async () => {
       try {
-        if (getToken()) {
+        const token = getToken();
+        const me = JSON.parse(localStorage.getItem('hostel_me') || 'null');
+        if (token && me) {
           const s = await api('/api/state');
-          const me = JSON.parse(localStorage.getItem('hostel_me') || 'null');
-          if (me) { applyServer(s); setSession(me); }
+          applyServer(s);
+          setSession(me);
+        } else if (token && !me) {
+          dropSession();
         }
-      } catch (e) { if (e.status === 401) setToken(''); }
+      } catch (e) {
+        if (e.status === 401) dropSession();
+      }
       try {
         const p = await api('/api/public', { auth: false });
         if (!getToken()) setConfigRaw((c) => withDefaults({ ...c, ...p }));
