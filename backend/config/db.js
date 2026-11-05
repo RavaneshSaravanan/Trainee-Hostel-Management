@@ -90,12 +90,12 @@ export async function connectDB() {
         err.message
       );
 
-      // Local development fallback: If primary database fails to connect, spin up embedded MongoDB so dev server is not blocked
-      const isDev = process.env.NODE_ENV !== 'production';
-      if (isDev) {
+      // In-memory fallback ONLY if explicitly requested or if no URI is provided at all
+      const useMemoryFallback = process.env.USE_MEMORY_DB === 'true' || (!process.env.MONGODB_URI && !process.env.MONGO_URI);
+      if (useMemoryFallback) {
         try {
           console.warn(
-            '[Database] Primary MongoDB connection failed. Starting embedded in-memory MongoDB for local development...'
+            '[Database] Primary MongoDB URI not provided or USE_MEMORY_DB enabled. Starting embedded in-memory MongoDB...'
           );
 
           const { MongoMemoryServer } = await import(
@@ -138,14 +138,10 @@ export async function connectDB() {
 
       if (isAtlas) {
         console.error(`
-[Database] MongoDB Atlas troubleshooting:
-
-1. Check your MONGODB_URI in .env.
-2. Verify MongoDB Atlas cluster status.
-3. Check Network Access IP whitelist.
-4. Verify database username and password.
-5. Check your internet and DNS connectivity.
-6. Confirm that your Atlas cluster is running.
+[Database] MongoDB Atlas connection error. Mongoose will automatically retry.
+1. Check your internet connectivity / DNS.
+2. Verify your IP is whitelisted on MongoDB Atlas (Network Access).
+3. Verify cluster0 is active.
         `);
       }
 

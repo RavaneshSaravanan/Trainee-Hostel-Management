@@ -1,0 +1,21 @@
+{
+  "watch": [
+    "server.js",
+    "seed.js",
+    "defaults.js",
+    "config/",
+    "middleware/",
+    "models/",
+    "routes/",
+    "services/",
+    "utils/"
+  ],
+  "ext": "js,mjs,json",
+  "ignore": [
+    "node_modules/",
+    ".git/",
+    "*.test.js",
+    "*.log"
+  ],
+  "delay": 1000
+}

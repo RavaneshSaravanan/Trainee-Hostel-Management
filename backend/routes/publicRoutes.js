@@ -3,6 +3,7 @@ import express from 'express';
 import rateLimit from 'express-rate-limit';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
+import mongoose from 'mongoose';
 import { Config } from '../models/Config.js';
 import { Trainee } from '../models/Trainee.js';
 import { Otp } from '../models/Otp.js';
