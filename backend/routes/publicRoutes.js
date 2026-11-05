@@ -70,8 +70,15 @@ const otpLimiter = rateLimit({
 });
 
 async function getConfig() {
-  const configDoc = await Config.findOne({ key: 'main' }).lean();
-  return withDefaults(configDoc || DEFAULT_CONFIG);
+  try {
+    if (mongoose.connection.readyState === 1) {
+      const configDoc = await Config.findOne({ key: 'main' }).lean();
+      return withDefaults(configDoc || DEFAULT_CONFIG);
+    }
+  } catch (err) {
+    console.warn('[Public Config] Falling back to default config:', err.message);
+  }
+  return withDefaults(DEFAULT_CONFIG);
 }
 
 router.get('/public', async (req, res) => {
@@ -86,7 +93,15 @@ router.get('/public', async (req, res) => {
       registrationOpen: config.registrationOpen,
     });
   } catch (err) {
-    return res.status(500).json({ error: err.message });
+    console.warn('[Public Route Error] Gracefully falling back to default config:', err.message);
+    return res.json({
+      appName: DEFAULT_CONFIG.appName,
+      appSub: DEFAULT_CONFIG.appSub,
+      logo: DEFAULT_CONFIG.logo,
+      theme: DEFAULT_CONFIG.theme,
+      customFields: DEFAULT_CONFIG.customFields,
+      registrationOpen: DEFAULT_CONFIG.registrationOpen,
+    });
   }
 });
 

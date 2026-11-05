@@ -308,10 +308,8 @@ router.post('/approval/decision', auth, async (req, res) => {
     let welcomeResult = null;
 
     if (finalStatus === 'APPROVED' && trainee.email) {
-      const hasRoomAllocated = !!((trainee.hostel || trainee.hostelId) && (trainee.roomNo || trainee.room));
-
       // Email 4: Approval Confirmation + Trainee ID Card (with guaranteed PDF buffer attachment)
-      if (hasRoomAllocated && !trainee.idCardDelivered) {
+      if (!trainee.idCardDelivered) {
         try {
           idCardResult = await sendTraineeIdCardEmail({ trainee, force: false, isUpdated: false });
         } catch (err) {
@@ -321,6 +319,7 @@ router.post('/approval/decision', auth, async (req, res) => {
       }
 
       // Email 5: Welcome Email ("Welcome to Apollo Tyres – Thanks for Joining Us!")
+      const hasRoomAllocated = !!((trainee.hostel || trainee.hostelId) && (trainee.roomNo || trainee.room));
       if (hasRoomAllocated && !trainee.welcomeEmailSent) {
         try {
           welcomeResult = await sendTraineeWelcomeEmail({

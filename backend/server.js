@@ -148,7 +148,7 @@ app.use('/api', (req, res, next) => {
     connectDB().catch((err) => console.warn('[Auto-reconnect warning]', err.message));
   }
 
-  // If connecting or reconnecting, wait briefly up to 3 seconds
+  // If connecting or reconnecting, wait gracefully up to 15 seconds for Atlas/cloud handshake
   let retries = 0;
   const interval = setInterval(() => {
     retries++;
@@ -156,7 +156,7 @@ app.use('/api', (req, res, next) => {
       clearInterval(interval);
       return next();
     }
-    if (retries > 30) { // 3s wait
+    if (retries > 150) { // 15s wait
       clearInterval(interval);
       return res.status(503).json({
         error: 'Database connection in progress. Please retry in a moment.',
