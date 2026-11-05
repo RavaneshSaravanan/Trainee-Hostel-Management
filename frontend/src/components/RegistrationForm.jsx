@@ -94,6 +94,7 @@ export default function RegistrationForm({
   const [otpMessage, setOtpMessage] = useState('');
   const [otpError, setOtpError] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const [formError, setFormError] = useState('');
 
   // 60-second cooldown timer
   useEffect(() => {
@@ -385,6 +386,7 @@ export default function RegistrationForm({
     }
 
     setSubmitting(true);
+    setFormError('');
     try {
       await onSubmit({
         ...values,
@@ -407,10 +409,19 @@ export default function RegistrationForm({
         custom: customValues,
       });
     } catch (err) {
-      if (err.message && err.message.includes('Trainee ID already exists')) {
-        setErrors((prev) => ({ ...prev, traineeId: ERROR_MESSAGES.TRAINEE_ID_EXISTS }));
+      const msg = err.message || 'Registration failed.';
+      const field = err.data?.field;
+      if (field && ['email', 'aadhar', 'traineeId', 'mobile'].includes(field)) {
+        setErrors((prev) => ({ ...prev, [field]: msg }));
+      } else if (msg.toLowerCase().includes('aadhaar') || msg.toLowerCase().includes('aadhar')) {
+        setErrors((prev) => ({ ...prev, aadhar: msg }));
+      } else if (msg.toLowerCase().includes('trainee id')) {
+        setErrors((prev) => ({ ...prev, traineeId: msg }));
         setTraineeIdSuccess('');
+      } else if (msg.toLowerCase().includes('email')) {
+        setErrors((prev) => ({ ...prev, email: msg }));
       }
+      setFormError(msg);
     } finally {
       setSubmitting(false);
     }
@@ -440,6 +451,14 @@ export default function RegistrationForm({
 
   return (
     <form onSubmit={handleSubmit} noValidate>
+      {formError && (
+        <div className="alert-banner bad" style={{ margin: '0 0 16px 0', display: 'flex', alignItems: 'center', gap: 8, padding: '10px 14px', borderRadius: 8, background: '#fef2f2', border: '1px solid #fecaca', color: '#991b1b', fontSize: 13 }}>
+          <Icon name="alert" size={18} />
+          <div>
+            <strong>Registration Conflict:</strong> {formError}
+          </div>
+        </div>
+      )}
       {/* ---------------- 1. Personal Details ---------------- */}
       <div className="form-section">
         <div className="form-section-title">Personal Details</div>

@@ -124,8 +124,8 @@ function Edit({ t }) {
     notify('Trainee details updated.');
     navigate('trainee-profile', { id: targetKey, sub: 'overview' });
   };
-  const F = (label, name, props = {}) => (
-    <div><label className="field-label">{label}</label><input className="input" name={name} defaultValue={t[name] === '—' ? '' : t[name]} {...props} /></div>
+  const F = (label, name, { span, ...props } = {}) => (
+    <div className={span ? 'span-2' : ''}><label className="field-label">{label}</label><input className="input" name={name} defaultValue={t[name] === '—' ? '' : t[name]} {...props} /></div>
   );
   const S = (label, name, options) => (
     <div><label className="field-label">{label}</label>
@@ -157,7 +157,7 @@ function Edit({ t }) {
               {errors.mobile && <div className="field-error" style={{ color: 'var(--red, #ef4444)', fontSize: 12, marginTop: 4 }}>{errors.mobile}</div>}
             </div>
             <div>
-              <label className="field-label">E-mail ID (@gmail.com strictly required)</label>
+              <label className="field-label">E-mail ID</label>
               <input
                 className={`input ${errors.email ? 'input-error' : ''}`}
                 type="email"
