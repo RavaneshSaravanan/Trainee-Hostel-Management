@@ -1,11 +1,13 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import net from 'node:net';
 import { fileURLToPath } from 'node:url';
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
 import dotenv from 'dotenv';
 import mongoose from 'mongoose';
+import nodemailer from 'nodemailer';
 import { connectDB, closeDB } from './config/db.js';
 import { seedDatabase } from './seed.js';
 import { verifySmtpConnection, getTransporter, getEmailProvider, isEmailConfigured } from './services/emailService.js';
@@ -129,11 +131,133 @@ app.get('/api/health', (req, res) => {
   });
 });
 
+// ---------------- Temporary Isolated SMTP Port 2525 Diagnostic Test ----------------
+async function probeTcp(host, port, timeoutMs = 5000) {
+  return new Promise((resolve) => {
+    const start = Date.now();
+    let banner = '';
+    const socket = net.createConnection({ host, port, timeout: timeoutMs });
+
+    socket.on('connect', () => {
+      const connectTime = Date.now() - start;
+      setTimeout(() => {
+        socket.destroy();
+        resolve({
+          connected: true,
+          connectTimeMs: connectTime,
+          banner: banner.trim() || 'Connected, but no SMTP greeting banner received within 1.5s',
+        });
+      }, 1500);
+    });
+
+    socket.on('data', (chunk) => {
+      banner += chunk.toString();
+    });
+
+    socket.on('timeout', () => {
+      const elapsed = Date.now() - start;
+      socket.destroy();
+      resolve({
+        connected: false,
+        error: `Connection timed out after ${elapsed}ms`,
+        code: 'ETIMEDOUT',
+        elapsedMs: elapsed,
+      });
+    });
+
+    socket.on('error', (err) => {
+      const elapsed = Date.now() - start;
+      resolve({
+        connected: false,
+        error: err.message,
+        code: err.code || 'ERR_TCP',
+        elapsedMs: elapsed,
+      });
+    });
+  });
+}
+
+async function probeNodemailerPort(host, port, user, pass) {
+  const testTransporter = nodemailer.createTransport({
+    host,
+    port,
+    secure: port === 465,
+    auth: { user: user || 'diagnostics@gmail.com', pass: pass || 'dummy-pass' },
+    connectionTimeout: 5000,
+    greetingTimeout: 4000,
+    socketTimeout: 5000,
+  });
+
+  const start = Date.now();
+  try {
+    await testTransporter.verify();
+    return {
+      verified: true,
+      timeMs: Date.now() - start,
+      message: 'SMTP handshake and authentication succeeded',
+    };
+  } catch (err) {
+    return {
+      verified: false,
+      timeMs: Date.now() - start,
+      error: err.message,
+      code: err.code || 'ERR_NODEMAILER',
+      command: err.command || null,
+    };
+  }
+}
+
+app.get('/api/test-smtp-2525', async (req, res) => {
+  const host = 'smtp.gmail.com';
+  const user = process.env.SMTP_USER || '';
+  const pass = process.env.SMTP_PASS || '';
+
+  // 1. Probe Port 2525 TCP connectivity
+  const tcp2525 = await probeTcp(host, 2525, 5000);
+
+  // 2. Probe comparison ports 587 and 465
+  const tcp587 = await probeTcp(host, 587, 5000);
+  const tcp465 = await probeTcp(host, 465, 5000);
+
+  // 3. Probe Nodemailer on Port 2525 (credentials hidden from logs)
+  const nodemailer2525 = await probeNodemailerPort(host, 2525, user, pass);
+
+  const supports2525 = tcp2525.connected && !tcp2525.error;
+
+  return res.json({
+    host,
+    testedPort: 2525,
+    timestamp: new Date().toISOString(),
+    isRenderFreeInstance: Boolean(process.env.RENDER || process.env.RENDER_SERVICE_ID || process.env.IS_PULL_REQUEST),
+    results: {
+      port2525: {
+        tcp: tcp2525,
+        nodemailer: nodemailer2525,
+        supportedByGmail: false,
+      },
+      comparison: {
+        port587_STARTTLS: tcp587,
+        port465_SSL: tcp465,
+      },
+    },
+    officialGmailSupport: {
+      port587: 'Officially supported (STARTTLS)',
+      port465: 'Officially supported (SSL/TLS)',
+      port25: 'Officially supported (standard plaintext/TLS; commonly blocked by cloud providers)',
+      port2525: 'NOT supported by Google smtp.gmail.com (Used by third-party ESPs like SendGrid/Mailgun, but Google does not listen on 2525)',
+    },
+    conclusion: supports2525
+      ? 'Unexpected: TCP connected to smtp.gmail.com on port 2525.'
+      : 'Confirmed: smtp.gmail.com does not respond on port 2525 (Connection timed out / ETIMEDOUT). Gmail SMTP cannot work on port 2525.',
+  });
+});
+
 // Database readiness check for API routes
 app.use('/api', (req, res, next) => {
   // Allow health check, public config, and revision polling without blocking
   if (
     req.path === '/health' ||
+    req.path === '/test-smtp-2525' ||
     req.path === '/public' ||
     req.path === '/rev' ||
     req.path === '/reviews/summary'
