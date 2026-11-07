@@ -5,6 +5,7 @@ import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import mongoose from 'mongoose';
 import { Config } from '../models/Config.js';
+import { getJwtSecret } from '../config/jwt.js';
 import { Trainee } from '../models/Trainee.js';
 import { Otp } from '../models/Otp.js';
 import { User } from '../models/User.js';
@@ -45,7 +46,7 @@ function maskEmail(email) {
   return `${visible}***@${domain}`;
 }
 
-const JWT_SECRET = process.env.JWT_SECRET || 'trainee_hostel_secret_jwt_key_2026';
+const getSecret = () => getJwtSecret();
 
 function escapeRegex(str) {
   return String(str || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -297,11 +298,7 @@ router.post('/public/send-otp', otpLimiter, async (req, res) => {
     });
 
     console.log(`[OTP Generated] 4-digit code created for ${maskEmail(cleanEmail)} (expires in 5 min)`);
-    if (process.env.NODE_ENV !== 'production') {
-      console.log(`\n---------------------------------------------------------`);
-      console.log(`[LOCAL DEV OTP CODE] Email: ${cleanEmail} | OTP: ${otpCode}`);
-      console.log(`---------------------------------------------------------\n`);
-    }
+    console.log(`[OTP Dispatched] Code dispatched to ${maskEmail(cleanEmail)}`);
 
     // Dispatch email
     const emailResult = await sendRegistrationOtpEmail({ email: cleanEmail, otp: otpCode });
@@ -396,7 +393,7 @@ router.post('/public/verify-otp', otpLimiter, async (req, res) => {
     // Issue cryptographic verification token valid for 15 minutes
     const verificationToken = jwt.sign(
       { email: cleanEmail, verified: true, purpose: 'trainee-registration' },
-      JWT_SECRET,
+      getSecret(),
       { expiresIn: '15m' }
     );
 
@@ -444,7 +441,7 @@ router.post('/public/register', registerLimiter, async (req, res) => {
     }
 
     try {
-      const decoded = jwt.verify(verificationToken, JWT_SECRET);
+      const decoded = jwt.verify(verificationToken, getSecret());
       if (!decoded.verified || decoded.email !== email || decoded.purpose !== 'trainee-registration') {
         return res.status(400).json({ error: 'Please verify your email before registration.', field: 'email' });
       }

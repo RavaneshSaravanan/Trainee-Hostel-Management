@@ -9,6 +9,7 @@ import { Config } from '../models/Config.js';
 import { Trainee } from '../models/Trainee.js';
 import { User } from '../models/User.js';
 import { isValidEmail } from '../utils/validators.js';
+import { getJwtSecret } from '../config/jwt.js';
 import {
   DEFAULT_EMAIL_TEMPLATE,
   DEFAULT_EMAIL_TEMPLATES,
@@ -19,6 +20,17 @@ import { fmtDate } from '../utils/dates.js';
 import { addThreeCalendarMonths } from '../utils/validity.js';
 
 let transporter = null;
+
+// Safe recipient masking for structured production logging
+function maskEmailForLogs(email) {
+  if (!email || typeof email !== 'string') return '***';
+  const parts = email.trim().split('@');
+  if (parts.length !== 2) return '***';
+  const name = parts[0];
+  const domain = parts[1];
+  const visible = name.slice(0, 2);
+  return `${visible}***@${domain}`;
+}
 
 // Sequential dispatch queue to prevent concurrent SMTP socket timeouts
 let emailQueue = Promise.resolve();
@@ -32,6 +44,34 @@ function enqueueEmail(fn) {
 /**
  * Safely persists audit logs to MongoDB without hanging or crashing if the DB is disconnected.
  */
+/**
+ * Safely retrieves system configuration from MongoDB without hanging on buffer timeouts if disconnected.
+ */
+async function safeGetConfig() {
+  try {
+    if (mongoose.connection && mongoose.connection.readyState === 1) {
+      return await safeGetConfig();
+    }
+  } catch (err) {
+    console.warn('[Config Query Warning]', err.message);
+  }
+  return null;
+}
+
+/**
+ * Safely updates trainee status in MongoDB without hanging on buffer timeouts if DB is disconnected.
+ */
+async function safeUpdateTrainee(trainee, update) {
+  try {
+    if (mongoose.connection?.readyState === 1 && trainee && (trainee._id || trainee.traineeId)) {
+      const filter = trainee._id ? { _id: trainee._id } : { traineeId: trainee.traineeId };
+      await Trainee.updateOne(filter, update);
+    }
+  } catch (err) {
+    console.warn('[Trainee DB Update Warning]', err.message);
+  }
+}
+
 async function safeAuditLog(entries = []) {
   try {
     if (mongoose.connection && mongoose.connection.readyState === 1) {
@@ -60,9 +100,29 @@ export function getAppUrl() {
  * Returns 'brevo', 'resend', 'smtp', or 'none'.
  * Brevo and Resend use HTTPS (Port 443), which works seamlessly on Render Free Tier.
  */
+/**
+ * Detects the active email dispatch provider based on environment and credentials.
+ * Production (Render Free Tier): Strictly uses HTTPS REST API (Port 443). NEVER attempts SMTP.
+ * Development: Supports Resend HTTPS, Brevo HTTPS, or local Nodemailer SMTP.
+ */
 export function getEmailProvider() {
+  const isProd = process.env.NODE_ENV === 'production';
+
+  if (isProd) {
+    // In production, strictly use HTTPS API (Port 443 - Render Free Tier compatible)
+    // NEVER attempt or return SMTP in production
+    if (process.env.RESEND_API_KEY && process.env.RESEND_API_KEY.trim()) {
+      return 'resend';
+    }
+    if (process.env.BREVO_API_KEY || process.env.SENDINBLUE_API_KEY) {
+      return 'brevo';
+    }
+    return 'none';
+  }
+
+  // Development environment: allow Resend, Brevo, or local SMTP
+  if (process.env.RESEND_API_KEY && process.env.RESEND_API_KEY.trim()) return 'resend';
   if (process.env.BREVO_API_KEY || process.env.SENDINBLUE_API_KEY) return 'brevo';
-  if (process.env.RESEND_API_KEY) return 'resend';
   if (process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS) return 'smtp';
   return 'none';
 }
@@ -142,24 +202,81 @@ async function sendViaBrevo({ from, to, cc = [], bcc = [], subject, html, text, 
 }
 
 /**
+ * Resolves and validates the sender address for Resend.
+ * In Resend, sending with an unverified domain (e.g. @gmail.com) causes HTTP 403.
+ * Uses RESEND_FROM if valid, or falls back to 'Apollo Tyres Ltd <onboarding@resend.dev>'.
+ */
+export function resolveResendSender(requestedFrom) {
+  const envFrom = (process.env.RESEND_FROM || '').trim();
+  if (envFrom) {
+    const match = envFrom.match(/^(.*?)(?:<(.+?)>)?$/);
+    const candidate = (match && match[2] ? match[2] : envFrom).trim();
+    if (isValidEmail(candidate)) {
+      return envFrom;
+    }
+    console.warn(`[EMAIL WARNING] RESEND_FROM "${envFrom}" is not a valid email address. Falling back to default.`);
+  }
+
+  let displayName = 'Apollo Tyres Ltd';
+  if (requestedFrom) {
+    const match = requestedFrom.match(/^(.*?)(?:<(.+?)>)?$/);
+    if (match && match[1]?.trim()) {
+      displayName = match[1].trim().replace(/^["']|["']$/g, '');
+    }
+  }
+
+  // If requestedFrom is already from a custom domain (not public webmail), keep it
+  if (requestedFrom) {
+    const match = requestedFrom.match(/<(.+?)>/) || [null, requestedFrom];
+    const candidateEmail = (match[1] || requestedFrom).trim();
+    const domain = candidateEmail.split('@')[1]?.toLowerCase() || '';
+    const publicDomains = ['gmail.com', 'googlemail.com', 'yahoo.com', 'hotmail.com', 'outlook.com', 'hostel.com'];
+    if (isValidEmail(candidateEmail) && !publicDomains.includes(domain)) {
+      return requestedFrom;
+    }
+  }
+
+  return `${displayName} <onboarding@resend.dev>`;
+}
+
+/**
  * Sends email via Resend HTTPS REST API (Port 443 - Render Free tier compatible).
- * Resend provides 3,000 free emails/month.
+ * Sourced from environment variable: RESEND_API_KEY.
+ * Includes timeout handling (15s) and strict provider response verification.
  */
 async function sendViaResend({ from, to, cc = [], bcc = [], subject, html, text, attachments = [] }) {
   const apiKey = (process.env.RESEND_API_KEY || '').trim();
-  if (!apiKey) throw new Error('RESEND_API_KEY is not configured');
+  if (!apiKey) {
+    throw new Error('RESEND_API_KEY is not configured in environment variables');
+  }
 
-  const resendFrom = process.env.RESEND_FROM || (from && from.includes('@resend.dev') ? from : 'Apollo Tyres Ltd <onboarding@resend.dev>');
+  const sender = resolveResendSender(from);
+  const toList = (Array.isArray(to) ? to : [to])
+    .map((e) => String(e || '').trim())
+    .filter((e) => isValidEmail(e));
+
+  if (toList.length === 0) {
+    throw new Error('Resend dispatch failed: No valid recipient email addresses found');
+  }
 
   const payload = {
-    from: resendFrom,
-    to: Array.isArray(to) ? to : [to],
-    subject,
-    html: html || text,
+    from: sender,
+    to: toList,
+    subject: subject || 'No Subject',
+    html: html || text || '',
   };
+
   if (text) payload.text = text;
-  if (Array.isArray(cc) && cc.length > 0) payload.cc = cc;
-  if (Array.isArray(bcc) && bcc.length > 0) payload.bcc = bcc;
+
+  const validCc = (Array.isArray(cc) ? cc : [cc])
+    .map((e) => String(e || '').trim())
+    .filter((e) => isValidEmail(e));
+  if (validCc.length > 0) payload.cc = validCc;
+
+  const validBcc = (Array.isArray(bcc) ? bcc : [bcc])
+    .map((e) => String(e || '').trim())
+    .filter((e) => isValidEmail(e));
+  if (validBcc.length > 0) payload.bcc = validBcc;
 
   if (Array.isArray(attachments) && attachments.length > 0) {
     payload.attachments = attachments.map((att) => {
@@ -170,28 +287,70 @@ async function sendViaResend({ from, to, cc = [], bcc = [], subject, html, text,
         base64 = Buffer.from(att.content).toString('base64');
       }
       return {
-        filename: att.filename || 'attachment',
+        filename: att.filename || 'attachment.pdf',
         content: base64,
       };
     });
   }
 
-  const res = await fetch('https://api.resend.com/emails', {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${apiKey}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify(payload),
-  });
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 15000);
 
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    const msg = data.message || `Resend HTTP error ${res.status}`;
-    throw new Error(msg);
+  let res;
+  try {
+    res = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+        'User-Agent': 'Trainee-Hostel-Management/1.0',
+      },
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+    });
+  } catch (fetchErr) {
+    if (fetchErr.name === 'AbortError' || controller.signal.aborted) {
+      throw new Error('Resend API request timed out after 15 seconds');
+    }
+    throw new Error(`Resend HTTPS connection failed: ${fetchErr.message}`);
+  } finally {
+    clearTimeout(timeoutId);
   }
 
-  return { messageId: data.id || `resend-${Date.now()}` };
+  const data = await res.json().catch(() => ({}));
+
+  if (!res.ok) {
+    const errorDetail = data.message || data.error || (data.name ? `${data.name}: ${data.message || ''}` : `HTTP error ${res.status}`);
+    throw new Error(`Resend API Error (${res.status}): ${errorDetail}`);
+  }
+
+  if (!data.id) {
+    throw new Error('Resend API returned successful HTTP status but response was missing message ID');
+  }
+
+  return { messageId: data.id, provider: 'resend' };
+}
+
+/**
+ * Dispatches an email via Resend with automatic retry for transient errors (429 rate limit or 5xx server error).
+ * Permanent client errors (400, 401, 403, 422) are not retried.
+ */
+async function sendViaResendWithRetry(params, maxRetries = 2) {
+  let attempt = 0;
+  while (true) {
+    try {
+      attempt++;
+      return await sendViaResend(params);
+    } catch (err) {
+      const isClientError = /API Error \((400|401|403|422)\)/.test(err.message);
+      if (attempt >= maxRetries || isClientError) {
+        throw err;
+      }
+      const backoffMs = attempt * 1000;
+      console.warn(`[EMAIL RETRY] Resend attempt ${attempt} failed (${err.message}). Retrying in ${backoffMs}ms...`);
+      await new Promise((resolve) => setTimeout(resolve, backoffMs));
+    }
+  }
 }
 
 /**
@@ -199,6 +358,11 @@ async function sendViaResend({ from, to, cc = [], bcc = [], subject, html, text,
  * Sourced from environment variables: SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SMTP_SECURE, SMTP_FROM.
  */
 export function getTransporter() {
+  // In production, SMTP is strictly disabled to prevent port blocking/hanging on Render Free Tier
+  if (process.env.NODE_ENV === 'production') {
+    return null;
+  }
+
   const host = process.env.SMTP_HOST;
   const user = process.env.SMTP_USER;
   const rawPass = process.env.SMTP_PASS;
@@ -241,42 +405,54 @@ export function getTransporter() {
  * Call during server startup or diagnostics.
  */
 export async function verifySmtpConnection() {
+  const isProd = process.env.NODE_ENV === 'production';
   const provider = getEmailProvider();
+
+  if (provider === 'resend') {
+    const apiKey = (process.env.RESEND_API_KEY || '').trim();
+    if (!apiKey) {
+      console.error('[EMAIL ERROR] RESEND_API_KEY is not configured.');
+      return { ok: false, status: 'FAILED', error: 'RESEND_API_KEY is not configured', provider: 'resend' };
+    }
+    const sender = resolveResendSender();
+    console.log(`[EMAIL] Provider: Resend HTTPS REST API (Port 443 — Render Free Tier compatible). Configured Sender: ${sender}`);
+    return { ok: true, status: 'CONNECTED', provider: 'resend', sender };
+  }
 
   if (provider === 'brevo') {
     console.log('[EMAIL] Provider: Brevo HTTPS REST API (Port 443 — Render Free Tier compatible).');
     return { ok: true, status: 'CONNECTED', provider: 'brevo' };
   }
 
-  if (provider === 'resend') {
-    console.log('[EMAIL] Provider: Resend HTTPS REST API (Port 443 — Render Free Tier compatible).');
-    return { ok: true, status: 'CONNECTED', provider: 'resend' };
-  }
-
   if (provider === 'smtp') {
+    if (isProd) {
+      console.warn('[EMAIL WARNING] SMTP is strictly disabled in production. Resend HTTPS API is required.');
+      return { ok: false, status: 'DISABLED_IN_PROD', error: 'SMTP is strictly disabled in production', provider: 'smtp' };
+    }
+
     const transport = getTransporter();
+    if (!transport) {
+      return { ok: false, status: 'NOT_CONFIGURED', error: 'SMTP credentials missing', provider: 'smtp' };
+    }
+
     try {
       await transport.verify();
       console.log(`[SMTP] Connection established and verified successfully with ${process.env.SMTP_HOST}:${process.env.SMTP_PORT || 587}`);
       return { ok: true, status: 'CONNECTED', provider: 'smtp' };
     } catch (err) {
       console.error('[SMTP] Connection verification failed:', err.message);
-      if (err.code === 'EAUTH') {
-        console.error('[SMTP AUTH ERROR] Invalid SMTP username or password. Check that 2-Step Verification is ON in Google Account and use a 16-character App Password.');
-      } else if (err.code === 'ETIMEDOUT' || err.code === 'ESOCKET' || err.message?.includes('timeout')) {
-        console.warn('[SMTP WARNING] Connection to mail server timed out. Note: Render Free Tier blocks outbound SMTP ports 25, 465, and 587. Configure BREVO_API_KEY or RESEND_API_KEY in Render to send emails over HTTPS (Port 443).');
-      }
       return { ok: false, status: 'FAILED', error: err.message, code: err.code, provider: 'smtp' };
     }
   }
 
-  const isProd = process.env.NODE_ENV === 'production';
+  // provider === 'none'
   if (isProd) {
-    console.warn('[EMAIL WARNING] No email provider configured in production (Missing BREVO_API_KEY, RESEND_API_KEY, or SMTP credentials). Email dispatch will fail.');
+    console.warn('[EMAIL WARNING] No email provider configured in production (RESEND_API_KEY is missing). Outgoing emails will fail.');
+    return { ok: false, status: 'NOT_CONFIGURED', error: 'RESEND_API_KEY is missing in production environment variables', provider: 'none' };
   } else {
-    console.log('[SMTP] Development mode: No email provider configured. Outgoing emails will be logged only.');
+    console.log('[EMAIL] Development mode: No live email provider configured. Outgoing emails will be simulated locally.');
+    return { ok: false, status: 'DEV_SIMULATION', error: 'Simulated mode in development', provider: 'none' };
   }
-  return { ok: false, status: 'NOT_CONFIGURED', error: 'Email credentials missing', provider: 'none' };
 }
 
 /**
@@ -285,7 +461,7 @@ export async function verifySmtpConnection() {
  */
 export async function getAdminNotificationEmail() {
   try {
-    const cfg = await Config.findOne({ key: 'main' }).lean();
+    const cfg = await safeGetConfig();
     if (cfg?.adminNotificationEmail && cfg.adminNotificationEmail.includes('@') && !cfg.adminNotificationEmail.endsWith('@hostel.com')) {
       return cfg.adminNotificationEmail.trim().toLowerCase();
     }
@@ -311,7 +487,7 @@ export async function getAdminNotificationEmail() {
 export async function getRecipientsForType(emailType) {
   try {
     const normType = emailType === 'APPROVAL_REQUEST' || emailType === 'APPROVAL_DECISION' ? 'APPROVAL' : emailType;
-    const cfg = await Config.findOne({ key: 'main' }).lean();
+    const cfg = await safeGetConfig();
     const list = cfg?.emailRecipients || [];
     const active = list.filter(
       (r) => r && r.enabled !== false && Array.isArray(r.emailTypes) && (r.emailTypes.includes(normType) || r.emailTypes.includes(emailType))
@@ -409,19 +585,16 @@ export async function sendEmail({
 
   const recipientString = finalTo.join(', ');
 
-  // Diagnostic safe logging (no passwords, tokens or secrets)
+  // Diagnostic structured safe logging (no passwords, OTPs, tokens or secrets)
+  const maskedRecipients = finalTo.map((em) => maskEmailForLogs(em));
   const diagnosticInfo = {
     timestamp: new Date().toISOString(),
     emailType: type,
     provider,
     decision: metadata?.decision || (type === 'APPROVAL_DECISION' ? metadata?.decision : undefined),
     traineeId: traineeId || metadata?.traineeId || '',
-    intendedRecipients: {
-      primaryTo: primaryToList,
-      finalTo,
-      cc: finalCc,
-      bcc: finalBcc,
-    },
+    recipientsCount: finalTo.length,
+    maskedRecipients,
     subject,
     templateId: metadata?.templateType || type,
   };
@@ -436,7 +609,7 @@ export async function sendEmail({
         );
       } else if (provider === 'resend') {
         dispatchResult = await enqueueEmail(() =>
-          sendViaResend({ from, to: finalTo, cc: finalCc, bcc: finalBcc, subject, html, text, attachments })
+          sendViaResendWithRetry({ from, to: finalTo, cc: finalCc, bcc: finalBcc, subject, html, text, attachments })
         );
       } else {
         const transport = getTransporter();
@@ -528,7 +701,7 @@ export async function sendEmail({
         console.log(`To      : ${finalTo.join(', ')}`);
         console.log(`Subject : ${subject}`);
         console.log(`Type    : ${type}`);
-        console.log(`Message : \n${text || html}`);
+        if (type !== 'OTP') { console.log(`Message : \n${text || html}`); } else { console.log(`Message : [OTP Verification Content Protected]`); }
         console.log(`======================================================\n`);
         return { ok: true, status: 'DEV_SIMULATED', messageId: `dev-fallback-${Date.now()}`, to: finalTo, cc: finalCc, bcc: finalBcc, provider: 'simulation' };
       }
@@ -541,7 +714,7 @@ export async function sendEmail({
   if (provider === 'none') {
     const isProd = process.env.NODE_ENV === 'production';
     if (isProd) {
-      const errMessage = 'Email service is not configured on the server. Please configure BREVO_API_KEY, RESEND_API_KEY, or SMTP credentials in environment variables.';
+      const errMessage = 'Production email delivery is unavailable: RESEND_API_KEY is not configured in environment variables.';
       console.error(`[EMAIL DISPATCH FAILED] ${errMessage}`);
       return { ok: false, status: 'FAILED', error: errMessage, to: finalTo, provider: 'none' };
     }
@@ -652,7 +825,7 @@ export async function sendTraineeWelcomeEmail({ trainee, force = false, triggere
   const freeValidityEndDate = fmtDate(expiryIso);
 
   // 6. Load customizable welcome template and branding from Config
-  const cfg = await Config.findOne({ key: 'main' }).lean();
+  const cfg = await safeGetConfig();
   const welcomeTpl = {
     ...DEFAULT_EMAIL_TEMPLATES.welcome,
     ...(cfg?.emailTemplates?.welcome || {}),
@@ -892,9 +1065,7 @@ ${footerText}
     });
 
     if (result && result.ok) {
-      await Trainee.updateOne(
-        { _id: trainee._id },
-        {
+      await safeUpdateTrainee(trainee, {
           $set: {
             welcomeEmailSent: true,
             welcomeEmailSentAt: new Date(),
@@ -905,9 +1076,7 @@ ${footerText}
       return { ok: true, status: 'DELIVERED', recipient: email, dispatch: result };
     } else {
       const errMsg = result?.error || 'Email dispatch failed';
-      await Trainee.updateOne(
-        { _id: trainee._id },
-        {
+      await safeUpdateTrainee(trainee, {
           $set: {
             welcomeEmailSent: false,
             welcomeEmailError: errMsg,
@@ -917,9 +1086,7 @@ ${footerText}
       return { ok: false, status: 'FAILED', error: errMsg, recipient: email, dispatch: result };
     }
   } catch (err) {
-    await Trainee.updateOne(
-      { _id: trainee._id },
-      {
+    await safeUpdateTrainee(trainee, {
         $set: {
           welcomeEmailError: err.message,
         },
@@ -934,7 +1101,7 @@ ${footerText}
  */
 export async function sendApprovalRequestEmail({ approver, trainee }) {
   const appUrl = getAppUrl();
-  const jwtSecret = process.env.JWT_SECRET || 'trainee_hostel_secret_jwt_key_2026';
+  const jwtSecret = getJwtSecret();
 
   const token = jwt.sign(
     {
@@ -948,7 +1115,7 @@ export async function sendApprovalRequestEmail({ approver, trainee }) {
 
   const reviewLink = `${appUrl}/#/review/${encodeURIComponent(trainee.traineeId)}?token=${token}`;
 
-  const cfg = await Config.findOne({ key: 'main' }).lean();
+  const cfg = await safeGetConfig();
   const approvalTpl = {
     ...DEFAULT_EMAIL_TEMPLATES.approval,
     ...(cfg?.emailTemplates?.approval || {}),
@@ -1055,13 +1222,13 @@ ${footerText}
   // Resolve approver email dynamically from live User records in MongoDB, Config, or environment
   let approverEmail = '';
   if (approver.userId || approver.id) {
-    const liveUser = await User.findOne({ id: approver.userId || approver.id }).lean();
+    const liveUser = mongoose.connection?.readyState === 1 ? await User.findOne({ id: approver.userId || approver.id }).lean() : null;
     if (liveUser?.email && isValidEmail(liveUser.email) && !liveUser.email.endsWith('@hostel.com')) {
       approverEmail = liveUser.email.trim();
     }
   }
   if (!approverEmail && approver.username) {
-    const liveUser = await User.findOne({ username: approver.username }).lean();
+    const liveUser = mongoose.connection?.readyState === 1 ? await User.findOne({ username: approver.username }).lean() : null;
     if (liveUser?.email && isValidEmail(liveUser.email) && !liveUser.email.endsWith('@hostel.com')) {
       approverEmail = liveUser.email.trim();
     }
@@ -1226,7 +1393,7 @@ export async function sendDecisionNotificationEmail({ trainee, decision, rejecti
     return { ok: false, error: 'No trainee email' };
   }
 
-  const cfg = await Config.findOne({ key: 'main' }).lean();
+  const cfg = await safeGetConfig();
   const branding = { ...DEFAULT_ORG_BRANDING, ...(cfg?.orgBranding || {}) };
 
   const norm = String(decision || trainee?.approvalStatus || '').trim().toUpperCase();
@@ -1433,7 +1600,7 @@ export async function sendTraineeIdCardEmail({ trainee, force = false, isUpdated
   }
 
   // 4. Load configuration template and organization branding
-  const cfg = await Config.findOne({ key: 'main' }).lean();
+  const cfg = await safeGetConfig();
   const idCardTpl = isUpdated
     ? { ...DEFAULT_EMAIL_TEMPLATES.idCardUpdated, ...(cfg?.emailTemplates?.idCardUpdated || {}) }
     : { ...DEFAULT_EMAIL_TEMPLATES.idCard, ...(cfg?.emailTemplates?.idCard || {}) };
@@ -1665,9 +1832,7 @@ ${footerText}
     });
 
     if (result && result.ok) {
-      await Trainee.updateOne(
-        { _id: trainee._id },
-        {
+      await safeUpdateTrainee(trainee, {
           $set: {
             idCardDelivered: true,
             idCardDeliveredAt: new Date(),
@@ -1678,9 +1843,7 @@ ${footerText}
       return { ok: true, status: 'DELIVERED', recipient: email, dispatch: result };
     } else {
       const errMsg = result?.error || 'Email dispatch failed';
-      await Trainee.updateOne(
-        { _id: trainee._id },
-        {
+      await safeUpdateTrainee(trainee, {
           $set: {
             idCardDelivered: false,
             idCardDeliveryError: errMsg,
@@ -1690,9 +1853,7 @@ ${footerText}
       return { ok: false, status: 'FAILED', error: errMsg, recipient: email, dispatch: result };
     }
   } catch (err) {
-    await Trainee.updateOne(
-      { _id: trainee._id },
-      {
+    await safeUpdateTrainee(trainee, {
         $set: {
           idCardDeliveryError: err.message,
         },
@@ -1756,7 +1917,7 @@ export async function sendRegistrationConfirmationEmail({ trainee, force = false
     };
   }
 
-  const cfg = await Config.findOne({ key: 'main' }).lean();
+  const cfg = await safeGetConfig();
   const regTpl = {
     ...DEFAULT_EMAIL_TEMPLATES.registrationConfirmation,
     ...(cfg?.emailTemplates?.registrationConfirmation || {}),
@@ -1891,9 +2052,7 @@ ${footerText}
     });
 
     if (result && result.ok) {
-      await Trainee.updateOne(
-        { _id: trainee._id },
-        {
+      await safeUpdateTrainee(trainee, {
           $set: {
             registrationConfirmationSent: true,
             registrationConfirmationSentAt: new Date(),
@@ -1904,9 +2063,7 @@ ${footerText}
       return { ok: true, status: 'SENT', recipient: email };
     } else {
       const errMsg = result?.error || 'Email dispatch failed';
-      await Trainee.updateOne(
-        { _id: trainee._id },
-        {
+      await safeUpdateTrainee(trainee, {
           $set: {
             registrationConfirmationSent: false,
             registrationConfirmationError: errMsg,
@@ -1916,9 +2073,7 @@ ${footerText}
       return { ok: false, status: 'FAILED', error: errMsg, recipient: email };
     }
   } catch (err) {
-    await Trainee.updateOne(
-      { _id: trainee._id },
-      {
+    await safeUpdateTrainee(trainee, {
         $set: {
           registrationConfirmationSent: false,
           registrationConfirmationError: err.message,
@@ -1945,15 +2100,17 @@ export async function sendApprovalRequestNotification({ trainee, force = false }
     };
   }
 
-  const cfg = await Config.findOne({ key: 'main' }).lean();
+  const cfg = await safeGetConfig();
   const defaultAdminEmail = (process.env.ADMIN_EMAIL || process.env.SMTP_USER || 'apollotyres.hostel@gmail.com').trim().toLowerCase();
   const defaultWardenEmail = (process.env.WARDEN_EMAIL || defaultAdminEmail).trim().toLowerCase();
 
   // 1. Resolve Admin recipients
-  const adminUsers = await User.find({
-    roleId: { $in: ['superadmin', 'admin'] },
-    active: true,
-  }).lean();
+  const adminUsers = mongoose.connection?.readyState === 1
+    ? await User.find({
+        roleId: { $in: ['superadmin', 'admin'] },
+        active: true,
+      }).lean()
+    : [];
 
   let adminRecipients = adminUsers
     .filter((u) => u.email && isValidEmail(u.email) && !u.email.endsWith('@hostel.com'))
@@ -1980,10 +2137,12 @@ export async function sendApprovalRequestNotification({ trainee, force = false }
   }
 
   // 2. Resolve Warden recipients
-  const wardenUsers = await User.find({
-    roleId: 'warden',
-    active: true,
-  }).lean();
+  const wardenUsers = mongoose.connection?.readyState === 1
+    ? await User.find({
+        roleId: 'warden',
+        active: true,
+      }).lean()
+    : [];
 
   let wardenRecipients = wardenUsers
     .filter((u) => u.email && isValidEmail(u.email) && !u.email.endsWith('@hostel.com'))
@@ -2064,9 +2223,7 @@ export async function sendApprovalRequestNotification({ trainee, force = false }
 
   const anySent = results.some((r) => r.status === 'SENT');
 
-  await Trainee.updateOne(
-    { _id: trainee._id },
-    {
+  await safeUpdateTrainee(trainee, {
       $set: {
         approvalNotificationSent: anySent,
         approvalNotificationSentAt: anySent ? new Date() : undefined,

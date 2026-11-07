@@ -8,6 +8,7 @@ import dotenv from 'dotenv';
 import mongoose from 'mongoose';
 import { connectDB, closeDB } from './config/db.js';
 import { seedDatabase } from './seed.js';
+import { getJwtSecret } from './config/jwt.js';
 import { verifySmtpConnection, getTransporter, getEmailProvider, isEmailConfigured } from './services/emailService.js';
 
 import authRoutes from './routes/auth.js';
@@ -39,8 +40,17 @@ function validateEnv() {
     process.exit(1);
   }
 
-  if (isProd && (!process.env.JWT_SECRET || process.env.JWT_SECRET.includes('secret_jwt_key'))) {
-    console.warn('SECURITY WARNING: Using a default or weak JWT_SECRET in production is unsafe.');
+  if (isProd) {
+    try {
+      getJwtSecret();
+    } catch (jwtErr) {
+      console.error(jwtErr.message);
+      process.exit(1);
+    }
+
+    if (!process.env.RESEND_API_KEY) {
+      console.warn('[EMAIL WARNING] RESEND_API_KEY is not configured in production. Outgoing emails will be blocked until configured.');
+    }
   }
 
   console.log(`[Config] Environment: ${process.env.NODE_ENV || 'development'}, Port: ${PORT}`);

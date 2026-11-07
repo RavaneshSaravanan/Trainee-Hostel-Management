@@ -5,6 +5,7 @@ import rateLimit from 'express-rate-limit';
 import { User } from '../models/User.js';
 import { auth } from '../middleware/auth.js';
 import { bumpRev } from '../models/Meta.js';
+import { getJwtSecret } from '../config/jwt.js';
 
 const router = express.Router();
 
@@ -39,7 +40,7 @@ router.post('/login', loginLimiter, async (req, res) => {
       return res.status(401).json({ error: 'Wrong username or password.' });
     }
 
-    const secret = process.env.JWT_SECRET || 'trainee_hostel_secret_jwt_key_2026';
+    const secret = getJwtSecret();
     const token = jwt.sign(
       { id: u.id, username: u.username, roleId: u.roleId },
       secret,

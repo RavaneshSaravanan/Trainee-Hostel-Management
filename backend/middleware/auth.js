@@ -2,6 +2,7 @@ import jwt from 'jsonwebtoken';
 import { User } from '../models/User.js';
 import { Role } from '../models/Role.js';
 import { SUPER_ROLE, DEFAULT_ROLES } from '../defaults.js';
+import { getJwtSecret } from '../config/jwt.js';
 
 export async function auth(req, res, next) {
   try {
@@ -11,7 +12,7 @@ export async function auth(req, res, next) {
       return res.status(401).json({ error: 'Please sign in again.' });
     }
 
-    const secret = process.env.JWT_SECRET || 'trainee_hostel_secret_jwt_key_2026';
+    const secret = getJwtSecret();
     const decoded = jwt.verify(token, secret);
 
     const user = await User.findOne({ id: decoded.id, active: true });

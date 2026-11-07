@@ -7,7 +7,8 @@
     "start": "node server.js",
     "seed": "node seed.js",
     "create-admin": "node create-admin.js",
-    "test": "node verify.js"
+    "test": "node verify.js",
+    "test:email": "node test-email-suite.js"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
@@ -22,7 +23,8 @@
     "mongoose": "^8.24.7",
     "nodemailer": "^10.2.1",
     "pdfkit": "^0.20.2",
-    "qrcode": "^1.5.4"
+    "qrcode": "^1.5.4",
+    "resend": "^4.1.2"
   },
   "devDependencies": {
     "nodemon": "^3.1.14"
