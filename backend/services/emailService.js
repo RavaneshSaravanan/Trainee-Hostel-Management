@@ -211,7 +211,7 @@ export function getTransporter() {
 
       const cleanHost = host.trim();
       const cleanUser = user.trim().replace(/^["']|["']$/g, '');
-      const cleanPass = rawPass.trim().replace(/^["']|["']$/g, '');
+      const cleanPass = rawPass.trim().replace(/^["']|["']$/g, '').replace(/\s+/g, '');
 
       transporter = nodemailer.createTransport({
         host: cleanHost,
