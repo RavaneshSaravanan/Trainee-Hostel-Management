@@ -103,9 +103,40 @@ async function safeAuditLog(entries = []) {
 
 /**
  * Returns the deployed website base URL, ensuring trailing slashes are removed.
- * Strictly uses configured APP_URL or FRONTEND_URL, falling back to CLIENT_ORIGIN.
+ * In production (NODE_ENV=production), prioritizes the deployed production URL
+ * from APP_URL, FRONTEND_URL, CLIENT_ORIGIN, or VERCEL_URL, preventing localhost leakage.
+ * In development, defaults to http://localhost:5173.
  */
 export function getAppUrl() {
+  const isProduction = process.env.NODE_ENV === 'production';
+  const isLocalUrl = (url) => !url || /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(url.trim().replace(/\/+$/, ''));
+
+  if (isProduction) {
+    // 1. Explicit production app/frontend URL (if non-local)
+    if (process.env.APP_URL && !isLocalUrl(process.env.APP_URL)) {
+      return process.env.APP_URL.trim().replace(/\/+$/, '');
+    }
+    if (process.env.FRONTEND_URL && !isLocalUrl(process.env.FRONTEND_URL)) {
+      return process.env.FRONTEND_URL.trim().replace(/\/+$/, '');
+    }
+
+    // 2. Allowed origins list (find non-localhost production domain)
+    if (process.env.CLIENT_ORIGIN) {
+      const origins = process.env.CLIENT_ORIGIN.split(',').map((o) => o.trim().replace(/\/+$/, ''));
+      const deployed = origins.find((o) => !isLocalUrl(o));
+      if (deployed) return deployed;
+    }
+
+    // 3. Vercel deployment URL (if running on or configured for Vercel)
+    if (process.env.VERCEL_URL) {
+      const vUrl = process.env.VERCEL_URL.trim().replace(/\/+$/, '');
+      return vUrl.startsWith('http') ? vUrl : `https://${vUrl}`;
+    }
+
+    console.error('[EMAIL CONFIG ERROR] Missing production frontend URL. Please configure APP_URL in your environment (e.g., APP_URL=https://<your-project>.vercel.app).');
+  }
+
+  // Local development fallback
   const raw = process.env.APP_URL || process.env.FRONTEND_URL || (process.env.CLIENT_ORIGIN ? process.env.CLIENT_ORIGIN.split(',')[0] : '') || 'http://localhost:5173';
   return raw.trim().replace(/\/+$/, '');
 }
