@@ -1,15 +1,27 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import dotenv from 'dotenv';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+// Strictly load backend/.env using explicit absolute path
+const envPath = path.resolve(__dirname, '.env');
+if (fs.existsSync(envPath)) {
+  dotenv.config({ path: envPath });
+} else {
+  dotenv.config();
+}
+
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
-import dotenv from 'dotenv';
 import mongoose from 'mongoose';
 import { connectDB, closeDB } from './config/db.js';
 import { seedDatabase } from './seed.js';
 import { getJwtSecret } from './config/jwt.js';
-import { verifySmtpConnection, getTransporter, getEmailProvider, isEmailConfigured } from './services/emailService.js';
+import { verifySmtpConnection, getEmailProvider, isEmailConfigured } from './services/emailService.js';
 
 import authRoutes from './routes/auth.js';
 import publicRoutes from './routes/publicRoutes.js';
@@ -21,9 +33,6 @@ import attendanceRoutes from './routes/attendanceRoutes.js';
 import validityRoutes from './routes/validity.js';
 import recordsRoutes from './routes/recordsRoutes.js';
 
-dotenv.config();
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT || 5000;
 const app = express();
 
@@ -48,8 +57,8 @@ function validateEnv() {
       process.exit(1);
     }
 
-    if (!process.env.RESEND_API_KEY) {
-      console.warn('[EMAIL WARNING] RESEND_API_KEY is not configured in production. Outgoing emails will be blocked until configured.');
+    if (!isEmailConfigured()) {
+      console.warn('[EMAIL WARNING] Gmail API credentials (GMAIL_USER, GMAIL_CLIENT_ID, GMAIL_CLIENT_SECRET, GMAIL_REFRESH_TOKEN) not detected in environment.');
     }
   }
 

@@ -28,7 +28,7 @@ export async function seedDatabase() {
   const wardenHash = await bcrypt.hash('warden123', 10);
   const adminHash = await bcrypt.hash('admin123', 10);
 
-  const defaultAdminEmail = (process.env.ADMIN_EMAIL || process.env.SMTP_USER || 'apollotyres.hostel@gmail.com').trim().toLowerCase();
+  const defaultAdminEmail = (process.env.ADMIN_EMAIL || process.env.GMAIL_USER || 'apollotyres.hostel@gmail.com').trim().toLowerCase();
 
   const userCount = await User.countDocuments();
   if (userCount > 0) {

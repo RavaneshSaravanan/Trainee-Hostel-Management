@@ -19,6 +19,8 @@ import {
   sendEmail,
   getAppUrl,
   replaceDynamicPlaceholders,
+  verifyGmailConnection,
+  getGmailConfigStatus,
 } from '../services/emailService.js';
 import { computeValidity } from '../utils/validity.js';
 import { migrateExistingPhotosToDrive } from '../services/googleDriveService.js';
@@ -1088,9 +1090,27 @@ router.get('/admin/notification-email', auth, async (req, res) => {
       email = admin?.email ? admin.email.trim().toLowerCase() : '';
     }
     if (!email) {
-      email = (process.env.ADMIN_EMAIL || process.env.SMTP_USER || 'apollotyres.hostel@gmail.com').trim().toLowerCase();
+      email = (process.env.ADMIN_EMAIL || process.env.GMAIL_USER || 'apollotyres.hostel@gmail.com').trim().toLowerCase();
     }
     return res.json({ adminNotificationEmail: email });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------- 16b. Gmail API Integration Status (Super Admin & Admin) ----------------
+router.get('/admin/gmail/status', auth, async (req, res) => {
+  try {
+    const configStatus = getGmailConfigStatus();
+    let testResult = null;
+    if (configStatus.configured && req.query.test === 'true') {
+      testResult = await verifyGmailConnection();
+    }
+    return res.json({
+      ok: true,
+      ...configStatus,
+      connectionTest: testResult,
+    });
   } catch (err) {
     return res.status(500).json({ error: err.message });
   }

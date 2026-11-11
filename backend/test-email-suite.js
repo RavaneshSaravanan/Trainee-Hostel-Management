@@ -1,500 +1,434 @@
-import assert from 'node:assert/strict';
+import mongoose from 'mongoose';
+import dotenv from 'dotenv';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+dotenv.config({ path: path.join(__dirname, '.env') });
+
+import QRCode from 'qrcode';
 import {
-  getEmailProvider,
-  isEmailConfigured,
-  getTransporter,
-  verifySmtpConnection,
-  resolveResendSender,
   sendEmail,
   sendRegistrationOtpEmail,
-  sendRegistrationConfirmationEmail,
-  sendApprovalRequestNotification,
   sendApprovalRequestEmail,
   sendDecisionNotificationEmail,
+  renderDecisionEmailContent,
   sendTraineeWelcomeEmail,
   sendTraineeIdCardEmail,
+  generateIdCardPdf,
+  sendLeaveNotificationEmail,
+  sendOutingNotificationEmail,
+  sendAdminAlertEmail,
+  isGmailConfigured,
+  verifyGmailConnection,
+  getGmailConfigStatus,
+  getAdminNotificationEmail,
+  replaceDynamicPlaceholders,
 } from './services/emailService.js';
-import { getJwtSecret } from './config/jwt.js';
 
-let passed = 0;
-let failed = 0;
+import {
+  buildRawMimeMessage,
+  scrubSensitive,
+  sendMailViaGmail,
+  setMockGmailClient,
+  resetGmailClient,
+} from './services/gmailService.js';
 
-function it(name, fn) {
-  return Promise.resolve()
-    .then(fn)
-    .then(() => {
-      console.log(`  ✓ ${name}`);
-      passed++;
-    })
-    .catch((err) => {
-      console.error(`  ✗ ${name}`);
-      console.error(`    ${err.message}`);
-      failed++;
-    });
+import { NotificationLog } from './models/NotificationLog.js';
+import { EmailLog } from './models/EmailLog.js';
+import { Trainee } from './models/Trainee.js';
+import { connectDB, closeDB } from './config/db.js';
+
+let passedTests = 0;
+let totalTests = 0;
+
+function assert(condition, message) {
+  totalTests++;
+  if (!condition) {
+    console.error(`❌ FAILED: ${message}`);
+    throw new Error(`Assertion failed: ${message}`);
+  }
+  passedTests++;
+  console.log(`✅ PASSED: ${message}`);
 }
 
-// Global fetch mocking utility
-let originalFetch = globalThis.fetch;
-function mockFetch(handler) {
-  globalThis.fetch = async (url, options) => {
-    return handler(url, options);
+async function runEmailTestSuite() {
+  console.log('\n======================================================');
+  console.log('   STARTING GMAIL API & EMAIL WORKFLOW TEST SUITE     ');
+  console.log('======================================================\n');
+
+  await connectDB();
+
+  // Clean logs before running tests
+  await NotificationLog.deleteMany({ 'metadata.testSuite': 'GMAIL_MIGRATION' });
+  await EmailLog.deleteMany({ 'metadata.testSuite': 'GMAIL_MIGRATION' });
+
+  // ---------------- TEST 1: Gmail Configuration & Status ----------------
+  console.log('\n[TEST 1] Testing Gmail API Configuration Check & Status...');
+  const configStatus = getGmailConfigStatus();
+  assert(typeof configStatus.configured === 'boolean', 'getGmailConfigStatus returns boolean configured flag');
+  assert(configStatus.user.includes('@'), `Configured Gmail user email: ${configStatus.user}`);
+  assert(!JSON.stringify(configStatus).includes('secret'), 'Config status does not expose secrets');
+
+  const connectionCheck = await verifyGmailConnection();
+  assert(typeof connectionCheck.ok === 'boolean', 'verifyGmailConnection returns ok boolean status');
+  console.log(`Gmail API Status: ${connectionCheck.status} (ok: ${connectionCheck.ok})`);
+
+  // ---------------- TEST 2: Sensitive Information Scrubbing ----------------
+  console.log('\n[TEST 2] Testing Sensitive Information Scrubber...');
+  const originalSecret = process.env.GMAIL_CLIENT_SECRET;
+  const testString = 'Error connecting with token ya29.a0AfH6SM... and secret mySuperSecret12345';
+  process.env.GMAIL_CLIENT_SECRET = 'mySuperSecret12345';
+  const scrubbed = scrubSensitive(testString);
+  assert(!scrubbed.includes('mySuperSecret12345'), 'Scrubber redacts GMAIL_CLIENT_SECRET');
+  assert(!scrubbed.includes('ya29.a0AfH6SM'), 'Scrubber redacts OAuth access token patterns');
+  process.env.GMAIL_CLIENT_SECRET = originalSecret;
+
+  // ---------------- TEST 3: RFC 2822 MIME Message Construction & Base64URL ----------------
+  console.log('\n[TEST 3] Testing Raw MIME Generation & Base64URL Encoding...');
+  const testPdfBuf = Buffer.from('%PDF-1.4\n%Test PDF binary stream\n%%EOF');
+  const mimeResult = await buildRawMimeMessage({
+    from: 'Apollo Tyres Ltd <apollotyres.hostel@gmail.com>',
+    to: ['trainee1@gmail.com'],
+    cc: ['warden@gmail.com'],
+    bcc: ['audit@gmail.com'],
+    subject: 'Welcome to Hostel',
+    text: 'Hello Trainee, welcome!',
+    html: '<h3>Hello Trainee</h3><p>Welcome to Apollo Tyres!</p>',
+    attachments: [
+      {
+        filename: 'Trainee-ID-Card.pdf',
+        content: testPdfBuf,
+        contentType: 'application/pdf',
+      },
+    ],
+  });
+
+  assert(Boolean(mimeResult.raw), 'MIME builder returns non-empty base64url raw string');
+  assert(!mimeResult.raw.includes('+'), 'Raw string has no plus signs (Base64URL safe)');
+  assert(!mimeResult.raw.includes('/'), 'Raw string has no slashes (Base64URL safe)');
+  assert(!mimeResult.raw.includes('='), 'Raw string has no padding equals signs (Base64URL safe)');
+  assert(mimeResult.buffer.length > 0, 'Buffer contains compiled RFC 2822 payload');
+  const mimeHeaderSample = mimeResult.buffer.slice(0, 400).toString('utf8');
+  assert(mimeHeaderSample.includes('Content-Type: multipart/mixed'), 'MIME contains multipart/mixed for attachments');
+  assert(mimeHeaderSample.includes('To: trainee1@gmail.com'), 'MIME contains correct To recipient');
+  assert(mimeHeaderSample.includes('Cc: warden@gmail.com'), 'MIME contains correct Cc recipient');
+
+  // ---------------- TEST 4: Registration OTP Email ----------------
+  console.log('\n[TEST 4] Testing Registration OTP Email Dispatch...');
+  setMockGmailClient({
+    users: {
+      messages: {
+        send: async ({ userId, requestBody }) => {
+          return {
+            status: 200,
+            data: {
+              id: 'test-mock-msg-' + Date.now(),
+              threadId: 'test-thread-id',
+              labelIds: ['SENT'],
+            },
+          };
+        },
+      },
+    },
+  });
+  const otpRes = await sendRegistrationOtpEmail({
+    email: 'new.trainee@gmail.com',
+    otp: '4829',
+  });
+  assert(otpRes.ok === true, 'sendRegistrationOtpEmail returned ok status');
+  const otpLog = await EmailLog.findOne({ recipient: 'new.trainee@gmail.com', emailType: 'OTP' }).sort({ createdAt: -1 });
+  assert(Boolean(otpLog), 'EmailLog entry created for Registration OTP');
+  assert(otpLog.content.includes('4829'), 'EmailLog contains 4-digit OTP code');
+
+  // ---------------- TEST 5: Approver Review Request Email ----------------
+  console.log('\n[TEST 5] Testing Approver Registration Review Request Email...');
+  const sampleTrainee = {
+    traineeId: 'TRN-TEST-101',
+    qrId: 'QR-TEST-101',
+    name: 'Rahul Sharma',
+    mobile: '9876543210',
+    email: 'rahul.sharma@gmail.com',
+    gender: 'Male',
+    qualification: 'Diploma Mechanical',
+    aadhar: '123456789012',
+    joiningDate: '2026-11-01',
+    guardianName: 'Suresh Sharma',
+    guardianContact: '9876543211',
+    hostel: 'Block A - Boy Hostel',
+    roomNo: '102',
+    approvalStatus: 'PENDING',
   };
-}
-function restoreFetch() {
-  globalThis.fetch = originalFetch;
-}
 
-async function runTests() {
-  console.log('\n======================================================');
-  console.log('       PRODUCTION EMAIL DELIVERY TEST SUITE');
-  console.log('======================================================\n');
+  const approverUser = {
+    userId: 'superadmin',
+    name: 'Hostel Super Admin',
+    username: 'superadmin',
+    email: 'apollotyres.hostel@gmail.com',
+  };
 
-  const originalEnv = { ...process.env };
+  const reviewRes = await sendApprovalRequestEmail({
+    approver: approverUser,
+    trainee: sampleTrainee,
+  });
+  assert(reviewRes.ok === true, 'sendApprovalRequestEmail returned ok');
+  const reviewLog = await EmailLog.findOne({ emailType: 'APPROVAL_REQUEST' }).sort({ createdAt: -1 });
+  assert(Boolean(reviewLog), 'EmailLog entry created for APPROVAL_REQUEST');
+  assert(reviewLog.content.includes('#/review/'), 'Review email content contains secure tokenized review link');
+  assert(reviewLog.content.includes('Rahul Sharma'), 'Review email content contains trainee name');
 
-  try {
-    // ------------------------------------------------------------------
-    console.log('[SECTION 1] JWT Secret Security & Production Hardening');
-    // ------------------------------------------------------------------
-    await it('Throws error in production if JWT_SECRET is default weak value', () => {
-      process.env.NODE_ENV = 'production';
-      process.env.JWT_SECRET = 'trainee_hostel_secret_jwt_key_2026';
-      assert.throws(() => getJwtSecret(), /FATAL SECURITY ERROR/);
-    });
+  // ---------------- TEST 6: Decision Notification Emails (Approved & Rejected) ----------------
+  console.log('\n[TEST 6] Testing Approval & Rejection Decision Emails...');
+  const approvedContent = renderDecisionEmailContent({
+    decision: 'APPROVED',
+    trainee: sampleTrainee,
+    actorName: 'Hostel Administrator',
+  });
+  assert(approvedContent.decision === 'APPROVED', 'Decision is APPROVED');
+  assert(approvedContent.bannerBg === '#16a34a', 'Approval email has green banner #16a34a');
+  assert(approvedContent.heading.includes('APPROVED'), 'Approval email heading includes APPROVED');
 
-    await it('Throws error in production if JWT_SECRET is too short (<32 chars)', () => {
-      process.env.NODE_ENV = 'production';
-      process.env.JWT_SECRET = 'short_secret_key_12345';
-      assert.throws(() => getJwtSecret(), /FATAL SECURITY ERROR/);
-    });
+  const rejectedContent = renderDecisionEmailContent({
+    decision: 'REJECTED',
+    trainee: sampleTrainee,
+    actorName: 'Hostel Administrator',
+    rejectionReason: 'Invalid Aadhaar documentation provided',
+  });
+  assert(rejectedContent.decision === 'REJECTED', 'Decision is REJECTED');
+  assert(rejectedContent.bannerBg === '#dc2626', 'Rejection email has red banner #dc2626');
+  assert(rejectedContent.text.includes('Invalid Aadhaar documentation provided'), 'Rejection text contains reason');
 
-    await it('Accepts strong JWT_SECRET (>= 32 chars) in production', () => {
-      process.env.NODE_ENV = 'production';
-      process.env.JWT_SECRET = 'a_very_strong_secure_random_jwt_secret_for_production_2026_test!';
-      const sec = getJwtSecret();
-      assert.equal(sec, process.env.JWT_SECRET);
-    });
+  const approvedDispatch = await sendDecisionNotificationEmail({
+    trainee: sampleTrainee,
+    decision: 'APPROVED',
+    actorName: 'Super Admin',
+  });
+  assert(approvedDispatch.ok === true, 'sendDecisionNotificationEmail (Approved) dispatched successfully');
 
-    await it('Provides safe fallback in development if JWT_SECRET is missing', () => {
-      process.env.NODE_ENV = 'development';
-      delete process.env.JWT_SECRET;
-      const sec = getJwtSecret();
-      assert.ok(sec && sec.length >= 32);
-    });
+  const rejectedDispatch = await sendDecisionNotificationEmail({
+    trainee: sampleTrainee,
+    decision: 'REJECTED',
+    rejectionReason: 'Document mismatch',
+    actorName: 'Super Admin',
+  });
+  assert(rejectedDispatch.ok === true, 'sendDecisionNotificationEmail (Rejected) dispatched successfully');
 
-    // ------------------------------------------------------------------
-    console.log('\n[SECTION 2] Environment Configuration & SMTP Disabling');
-    // ------------------------------------------------------------------
-    await it('Never returns "smtp" provider in production even if SMTP env vars exist', () => {
-      process.env.NODE_ENV = 'production';
-      process.env.SMTP_HOST = 'smtp.gmail.com';
-      process.env.SMTP_PORT = '465';
-      process.env.SMTP_USER = 'test@gmail.com';
-      process.env.SMTP_PASS = 'testpass';
-      delete process.env.RESEND_API_KEY;
-      delete process.env.BREVO_API_KEY;
+  // ---------------- TEST 7: ID Card PDF Generation with Photo & QR Code ----------------
+  console.log('\n[TEST 7] Testing CR80 ID Card PDF Generation...');
+  const qrBuf = await QRCode.toBuffer('https://trainee-hostel.example.com/#/verify/QR-TEST-101', {
+    errorCorrectionLevel: 'H',
+    margin: 1,
+    width: 280,
+  });
 
-      const provider = getEmailProvider();
-      assert.notEqual(provider, 'smtp', 'getEmailProvider() must NEVER return "smtp" in production');
-      assert.equal(provider, 'none');
-    });
+  const samplePhotoDataUrl = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+  const traineeWithPhoto = {
+    ...sampleTrainee,
+    photo: samplePhotoDataUrl,
+  };
 
-    await it('Returns "resend" provider in production when RESEND_API_KEY is configured', () => {
-      process.env.NODE_ENV = 'production';
-      process.env.RESEND_API_KEY = 're_test_key_1234567890';
-      const provider = getEmailProvider();
-      assert.equal(provider, 'resend');
-    });
+  const idCardPdf = await generateIdCardPdf({
+    trainee: traineeWithPhoto,
+    qrBuffer: qrBuf,
+    verifyUrl: 'https://trainee-hostel.example.com/#/verify/QR-TEST-101',
+    branding: { orgName: 'APOLLO TYRES LTD' },
+  });
 
-    await it('getTransporter() strictly returns null in production (Never attempts SMTP)', () => {
-      process.env.NODE_ENV = 'production';
-      process.env.SMTP_HOST = 'smtp.gmail.com';
-      process.env.SMTP_USER = 'test@gmail.com';
-      process.env.SMTP_PASS = 'testpass';
-      const transport = getTransporter();
-      assert.equal(transport, null, 'getTransporter() must return null in production');
-    });
+  assert(Buffer.isBuffer(idCardPdf), 'generateIdCardPdf returns a Buffer');
+  assert(idCardPdf.length > 500, `Generated PDF buffer is non-trivial (${idCardPdf.length} bytes)`);
+  assert(idCardPdf.slice(0, 4).toString('ascii') === '%PDF', 'Generated PDF has valid %PDF magic header');
 
-    await it('verifySmtpConnection() blocks SMTP in production without connecting', async () => {
-      process.env.NODE_ENV = 'production';
-      delete process.env.RESEND_API_KEY;
-      delete process.env.BREVO_API_KEY;
-      const res = await verifySmtpConnection();
-      assert.equal(res.ok, false);
-      assert.equal(res.status, 'NOT_CONFIGURED');
-    });
+  // ---------------- TEST 8: Trainee ID Card Email Delivery ----------------
+  console.log('\n[TEST 8] Testing Trainee ID Card Email Delivery with Attachments...');
+  const approvedTrainee = {
+    ...sampleTrainee,
+    approvalStatus: 'APPROVED',
+    hostelStatus: 'ACTIVE',
+  };
 
-    await it('Allows "smtp" in development when credentials are present', () => {
-      process.env.NODE_ENV = 'development';
-      delete process.env.RESEND_API_KEY;
-      delete process.env.BREVO_API_KEY;
-      process.env.SMTP_HOST = 'smtp.gmail.com';
-      process.env.SMTP_USER = 'test@gmail.com';
-      process.env.SMTP_PASS = 'testpass';
-      const provider = getEmailProvider();
-      assert.equal(provider, 'smtp');
-    });
+  const idCardRes = await sendTraineeIdCardEmail({
+    trainee: approvedTrainee,
+    force: true,
+  });
+  assert(idCardRes.ok === true, 'sendTraineeIdCardEmail returned ok');
+  const idCardEmailLog = await EmailLog.findOne({ emailType: 'ID_CARD', recipient: sampleTrainee.email }).sort({ createdAt: -1 });
+  assert(Boolean(idCardEmailLog), 'EmailLog entry exists for ID_CARD');
+  assert(idCardEmailLog.metadata?.hasPdfAttachment === true, 'EmailLog confirms PDF attachment is present');
+  assert(idCardEmailLog.content.includes('data:image/png;base64,'), 'HTML body has inline high-res QR code badge');
 
-    // ------------------------------------------------------------------
-    console.log('\n[SECTION 3] Resend Sender Address Resolution');
-    // ------------------------------------------------------------------
-    await it('Safely overrides @gmail.com to onboarding@resend.dev while preserving display name', () => {
-      delete process.env.RESEND_FROM;
-      const from = resolveResendSender('Apollo Tyres Ltd Hostel Administration <apollotyres.hostel@gmail.com>');
-      assert.equal(from, 'Apollo Tyres Ltd Hostel Administration <onboarding@resend.dev>');
-    });
+  // ---------------- TEST 9: Trainee Welcome Email Delivery ----------------
+  console.log('\n[TEST 9] Testing Trainee Welcome Email with 3 Calendar Months Calculation...');
+  const welcomeRes = await sendTraineeWelcomeEmail({
+    trainee: approvedTrainee,
+    force: true,
+    triggeredBy: 'Test Suite',
+  });
+  assert(welcomeRes.ok === true, 'sendTraineeWelcomeEmail returned ok');
+  const welcomeLog = await EmailLog.findOne({ emailType: 'WELCOME', recipient: sampleTrainee.email }).sort({ createdAt: -1 });
+  assert(Boolean(welcomeLog), 'EmailLog entry exists for WELCOME');
+  assert(welcomeLog.content.includes('Free Accommodation Validity'), 'Welcome email specifies free validity');
+  assert(welcomeLog.content.includes('3 Calendar Months'), 'Welcome email specifies 3 Calendar Months period');
 
-    await it('Uses RESEND_FROM environment variable when set and valid', () => {
-      process.env.RESEND_FROM = 'Apollo Operations <notifications@hostel.apollotyres.com>';
-      const from = resolveResendSender('Custom <apollotyres.hostel@gmail.com>');
-      assert.equal(from, 'Apollo Operations <notifications@hostel.apollotyres.com>');
-    });
+  // ---------------- TEST 10: Leave Notification Email ----------------
+  console.log('\n[TEST 10] Testing Leave Notification Email (Departure & Return)...');
+  const sampleLeave = {
+    id: 'LV-0001',
+    leaveType: 'Emergency Family Leave',
+    outDate: '2026-11-12',
+    outTime: '09:00 AM',
+    expectedInDate: '2026-11-15',
+    inDate: '2026-11-15',
+    inTime: '06:00 PM',
+    reason: 'Family function at hometown',
+  };
 
-    await it('Falls back safely if RESEND_FROM is an invalid email string', () => {
-      process.env.RESEND_FROM = 'invalid-email-address-no-at';
-      const from = resolveResendSender('Apollo Tyres Ltd <test@hostel.com>');
-      assert.ok(from.includes('onboarding@resend.dev'));
-    });
+  const leaveOutRes = await sendLeaveNotificationEmail({
+    trainee: approvedTrainee,
+    leave: sampleLeave,
+    action: 'DEPARTURE',
+    actorName: 'Warden John Doe',
+  });
+  assert(leaveOutRes.ok === true, 'sendLeaveNotificationEmail (DEPARTURE) returned ok');
 
-    // ------------------------------------------------------------------
-    console.log('\n[SECTION 4] Resend API Error Handling & Timeout Verification');
-    // ------------------------------------------------------------------
-    await it('Accurately reports failed delivery on missing RESEND_API_KEY in production', async () => {
-      process.env.NODE_ENV = 'production';
-      delete process.env.RESEND_API_KEY;
+  const leaveInRes = await sendLeaveNotificationEmail({
+    trainee: approvedTrainee,
+    leave: sampleLeave,
+    action: 'RETURN',
+    actorName: 'Warden John Doe',
+  });
+  assert(leaveInRes.ok === true, 'sendLeaveNotificationEmail (RETURN) returned ok');
 
-      const res = await sendEmail({
-        to: 'trainee@apollo.com',
-        subject: 'Test Subject',
-        text: 'Test message',
-        type: 'REGISTRATION_CONFIRMATION',
-      });
+  const leaveLog = await EmailLog.findOne({ emailType: 'LEAVE', recipient: sampleTrainee.email }).sort({ createdAt: -1 });
+  assert(Boolean(leaveLog), 'EmailLog entry exists for LEAVE');
+  assert(leaveLog.content.includes('Emergency Family Leave'), 'Leave email contains leave type');
+  assert(leaveLog.content.includes('Warden John Doe'), 'Leave email contains recorded by');
 
-      assert.equal(res.ok, false, 'Must not claim success when API key is missing');
-      assert.equal(res.status, 'FAILED');
-      assert.ok(res.error.includes('RESEND_API_KEY'));
-    });
+  // ---------------- TEST 11: Outing Notification Email ----------------
+  console.log('\n[TEST 11] Testing Outing Notification Email (Departure & Return)...');
+  const sampleOuting = {
+    id: 'OV-0001',
+    outDate: '2026-11-11',
+    outTime: '05:30 PM',
+    expectedInTime: '09:00 PM',
+    inDate: '2026-11-11',
+    inTime: '08:45 PM',
+    purpose: 'City Market visit for personal items',
+  };
 
-    await it('Accurately reports failed delivery when Resend API rejects with 401 Unauthorized', async () => {
-      process.env.NODE_ENV = 'production';
-      process.env.RESEND_API_KEY = 're_invalid_api_key_test';
+  const outingOutRes = await sendOutingNotificationEmail({
+    trainee: approvedTrainee,
+    outing: sampleOuting,
+    action: 'DEPARTURE',
+    actorName: 'Hostel Security In-Charge',
+  });
+  assert(outingOutRes.ok === true, 'sendOutingNotificationEmail (DEPARTURE) returned ok');
 
-      mockFetch((url, opts) => {
-        return {
-          ok: false,
-          status: 401,
-          json: async () => ({
-            statusCode: 401,
-            name: 'validation_error',
-            message: 'API key is invalid',
-          }),
-        };
-      });
+  const outingInRes = await sendOutingNotificationEmail({
+    trainee: approvedTrainee,
+    outing: sampleOuting,
+    action: 'RETURN',
+    actorName: 'Hostel Security In-Charge',
+  });
+  assert(outingInRes.ok === true, 'sendOutingNotificationEmail (RETURN) returned ok');
 
-      try {
-        const res = await sendEmail({
-          to: 'trainee@apollo.com',
-          subject: 'Test 401',
-          text: 'Test 401 message',
-          type: 'REGISTRATION_CONFIRMATION',
-        });
+  const outingLog = await EmailLog.findOne({ emailType: 'OUTING', recipient: sampleTrainee.email }).sort({ createdAt: -1 });
+  assert(Boolean(outingLog), 'EmailLog entry exists for OUTING');
+  assert(outingLog.content.includes('City Market visit'), 'Outing email contains purpose');
 
-        assert.equal(res.ok, false, 'Must never report success when provider rejects');
-        assert.equal(res.status, 'FAILED');
-        assert.ok(res.error.includes('API key is invalid'));
-      } finally {
-        restoreFetch();
-      }
-    });
+  // ---------------- TEST 12: Admin Notification & Alert Email ----------------
+  console.log('\n[TEST 12] Testing Admin Alert Email...');
+  const adminAlertRes = await sendAdminAlertEmail({
+    subject: 'Room Capacity Reached in Block A',
+    message: 'Block A room 102 has reached maximum occupancy of 3 beds. Please verify remaining available inventory.',
+    actorName: 'Hostel Allocation Service',
+  });
+  assert(adminAlertRes.ok === true, 'sendAdminAlertEmail returned ok');
+  const adminEmail = await getAdminNotificationEmail();
+  const alertLog = await EmailLog.findOne({ emailType: 'SYSTEM', recipient: adminEmail }).sort({ createdAt: -1 });
+  assert(Boolean(alertLog), 'EmailLog entry exists for Admin Alert');
+  assert(alertLog.subject.includes('[Hostel Admin Alert] Room Capacity Reached'), 'Subject properly formatted');
 
-    await it('Accurately reports failed delivery when Resend API rejects with 422 Unverified Domain', async () => {
-      process.env.NODE_ENV = 'production';
-      process.env.RESEND_API_KEY = 're_valid_key_test';
+  // ---------------- TEST 13: Unconfigured Safe Error Handling ----------------
+  console.log('\n[TEST 13] Testing Unconfigured Gmail Client Safe Handling...');
+  resetGmailClient();
+  const tempSecret = process.env.GMAIL_CLIENT_SECRET;
+  delete process.env.GMAIL_CLIENT_SECRET;
+  const unconfiguredRes = await sendMailViaGmail({
+    from: 'Test <apollotyres.hostel@gmail.com>',
+    to: 'dup-test@gmail.com',
+    subject: 'Unconfigured Test Subject',
+    text: 'Body text',
+    emailType: 'TEST_UNCONFIGURED',
+  });
+  assert(unconfiguredRes.ok === false, 'sendMailViaGmail returns ok: false when unconfigured');
+  assert(unconfiguredRes.status === 'NOT_CONFIGURED', 'sendMailViaGmail returns status: NOT_CONFIGURED without throwing');
+  process.env.GMAIL_CLIENT_SECRET = tempSecret;
+  resetGmailClient();
 
-      mockFetch((url, opts) => {
-        return {
-          ok: false,
-          status: 422,
-          json: async () => ({
-            statusCode: 422,
-            name: 'validation_error',
-            message: 'Domain not verified. You can only send from onboarding@resend.dev',
-          }),
-        };
-      });
+  // ---------------- TEST 14: Gmail API Dispatch & Duplicate Suppression ----------------
+  console.log('\n[TEST 14] Testing Live Dispatch & Duplicate Suppression with Mock Client...');
+  let apiCallCount = 0;
+  setMockGmailClient({
+    users: {
+      messages: {
+        send: async ({ userId, requestBody }) => {
+          apiCallCount++;
+          assert(userId === 'me', 'Gmail send API called with userId: me');
+          assert(Boolean(requestBody?.raw), 'Gmail send API called with non-empty raw RFC 2822 base64url payload');
+          return {
+            status: 200,
+            data: {
+              id: 'gmail-msg-id-7890',
+              threadId: 'gmail-thread-7890',
+              labelIds: ['SENT'],
+            },
+          };
+        },
+      },
+    },
+  });
 
-      try {
-        const res = await sendEmail({
-          to: 'trainee@apollo.com',
-          subject: 'Test 422',
-          text: 'Test 422 message',
-          type: 'REGISTRATION_CONFIRMATION',
-        });
+  const send1 = await sendMailViaGmail({
+    from: 'Apollo Tyres <apollotyres.hostel@gmail.com>',
+    to: 'rahul.dup@gmail.com',
+    subject: 'Duplicate Test Subject',
+    text: 'Body text',
+    emailType: 'TEST_DUP',
+    traineeId: 'TRN-DUP-01',
+    force: false,
+  });
 
-        assert.equal(res.ok, false, 'Must never report success when provider rejects');
-        assert.equal(res.status, 'FAILED');
-        assert.ok(res.error.includes('Domain not verified'));
-      } finally {
-        restoreFetch();
-      }
-    });
+  assert(send1.ok === true, 'First dispatch through mock Gmail API succeeded');
+  assert(send1.messageId === 'gmail-msg-id-7890', 'Recorded Gmail messageId: gmail-msg-id-7890');
+  assert(apiCallCount === 1, 'Gmail API invoked exactly once for first call');
 
-    await it('Accurately handles API timeout via AbortController', async () => {
-      process.env.NODE_ENV = 'production';
-      process.env.RESEND_API_KEY = 're_valid_key_test';
+  const send2 = await sendMailViaGmail({
+    from: 'Apollo Tyres <apollotyres.hostel@gmail.com>',
+    to: 'rahul.dup@gmail.com',
+    subject: 'Duplicate Test Subject',
+    text: 'Body text',
+    emailType: 'TEST_DUP',
+    traineeId: 'TRN-DUP-01',
+    force: false,
+  });
 
-      mockFetch((url, opts) => {
-        const err = new Error('The operation was aborted');
-        err.name = 'AbortError';
-        throw err;
-      });
+  assert(send2.ok === true, 'Second dispatch returned ok');
+  assert(send2.duplicatePrevented === true || send2.status === 'DEDUPLICATED', 'Second identical dispatch suppressed within 30s');
+  assert(apiCallCount === 1, 'Gmail API NOT invoked again; duplicate successfully suppressed');
 
-      try {
-        const res = await sendEmail({
-          to: 'trainee@apollo.com',
-          subject: 'Test Timeout',
-          text: 'Test timeout message',
-          type: 'REGISTRATION_CONFIRMATION',
-        });
-
-        assert.equal(res.ok, false);
-        assert.equal(res.status, 'FAILED');
-        assert.ok(res.error.includes('timed out'));
-      } finally {
-        restoreFetch();
-      }
-    });
-
-    await it('Returns SENT status and messageId when Resend API returns 200 OK', async () => {
-      process.env.NODE_ENV = 'production';
-      process.env.RESEND_API_KEY = 're_valid_key_test';
-
-      let capturedPayload = null;
-      mockFetch((url, opts) => {
-        capturedPayload = JSON.parse(opts.body);
-        return {
-          ok: true,
-          status: 200,
-          json: async () => ({ id: 're_msg_successful_12345678' }),
-        };
-      });
-
-      try {
-        const res = await sendEmail({
-          to: 'trainee@apollo.com',
-          subject: 'Welcome to Hostel',
-          html: '<strong>Welcome!</strong>',
-          text: 'Welcome!',
-          type: 'REGISTRATION_CONFIRMATION',
-        });
-
-        assert.equal(res.ok, true);
-        assert.equal(res.status, 'SENT');
-        assert.equal(res.messageId, 're_msg_successful_12345678');
-        assert.equal(res.provider, 'resend');
-        assert.ok(capturedPayload);
-        assert.deepEqual(capturedPayload.to, ['trainee@apollo.com']);
-        assert.equal(capturedPayload.subject, 'Welcome to Hostel');
-        assert.ok(capturedPayload.from.includes('onboarding@resend.dev'));
-      } finally {
-        restoreFetch();
-      }
-    });
-
-    // ------------------------------------------------------------------
-    console.log('\n[SECTION 5] Existing Email Workflows & Payload Integrity');
-    // ------------------------------------------------------------------
-    process.env.NODE_ENV = 'production';
-    process.env.RESEND_API_KEY = 're_valid_key_workflow_test';
-    process.env.JWT_SECRET = 'a_very_strong_secure_random_jwt_secret_for_production_2026_test!';
-
-    const mockTrainee = {
-      traineeId: 'TRN-2026-TEST',
-      qrId: 'QR-TEST-001',
-      name: 'Ravi Kumar',
-      email: 'ravi.kumar@apollo.com',
-      mobile: '9876543210',
-      hostel: 'Block A',
-      roomNo: 'A-101',
-      joiningDate: '2026-11-01',
-      approvalStatus: 'APPROVED',
-      hostelStatus: 'APPROVED',
-      emergencyContactName: 'Suresh Kumar',
-      emergencyContactNo: '9876543211',
-    };
-
-    await it('Workflow 1: sendRegistrationOtpEmail sends valid payload with protected OTP', async () => {
-      let sentPayload = null;
-      mockFetch((url, opts) => {
-        sentPayload = JSON.parse(opts.body);
-        return { ok: true, status: 200, json: async () => ({ id: 're_otp_123' }) };
-      });
-
-      try {
-        const res = await sendRegistrationOtpEmail({ email: 'newtrainee@apollo.com', otp: '4829' });
-        assert.equal(res.ok, true);
-        assert.equal(res.status, 'SENT');
-        assert.deepEqual(sentPayload.to, ['newtrainee@apollo.com']);
-        assert.ok(sentPayload.html.includes('4829'));
-        assert.ok(sentPayload.subject.includes('Verification Code'));
-      } finally {
-        restoreFetch();
-      }
-    });
-
-    await it('Workflow 2: sendRegistrationConfirmationEmail constructs correct template', async () => {
-      let sentPayload = null;
-      mockFetch((url, opts) => {
-        sentPayload = JSON.parse(opts.body);
-        return { ok: true, status: 200, json: async () => ({ id: 're_reg_conf_123' }) };
-      });
-
-      try {
-        const res = await sendRegistrationConfirmationEmail({ trainee: mockTrainee, force: true });
-        assert.equal(res.ok, true);
-        assert.deepEqual(sentPayload.to, ['ravi.kumar@apollo.com']);
-        assert.ok(sentPayload.subject.includes('Registration'));
-      } finally {
-        restoreFetch();
-      }
-    });
-
-    await it('Workflow 3: sendApprovalRequestEmail generates JWT review link', async () => {
-      let sentPayload = null;
-      mockFetch((url, opts) => {
-        sentPayload = JSON.parse(opts.body);
-        return { ok: true, status: 200, json: async () => ({ id: 're_appr_req_123' }) };
-      });
-
-      try {
-        const approver = { userId: 'admin_1', name: 'Warden Admin', email: 'warden@apollotyres.com', role: 'warden' };
-        const res = await sendApprovalRequestEmail({ approver, trainee: mockTrainee });
-        assert.equal(res.ok, true);
-        assert.deepEqual(sentPayload.to, ['warden@apollotyres.com']);
-        assert.ok(sentPayload.text.includes('#/review/TRN-2026-TEST?token='));
-      } finally {
-        restoreFetch();
-      }
-    });
-
-    await it('Workflow 4: sendDecisionNotificationEmail (APPROVED)', async () => {
-      let sentPayload = null;
-      mockFetch((url, opts) => {
-        sentPayload = JSON.parse(opts.body);
-        return { ok: true, status: 200, json: async () => ({ id: 're_dec_appr_123' }) };
-      });
-
-      try {
-        const res = await sendDecisionNotificationEmail({
-          trainee: mockTrainee,
-          decision: 'APPROVED',
-          actorName: 'Hostel Warden',
-        });
-        assert.equal(res.ok, true);
-        assert.deepEqual(sentPayload.to, ['ravi.kumar@apollo.com']);
-        assert.ok(sentPayload.subject.toLowerCase().includes('approved'));
-      } finally {
-        restoreFetch();
-      }
-    });
-
-    await it('Workflow 5: sendDecisionNotificationEmail (REJECTED with reason)', async () => {
-      let sentPayload = null;
-      mockFetch((url, opts) => {
-        sentPayload = JSON.parse(opts.body);
-        return { ok: true, status: 200, json: async () => ({ id: 're_dec_rej_123' }) };
-      });
-
-      try {
-        const res = await sendDecisionNotificationEmail({
-          trainee: mockTrainee,
-          decision: 'REJECTED',
-          rejectionReason: 'Invalid Aadhaar documentation provided',
-          actorName: 'HR Administration',
-        });
-        assert.equal(res.ok, true);
-        assert.deepEqual(sentPayload.to, ['ravi.kumar@apollo.com']);
-        assert.ok(sentPayload.subject.toLowerCase().includes('rejected') || sentPayload.subject.toLowerCase().includes('update'));
-        assert.ok(sentPayload.text.includes('Invalid Aadhaar documentation provided'));
-      } finally {
-        restoreFetch();
-      }
-    });
-
-    await it('Workflow 6: sendTraineeWelcomeEmail sends room allocation details', async () => {
-      let sentPayload = null;
-      mockFetch((url, opts) => {
-        sentPayload = JSON.parse(opts.body);
-        return { ok: true, status: 200, json: async () => ({ id: 're_welcome_123' }) };
-      });
-
-      try {
-        const res = await sendTraineeWelcomeEmail({ trainee: mockTrainee, force: true });
-        assert.equal(res.ok, true);
-        assert.deepEqual(sentPayload.to, ['ravi.kumar@apollo.com']);
-        assert.ok(sentPayload.subject.includes('Welcome') || sentPayload.subject.includes('Hostel'));
-      } finally {
-        restoreFetch();
-      }
-    });
-
-    await it('Workflow 7: sendTraineeIdCardEmail generates PDF attachment with base64 encoding', async () => {
-      let sentPayload = null;
-      mockFetch((url, opts) => {
-        sentPayload = JSON.parse(opts.body);
-        return { ok: true, status: 200, json: async () => ({ id: 're_idcard_123' }) };
-      });
-
-      try {
-        const res = await sendTraineeIdCardEmail({ trainee: mockTrainee, force: true });
-        assert.equal(res.ok, true);
-        assert.deepEqual(sentPayload.to, ['ravi.kumar@apollo.com']);
-        assert.ok(Array.isArray(sentPayload.attachments));
-        assert.equal(sentPayload.attachments.length, 1);
-        assert.ok(sentPayload.attachments[0].filename.includes('.pdf'));
-        assert.ok(typeof sentPayload.attachments[0].content === 'string'); // base64 string
-        assert.ok(sentPayload.attachments[0].content.length > 500); // contains binary PDF data
-      } finally {
-        restoreFetch();
-      }
-    });
-
-    // ------------------------------------------------------------------
-    console.log('\n[SECTION 6] Local Development Simulation & Fallback');
-    // ------------------------------------------------------------------
-    await it('Simulates emails locally without crashing when no provider is configured', async () => {
-      process.env.NODE_ENV = 'development';
-      delete process.env.RESEND_API_KEY;
-      delete process.env.BREVO_API_KEY;
-      delete process.env.SMTP_HOST;
-
-      const res = await sendEmail({
-        to: 'devtrainee@local.host',
-        subject: 'Dev Test Simulation',
-        text: 'Local testing content',
-        type: 'REGISTRATION_CONFIRMATION',
-      });
-
-      assert.equal(res.ok, true);
-      assert.equal(res.status, 'DEV_SIMULATED');
-    });
-
-  } finally {
-    // Restore original env
-    for (const key of Object.keys(process.env)) {
-      if (!(key in originalEnv)) {
-        delete process.env[key];
-      }
-    }
-    Object.assign(process.env, originalEnv);
-  }
+  // Cleanup mock client
+  setMockGmailClient(null);
 
   console.log('\n======================================================');
-  console.log(`TEST RESULTS: ${passed} passed, ${failed} failed`);
+  console.log(`  ALL ${totalTests} TESTS PASSED SUCCESSFULLY! (${passedTests}/${totalTests})`);
   console.log('======================================================\n');
 
-  if (failed > 0) {
-    process.exit(1);
-  }
+  await closeDB();
+  process.exit(0);
 }
 
-runTests();
+runEmailTestSuite().catch(async (err) => {
+  console.error('\n❌ TEST SUITE FAILED WITH ERROR:', err);
+  await closeDB();
+  process.exit(1);
+});

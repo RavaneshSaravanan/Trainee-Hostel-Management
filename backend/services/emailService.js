@@ -18,6 +18,21 @@ import {
 } from '../defaults.js';
 import { fmtDate } from '../utils/dates.js';
 import { addThreeCalendarMonths } from '../utils/validity.js';
+import {
+  isGmailConfigured,
+  sendMailViaGmail,
+  verifyGmailConnection,
+  getGmailConfigStatus,
+  scrubSensitive,
+} from './gmailService.js';
+
+// Re-export centralized Gmail API helpers
+export {
+  isGmailConfigured,
+  verifyGmailConnection,
+  getGmailConfigStatus,
+  sendMailViaGmail,
+};
 
 let transporter = null;
 
@@ -50,7 +65,7 @@ function enqueueEmail(fn) {
 async function safeGetConfig() {
   try {
     if (mongoose.connection && mongoose.connection.readyState === 1) {
-      return await safeGetConfig();
+      return await Config.findOne().lean();
     }
   } catch (err) {
     console.warn('[Config Query Warning]', err.message);
@@ -96,42 +111,30 @@ export function getAppUrl() {
 }
 
 /**
- * Detects the active email dispatch provider.
- * Returns 'brevo', 'resend', 'smtp', or 'none'.
- * Brevo and Resend use HTTPS (Port 443), which works seamlessly on Render Free Tier.
- */
-/**
  * Detects the active email dispatch provider based on environment and credentials.
- * Production (Render Free Tier): Strictly uses HTTPS REST API (Port 443). NEVER attempts SMTP.
- * Development: Supports Resend HTTPS, Brevo HTTPS, or local Nodemailer SMTP.
+ * Prioritizes official Google Gmail API (OAuth 2.0).
  */
 export function getEmailProvider() {
-  const isProd = process.env.NODE_ENV === 'production';
-
-  if (isProd) {
-    // In production, strictly use HTTPS API (Port 443 - Render Free Tier compatible)
-    // NEVER attempt or return SMTP in production
-    if (process.env.RESEND_API_KEY && process.env.RESEND_API_KEY.trim()) {
-      return 'resend';
-    }
-    if (process.env.BREVO_API_KEY || process.env.SENDINBLUE_API_KEY) {
-      return 'brevo';
-    }
-    return 'none';
+  if (isGmailConfigured()) {
+    return 'gmail';
   }
-
-  // Development environment: allow Resend, Brevo, or local SMTP
-  if (process.env.RESEND_API_KEY && process.env.RESEND_API_KEY.trim()) return 'resend';
-  if (process.env.BREVO_API_KEY || process.env.SENDINBLUE_API_KEY) return 'brevo';
-  if (process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS) return 'smtp';
+  if (process.env.RESEND_API_KEY && process.env.RESEND_API_KEY.trim()) {
+    return 'resend';
+  }
+  if (process.env.BREVO_API_KEY || process.env.SENDINBLUE_API_KEY) {
+    return 'brevo';
+  }
+  if (process.env.NODE_ENV !== 'production' && process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS) {
+    return 'smtp';
+  }
   return 'none';
 }
 
 /**
- * Returns true if any email service (Brevo, Resend, or SMTP) is configured.
+ * Returns true if any live email service (Gmail API, Resend, Brevo) is configured.
  */
 export function isEmailConfigured() {
-  return getEmailProvider() !== 'none';
+  return isGmailConfigured() || getEmailProvider() !== 'none';
 }
 
 /**
@@ -401,12 +404,23 @@ export function getTransporter() {
 
 /**
  * Verifies live email service connectivity and credentials.
- * Checks Brevo HTTPS, Resend HTTPS, or Nodemailer SMTP depending on active provider.
+ * Tests Gmail API OAuth2 connection, Resend HTTPS, Brevo HTTPS, or Nodemailer SMTP depending on active provider.
  * Call during server startup or diagnostics.
  */
 export async function verifySmtpConnection() {
   const isProd = process.env.NODE_ENV === 'production';
   const provider = getEmailProvider();
+
+  if (provider === 'gmail') {
+    const res = await verifyGmailConnection();
+    if (res.ok) {
+      console.log(`[EMAIL] Active Provider: Google Gmail API (OAuth 2.0). Authenticated successfully as ${process.env.GMAIL_USER}.`);
+      return { ok: true, status: 'CONNECTED', provider: 'gmail', user: process.env.GMAIL_USER };
+    } else {
+      console.error(`[EMAIL ERROR] Google Gmail API connection failed: ${res.error}`);
+      return { ok: false, status: 'FAILED', error: res.error, provider: 'gmail' };
+    }
+  }
 
   if (provider === 'resend') {
     const apiKey = (process.env.RESEND_API_KEY || '').trim();
@@ -426,7 +440,7 @@ export async function verifySmtpConnection() {
 
   if (provider === 'smtp') {
     if (isProd) {
-      console.warn('[EMAIL WARNING] SMTP is strictly disabled in production. Resend HTTPS API is required.');
+      console.warn('[EMAIL WARNING] SMTP is strictly disabled in production. Gmail API or HTTPS API is required.');
       return { ok: false, status: 'DISABLED_IN_PROD', error: 'SMTP is strictly disabled in production', provider: 'smtp' };
     }
 
@@ -445,14 +459,10 @@ export async function verifySmtpConnection() {
     }
   }
 
-  // provider === 'none'
-  if (isProd) {
-    console.warn('[EMAIL WARNING] No email provider configured in production (RESEND_API_KEY is missing). Outgoing emails will fail.');
-    return { ok: false, status: 'NOT_CONFIGURED', error: 'RESEND_API_KEY is missing in production environment variables', provider: 'none' };
-  } else {
-    console.log('[EMAIL] Development mode: No live email provider configured. Outgoing emails will be simulated locally.');
-    return { ok: false, status: 'DEV_SIMULATION', error: 'Simulated mode in development', provider: 'none' };
-  }
+  // provider === 'none' - Clear error as required
+  const configErr = 'No live email provider configured! Missing Gmail API credentials in backend/.env (GMAIL_USER, GMAIL_CLIENT_ID, GMAIL_CLIENT_SECRET, GMAIL_REFRESH_TOKEN).';
+  console.error(`[EMAIL ERROR] ${configErr}`);
+  return { ok: false, status: 'NOT_CONFIGURED', error: configErr, provider: 'none' };
 }
 
 /**
@@ -477,7 +487,7 @@ export async function getAdminNotificationEmail() {
   } catch (err) {
     console.error('[EmailService] Error retrieving admin notification email:', err.message);
   }
-  return (process.env.ADMIN_EMAIL || process.env.SMTP_USER || 'apollotyres.hostel@gmail.com').trim().toLowerCase();
+  return (process.env.ADMIN_EMAIL || process.env.GMAIL_USER || 'apollotyres.hostel@gmail.com').trim().toLowerCase();
 }
 
 /**
@@ -554,11 +564,11 @@ export async function sendEmail({
   triggeredBy = 'System',
   metadata = {},
 }) {
-  const user = process.env.SMTP_USER;
+  const user = process.env.GMAIL_USER || process.env.SMTP_USER;
   const defaultFrom = user
     ? `Apollo Tyres Ltd Hostel Administration <${user}>`
-    : 'Apollo Tyres Ltd Hostel Administration <noreply@hostel.com>';
-  const rawFrom = process.env.SMTP_FROM || defaultFrom;
+    : 'Apollo Tyres Ltd Hostel Administration <apollotyres.hostel@gmail.com>';
+  const rawFrom = process.env.GMAIL_FROM || process.env.SMTP_FROM || defaultFrom;
   const from = rawFrom.trim().replace(/^["']|["']$/g, '');
   const provider = getEmailProvider();
 
@@ -600,6 +610,145 @@ export async function sendEmail({
   };
   console.log(`[EMAIL DISPATCH INITIATED] ${JSON.stringify(diagnosticInfo)}`);
 
+  // 1. Google Gmail API (Primary OAuth 2.0 HTTPS Dispatch)
+  if (provider === 'gmail') {
+    try {
+      const dispatchResult = await sendMailViaGmail({
+        from,
+        to: finalTo,
+        cc: finalCc,
+        bcc: finalBcc,
+        subject,
+        html,
+        text,
+        attachments,
+        emailType: type,
+        traineeId,
+        traineeName,
+        triggeredBy,
+        force: metadata?.force || false,
+        metadata,
+      });
+
+      if (dispatchResult.ok) {
+        const messageId = dispatchResult.messageId;
+        const status = 'SENT';
+
+        await safeAuditLog([
+          () => NotificationLog.create({
+            type,
+            recipient: recipientString,
+            subject,
+            content: text || html,
+            status,
+            metadata: {
+              ...metadata,
+              to: finalTo,
+              cc: finalCc,
+              bcc: finalBcc,
+              messageId,
+              threadId: dispatchResult.threadId,
+              labelIds: dispatchResult.labelIds,
+              attempts: dispatchResult.attempts,
+              provider: 'gmail',
+            },
+          }),
+          () => EmailLog.create({
+            recipient: recipientString,
+            to: finalTo,
+            cc: finalCc,
+            bcc: finalBcc,
+            subject,
+            emailType: type,
+            status,
+            traineeId,
+            traineeName,
+            triggeredBy,
+            content: html || text,
+            metadata: {
+              ...metadata,
+              html,
+              text,
+              messageId,
+              threadId: dispatchResult.threadId,
+              labelIds: dispatchResult.labelIds,
+              attempts: dispatchResult.attempts,
+              provider: 'gmail',
+            },
+          }),
+        ]);
+
+        console.log(`[EMAIL DISPATCH COMPLETED via Gmail API] ${JSON.stringify({ ...diagnosticInfo, status: 'SENT', messageId, attempts: dispatchResult.attempts, provider: 'gmail' })}`);
+        return { ok: true, status: 'SENT', messageId, threadId: dispatchResult.threadId, to: finalTo, cc: finalCc, bcc: finalBcc, provider: 'gmail' };
+      } else {
+        const errorMsg = scrubSensitive(dispatchResult.error || 'Gmail API dispatch failure');
+        console.error(`[EMAIL DISPATCH FAILED via Gmail API] ${JSON.stringify({ ...diagnosticInfo, status: 'FAILED', error: errorMsg, provider: 'gmail' })}`);
+
+        await safeAuditLog([
+          () => NotificationLog.create({
+            type,
+            recipient: recipientString,
+            subject,
+            content: text || html,
+            status: 'FAILED',
+            error: errorMsg,
+            metadata: { ...metadata, to: finalTo, cc: finalCc, bcc: finalBcc, provider: 'gmail' },
+          }),
+          () => EmailLog.create({
+            recipient: recipientString,
+            to: finalTo,
+            cc: finalCc,
+            bcc: finalBcc,
+            subject,
+            emailType: type,
+            status: 'FAILED',
+            error: errorMsg,
+            traineeId,
+            traineeName,
+            triggeredBy,
+            content: html || text,
+            metadata: { ...metadata, html, text, provider: 'gmail' },
+          }),
+        ]);
+
+        return { ok: false, status: 'FAILED', error: errorMsg, to: finalTo, cc: finalCc, bcc: finalBcc, provider: 'gmail' };
+      }
+    } catch (err) {
+      const errorMsg = scrubSensitive(err.message);
+      console.error(`[EMAIL DISPATCH EXCEPTION via Gmail API] ${JSON.stringify({ ...diagnosticInfo, status: 'FAILED', error: errorMsg, provider: 'gmail' })}`);
+
+      await safeAuditLog([
+        () => NotificationLog.create({
+          type,
+          recipient: recipientString,
+          subject,
+          content: text || html,
+          status: 'FAILED',
+          error: errorMsg,
+          metadata: { ...metadata, to: finalTo, cc: finalCc, bcc: finalBcc, provider: 'gmail' },
+        }),
+        () => EmailLog.create({
+          recipient: recipientString,
+          to: finalTo,
+          cc: finalCc,
+          bcc: finalBcc,
+          subject,
+          emailType: type,
+          status: 'FAILED',
+          error: errorMsg,
+          traineeId,
+          traineeName,
+          triggeredBy,
+          content: html || text,
+          metadata: { ...metadata, html, text, provider: 'gmail' },
+        }),
+      ]);
+
+      return { ok: false, status: 'FAILED', error: errorMsg, to: finalTo, cc: finalCc, bcc: finalBcc, provider: 'gmail' };
+    }
+  }
+
+  // 2. Legacy fallback providers (Brevo, Resend, local SMTP if configured)
   if (provider === 'brevo' || provider === 'resend' || provider === 'smtp') {
     try {
       let dispatchResult;
@@ -659,11 +808,7 @@ export async function sendEmail({
       console.log(`[EMAIL DISPATCH COMPLETED] ${JSON.stringify({ ...diagnosticInfo, status: 'SENT', messageId, provider })}`);
       return { ok: true, status: 'SENT', messageId, to: finalTo, cc: finalCc, bcc: finalBcc, provider };
     } catch (err) {
-      let friendlyError = err.message;
-      if (provider === 'smtp' && (err.code === 'ETIMEDOUT' || err.code === 'ESOCKET' || err.message?.includes('timeout'))) {
-        friendlyError = 'SMTP connection timed out. On Render Free hosting, outbound SMTP ports 25, 465, and 587 are blocked. Please configure BREVO_API_KEY or RESEND_API_KEY in Render environment variables to send emails over HTTPS (Port 443).';
-      }
-
+      const friendlyError = err.message;
       console.error(`[EMAIL DISPATCH FAILED] ${JSON.stringify({ ...diagnosticInfo, status: 'FAILED', error: friendlyError, provider })}`);
 
       await safeAuditLog([
@@ -693,41 +838,13 @@ export async function sendEmail({
         }),
       ]);
 
-      // In development mode, if live dispatch fails (e.g. offline, port 587 firewall), fall back to simulation so registration is never blocked
-      if (process.env.NODE_ENV !== 'production') {
-        console.warn(`[DEV SMTP NOTICE] Dispatch via ${provider} failed (${err.message}). Falling back to simulation mode for local testing.`);
-        console.log(`\n======================================================`);
-        console.log(`[Email Simulated - Local Dev Fallback]`);
-        console.log(`To      : ${finalTo.join(', ')}`);
-        console.log(`Subject : ${subject}`);
-        console.log(`Type    : ${type}`);
-        if (type !== 'OTP') { console.log(`Message : \n${text || html}`); } else { console.log(`Message : [OTP Verification Content Protected]`); }
-        console.log(`======================================================\n`);
-        return { ok: true, status: 'DEV_SIMULATED', messageId: `dev-fallback-${Date.now()}`, to: finalTo, cc: finalCc, bcc: finalBcc, provider: 'simulation' };
-      }
-
       return { ok: false, status: 'FAILED', error: friendlyError, to: finalTo, cc: finalCc, bcc: finalBcc, provider };
     }
   }
 
-  // Development / Unconfigured mode: log cleanly and persist audit record
-  if (provider === 'none') {
-    const isProd = process.env.NODE_ENV === 'production';
-    if (isProd) {
-      const errMessage = 'Production email delivery is unavailable: RESEND_API_KEY is not configured in environment variables.';
-      console.error(`[EMAIL DISPATCH FAILED] ${errMessage}`);
-      return { ok: false, status: 'FAILED', error: errMessage, to: finalTo, provider: 'none' };
-    }
-  }
-  console.log(`\n======================================================`);
-  console.log(`[Email Simulated] (Configure SMTP_HOST in .env for live dispatch)`);
-  console.log(`To      : ${finalTo.join(', ')}`);
-  if (finalCc.length > 0) console.log(`CC      : ${finalCc.join(', ')}`);
-  if (finalBcc.length > 0) console.log(`BCC     : ${finalBcc.join(', ')}`);
-  console.log(`Subject : ${subject}`);
-  console.log(`Type    : ${type}`);
-  console.log(`Message : \n${text || html}`);
-  console.log(`======================================================\n`);
+  // 3. Provider is 'none': Do not silently simulate emails! Show a clear configuration error.
+  const configError = 'Gmail API is not configured! Missing required environment variables: GMAIL_USER, GMAIL_CLIENT_ID, GMAIL_CLIENT_SECRET, GMAIL_REFRESH_TOKEN in backend/.env. Outgoing email dispatch blocked.';
+  console.error(`\n[EMAIL CONFIGURATION ERROR] ${configError}\n`);
 
   await safeAuditLog([
     () => NotificationLog.create({
@@ -735,8 +852,9 @@ export async function sendEmail({
       recipient: recipientString,
       subject,
       content: text || html,
-      status: 'DEV_SIMULATED',
-      metadata: { ...metadata, to: finalTo, cc: finalCc, bcc: finalBcc },
+      status: 'FAILED',
+      error: configError,
+      metadata: { ...metadata, to: finalTo, cc: finalCc, bcc: finalBcc, provider: 'none' },
     }),
     () => EmailLog.create({
       recipient: recipientString,
@@ -745,17 +863,25 @@ export async function sendEmail({
       bcc: finalBcc,
       subject,
       emailType: type,
-      status: 'DEV_SIMULATED',
+      status: 'FAILED',
+      error: configError,
       traineeId,
       traineeName,
       triggeredBy,
       content: html || text,
-      metadata: { ...metadata, html, text },
+      metadata: { ...metadata, html, text, provider: 'none' },
     }),
   ]);
 
-  console.log(`[EMAIL DISPATCH COMPLETED] ${JSON.stringify({ ...diagnosticInfo, status: 'DEV_SIMULATED' })}`);
-  return { ok: true, status: 'DEV_SIMULATED', to: finalTo, cc: finalCc, bcc: finalBcc };
+  return {
+    ok: false,
+    status: 'NOT_CONFIGURED',
+    error: configError,
+    to: finalTo,
+    cc: finalCc,
+    bcc: finalBcc,
+    provider: 'none',
+  };
 }
 
 /**
@@ -2101,7 +2227,7 @@ export async function sendApprovalRequestNotification({ trainee, force = false }
   }
 
   const cfg = await safeGetConfig();
-  const defaultAdminEmail = (process.env.ADMIN_EMAIL || process.env.SMTP_USER || 'apollotyres.hostel@gmail.com').trim().toLowerCase();
+  const defaultAdminEmail = (process.env.ADMIN_EMAIL || process.env.GMAIL_USER || 'apollotyres.hostel@gmail.com').trim().toLowerCase();
   const defaultWardenEmail = (process.env.WARDEN_EMAIL || defaultAdminEmail).trim().toLowerCase();
 
   // 1. Resolve Admin recipients
@@ -2238,5 +2364,207 @@ export async function sendApprovalRequestNotification({ trainee, force = false }
     adminCount: adminRecipients.length,
     wardenCount: wardenRecipients.length,
   };
+}
+
+/**
+ * Sends Leave departure or return notification email.
+ */
+export async function sendLeaveNotificationEmail({ trainee, leave, action = 'DEPARTURE', actorName = 'Hostel Administration' }) {
+  if (!trainee || !trainee.email) return { ok: false, error: 'Trainee has no registered email' };
+
+  const isDeparture = String(action).toUpperCase() === 'DEPARTURE';
+  const actionTitle = isDeparture ? 'Leave Departure (OUT)' : 'Leave Return (IN)';
+  const orgName = 'APOLLO TYRES LTD';
+  const subject = `Hostel Leave Notification: ${trainee.name} (${trainee.traineeId || trainee.qrId}) — ${actionTitle}`;
+
+  const text = `
+========================================================================
+${orgName} — HOSTEL LEAVE RECORD NOTIFICATION
+========================================================================
+
+Dear ${trainee.name},
+
+Your hostel leave record has been updated:
+- Status / Action      : ${actionTitle}
+- Trainee Name         : ${trainee.name}
+- Trainee ID           : ${trainee.traineeId || '—'}
+- Unique QR ID         : ${trainee.qrId}
+- Hostel / Room        : ${trainee.hostel || 'Hostel'} / ${trainee.roomNo || 'Room'}
+- Leave Type           : ${leave?.leaveType || 'General Leave'}
+- Departure Date/Time  : ${leave?.outDate || ''} ${leave?.outTime || ''}
+- Return Date/Time     : ${isDeparture ? (leave?.expectedInDate || 'As scheduled') : `${leave?.inDate || ''} ${leave?.inTime || ''}`}
+- Reason               : ${leave?.reason || '—'}
+- Recorded By          : ${actorName}
+
+For queries, contact the hostel administration office.
+`;
+
+  const html = `
+<div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; background: #ffffff; border: 1px solid #e2e8f0; border-radius: 10px; overflow: hidden;">
+  <div style="background: #2E1065; color: #ffffff; padding: 18px 22px;">
+    <h2 style="margin: 0; font-size: 18px; color: #ffffff;">Hostel Leave Record: ${actionTitle}</h2>
+    <p style="margin: 4px 0 0 0; font-size: 13px; color: #ddd6fe;">${orgName} Trainee Hostel Administration</p>
+  </div>
+  <div style="padding: 22px;">
+    <p style="font-size: 14.5px; color: #1e293b;">Dear <strong>${trainee.name}</strong>,</p>
+    <p style="font-size: 14px; color: #334155; line-height: 1.5;">This automated notification confirms your hostel leave record:</p>
+    <div style="background: #f8fafc; border-left: 4px solid #7c3aed; padding: 14px 18px; margin: 16px 0; border-radius: 6px; font-size: 13.5px;">
+      <p style="margin: 4px 0;"><strong>Trainee:</strong> ${trainee.name} (<span style="font-family: monospace; color: #7c3aed; font-weight: bold;">${trainee.traineeId || trainee.qrId}</span>)</p>
+      <p style="margin: 4px 0;"><strong>Hostel / Room:</strong> ${trainee.hostel || 'Hostel'} / ${trainee.roomNo || 'Room'}</p>
+      <p style="margin: 4px 0;"><strong>Leave Type:</strong> ${leave?.leaveType || 'General Leave'}</p>
+      <p style="margin: 4px 0;"><strong>Departure:</strong> ${leave?.outDate || ''} ${leave?.outTime || ''}</p>
+      <p style="margin: 4px 0;"><strong>${isDeparture ? 'Expected Return' : 'Actual Return'}:</strong> ${isDeparture ? (leave?.expectedInDate || 'As scheduled') : `${leave?.inDate || ''} ${leave?.inTime || ''}`}</p>
+      <p style="margin: 4px 0;"><strong>Reason:</strong> ${leave?.reason || '—'}</p>
+      <p style="margin: 4px 0;"><strong>Recorded By:</strong> ${actorName}</p>
+    </div>
+    <p style="font-size: 12px; color: #94a3b8; border-top: 1px solid #e2e8f0; padding-top: 12px; margin-top: 20px; text-align: center;">
+      ${orgName} · Trainee Hostel Operations · Automated System Notice
+    </p>
+  </div>
+</div>
+`;
+
+  return sendEmail({
+    to: trainee.email,
+    subject,
+    text,
+    html,
+    type: 'LEAVE',
+    traineeId: trainee.traineeId || trainee.qrId,
+    traineeName: trainee.name,
+    triggeredBy: `Leave ${actionTitle}`,
+    metadata: { leaveId: leave?.id || leave?._id, action },
+  });
+}
+
+/**
+ * Sends Outing departure or return notification email.
+ */
+export async function sendOutingNotificationEmail({ trainee, outing, action = 'DEPARTURE', actorName = 'Hostel Administration' }) {
+  if (!trainee || !trainee.email) return { ok: false, error: 'Trainee has no registered email' };
+
+  const isDeparture = String(action).toUpperCase() === 'DEPARTURE';
+  const actionTitle = isDeparture ? 'Outing Departure (OUT)' : 'Outing Return (IN)';
+  const orgName = 'APOLLO TYRES LTD';
+  const subject = `Hostel Outing Notification: ${trainee.name} (${trainee.traineeId || trainee.qrId}) — ${actionTitle}`;
+
+  const text = `
+========================================================================
+${orgName} — HOSTEL OUTING RECORD NOTIFICATION
+========================================================================
+
+Dear ${trainee.name},
+
+Your hostel outing movement has been recorded:
+- Status / Action      : ${actionTitle}
+- Trainee Name         : ${trainee.name}
+- Trainee ID           : ${trainee.traineeId || '—'}
+- Unique QR ID         : ${trainee.qrId}
+- Hostel / Room        : ${trainee.hostel || 'Hostel'} / ${trainee.roomNo || 'Room'}
+- Departure Date/Time  : ${outing?.outDate || ''} ${outing?.outTime || ''}
+- Return Date/Time     : ${isDeparture ? (outing?.expectedInTime ? `${outing?.outDate} ${outing?.expectedInTime}` : 'As scheduled') : `${outing?.inDate || ''} ${outing?.inTime || ''}`}
+- Purpose              : ${outing?.purpose || outing?.reason || 'Outing'}
+- Recorded By          : ${actorName}
+
+Remember to observe quiet hours and check in with hostel security upon return.
+`;
+
+  const html = `
+<div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; background: #ffffff; border: 1px solid #e2e8f0; border-radius: 10px; overflow: hidden;">
+  <div style="background: #2E1065; color: #ffffff; padding: 18px 22px;">
+    <h2 style="margin: 0; font-size: 18px; color: #ffffff;">Hostel Outing Record: ${actionTitle}</h2>
+    <p style="margin: 4px 0 0 0; font-size: 13px; color: #ddd6fe;">${orgName} Trainee Hostel Administration</p>
+  </div>
+  <div style="padding: 22px;">
+    <p style="font-size: 14.5px; color: #1e293b;">Dear <strong>${trainee.name}</strong>,</p>
+    <p style="font-size: 14px; color: #334155; line-height: 1.5;">This automated notification confirms your hostel outing movement:</p>
+    <div style="background: #f8fafc; border-left: 4px solid #7c3aed; padding: 14px 18px; margin: 16px 0; border-radius: 6px; font-size: 13.5px;">
+      <p style="margin: 4px 0;"><strong>Trainee:</strong> ${trainee.name} (<span style="font-family: monospace; color: #7c3aed; font-weight: bold;">${trainee.traineeId || trainee.qrId}</span>)</p>
+      <p style="margin: 4px 0;"><strong>Hostel / Room:</strong> ${trainee.hostel || 'Hostel'} / ${trainee.roomNo || 'Room'}</p>
+      <p style="margin: 4px 0;"><strong>Departure:</strong> ${outing?.outDate || ''} ${outing?.outTime || ''}</p>
+      <p style="margin: 4px 0;"><strong>${isDeparture ? 'Expected Return' : 'Actual Return'}:</strong> ${isDeparture ? (outing?.expectedInTime || 'Before 10:00 PM') : `${outing?.inDate || ''} ${outing?.inTime || ''}`}</p>
+      <p style="margin: 4px 0;"><strong>Purpose:</strong> ${outing?.purpose || outing?.reason || 'Outing'}</p>
+      <p style="margin: 4px 0;"><strong>Recorded By:</strong> ${actorName}</p>
+    </div>
+    <p style="font-size: 12px; color: #94a3b8; border-top: 1px solid #e2e8f0; padding-top: 12px; margin-top: 20px; text-align: center;">
+      ${orgName} · Trainee Hostel Operations · Automated System Notice
+    </p>
+  </div>
+</div>
+`;
+
+  return sendEmail({
+    to: trainee.email,
+    subject,
+    text,
+    html,
+    type: 'OUTING',
+    traineeId: trainee.traineeId || trainee.qrId,
+    traineeName: trainee.name,
+    triggeredBy: `Outing ${actionTitle}`,
+    metadata: { outingId: outing?.id || outing?._id, action },
+  });
+}
+
+/**
+ * Sends high-priority administrative alert email to configured admin notification address.
+ */
+export async function sendAdminAlertEmail({ subject, message, metadata = {}, type = 'SYSTEM', actorName = 'System' }) {
+  const adminEmail = await getAdminNotificationEmail();
+  if (!adminEmail) {
+    return { ok: false, error: 'No admin email configured' };
+  }
+
+  const orgName = 'APOLLO TYRES LTD';
+  const fullSubject = `[Hostel Admin Alert] ${subject}`;
+
+  const text = `
+========================================================================
+${orgName} — HOSTEL SYSTEM ALERT
+========================================================================
+
+Alert Summary:
+${subject}
+
+Details:
+${message}
+
+Triggered By : ${actorName}
+Timestamp    : ${new Date().toISOString()}
+
+Apollo Tyres Ltd Trainee Hostel Administration System
+`;
+
+  const html = `
+<div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; background: #ffffff; border: 1px solid #e2e8f0; border-radius: 10px; overflow: hidden;">
+  <div style="background: #2E1065; color: #ffffff; padding: 18px 22px;">
+    <h2 style="margin: 0; font-size: 18px; color: #ffffff;">Hostel Administrative Alert</h2>
+    <p style="margin: 4px 0 0 0; font-size: 13px; color: #ddd6fe;">${orgName} Trainee Hostel Operations</p>
+  </div>
+  <div style="padding: 22px;">
+    <h3 style="margin-top: 0; color: #1e293b; font-size: 16px;">${subject}</h3>
+    <div style="font-size: 14px; color: #334155; line-height: 1.6; white-space: pre-line; background: #f8fafc; border-left: 4px solid #7c3aed; padding: 14px 18px; border-radius: 6px; margin: 16px 0;">
+      ${message}
+    </div>
+    <div style="font-size: 12px; color: #64748b;">
+      <p style="margin: 2px 0;"><strong>Triggered By:</strong> ${actorName}</p>
+      <p style="margin: 2px 0;"><strong>Timestamp:</strong> ${new Date().toLocaleString()}</p>
+    </div>
+    <p style="font-size: 12px; color: #94a3b8; border-top: 1px solid #e2e8f0; padding-top: 12px; margin-top: 20px; text-align: center;">
+      ${orgName} · Trainee Hostel System Notification
+    </p>
+  </div>
+</div>
+`;
+
+  return sendEmail({
+    to: adminEmail,
+    subject: fullSubject,
+    text,
+    html,
+    type,
+    triggeredBy: `Admin Alert (${actorName})`,
+    metadata: { ...metadata, adminAlert: true },
+  });
 }
 
