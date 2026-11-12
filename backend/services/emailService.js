@@ -109,36 +109,40 @@ async function safeAuditLog(entries = []) {
  */
 export function getAppUrl() {
   const isProduction = process.env.NODE_ENV === 'production';
-  const isLocalUrl = (url) => !url || /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(url.trim().replace(/\/+$/, ''));
+  const isLocalUrl = (url) => !url || /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/i.test(String(url).trim().replace(/\/+$/, ''));
+
+  // 1. Explicit FRONTEND_URL (priority #1)
+  if (process.env.FRONTEND_URL) {
+    const fUrl = String(process.env.FRONTEND_URL).trim().replace(/\/+$/, '');
+    if (!isProduction || !isLocalUrl(fUrl)) return fUrl;
+  }
+
+  // 2. Explicit APP_URL (priority #2)
+  if (process.env.APP_URL) {
+    const aUrl = String(process.env.APP_URL).trim().replace(/\/+$/, '');
+    if (!isProduction || !isLocalUrl(aUrl)) return aUrl;
+  }
 
   if (isProduction) {
-    // 1. Explicit production app/frontend URL (if non-local)
-    if (process.env.APP_URL && !isLocalUrl(process.env.APP_URL)) {
-      return process.env.APP_URL.trim().replace(/\/+$/, '');
-    }
-    if (process.env.FRONTEND_URL && !isLocalUrl(process.env.FRONTEND_URL)) {
-      return process.env.FRONTEND_URL.trim().replace(/\/+$/, '');
-    }
-
-    // 2. Allowed origins list (find non-localhost production domain)
+    // 3. Allowed origins list (find non-localhost production domain)
     if (process.env.CLIENT_ORIGIN) {
       const origins = process.env.CLIENT_ORIGIN.split(',').map((o) => o.trim().replace(/\/+$/, ''));
       const deployed = origins.find((o) => !isLocalUrl(o));
       if (deployed) return deployed;
     }
 
-    // 3. Vercel deployment URL (if running on or configured for Vercel)
+    // 4. Vercel deployment URL (if running on or configured for Vercel)
     if (process.env.VERCEL_URL) {
-      const vUrl = process.env.VERCEL_URL.trim().replace(/\/+$/, '');
+      const vUrl = String(process.env.VERCEL_URL).trim().replace(/\/+$/, '');
       return vUrl.startsWith('http') ? vUrl : `https://${vUrl}`;
     }
 
-    console.error('[EMAIL CONFIG ERROR] Missing production frontend URL. Please configure APP_URL in your environment (e.g., APP_URL=https://<your-project>.vercel.app).');
+    console.error('[EMAIL CONFIG ERROR] Missing production frontend URL. Please configure FRONTEND_URL in your environment (e.g., FRONTEND_URL=https://trainee-hostel-management.vercel.app).');
   }
 
-  // Local development fallback
-  const raw = process.env.APP_URL || process.env.FRONTEND_URL || (process.env.CLIENT_ORIGIN ? process.env.CLIENT_ORIGIN.split(',')[0] : '') || 'http://localhost:5173';
-  return raw.trim().replace(/\/+$/, '');
+  // Local development fallback (defaults to localhost:5173)
+  const raw = process.env.FRONTEND_URL || process.env.APP_URL || (process.env.CLIENT_ORIGIN ? process.env.CLIENT_ORIGIN.split(',')[0] : '') || 'http://localhost:5173';
+  return String(raw).trim().replace(/\/+$/, '');
 }
 
 /**
@@ -1257,12 +1261,12 @@ ${footerText}
  * Sends review requests to configured approval authorities with secure, expiring review links.
  */
 export async function sendApprovalRequestEmail({ approver, trainee }) {
-  const appUrl = getAppUrl();
   const jwtSecret = getJwtSecret();
+  const traineeId = trainee?.traineeId || '';
 
   const token = jwt.sign(
     {
-      traineeId: trainee.traineeId,
+      traineeId,
       approverId: approver.userId,
       purpose: 'REVIEW_REGISTRATION',
     },
@@ -1270,7 +1274,10 @@ export async function sendApprovalRequestEmail({ approver, trainee }) {
     { expiresIn: '7d' }
   );
 
-  const reviewLink = `${appUrl}/#/review/${encodeURIComponent(trainee.traineeId)}?token=${token}`;
+  // Generate the review URL dynamically using FRONTEND_URL (defaults to localhost:5173 in local dev)
+  const frontendUrl = (process.env.FRONTEND_URL || getAppUrl() || "http://localhost:5173").trim().replace(/\/+$/, '');
+  const reviewUrl = `${frontendUrl}/#/review/${traineeId}?token=${token}`;
+  const reviewLink = reviewUrl;
 
   const cfg = await safeGetConfig();
   const approvalTpl = {
@@ -1282,7 +1289,6 @@ export async function sendApprovalRequestEmail({ approver, trainee }) {
   const orgName = branding.orgName || 'APOLLO TYRES LTD';
   const orgLogo = approvalTpl.logoUrl || branding.logo || cfg?.logo || '';
   const traineeName = trainee.name || '';
-  const traineeId = trainee.traineeId || '';
   const joiningDate = fmtDate(trainee.joiningDate);
   const department = trainee.qualification || 'Trainee Operations';
   const approverName = approver.name || 'Approver';
@@ -1329,7 +1335,7 @@ Trainee Details:
 - Organization: ${orgName}
 
 Please click the secure link below to open the website review page and record your decision:
-${reviewLink}
+${reviewUrl}
 
 Note: You must be authenticated as an authorized approver to execute approval or rejection.
 
@@ -1361,13 +1367,13 @@ ${footerText}
   </div>
 
   <div style="margin: 28px 0; text-align: center;">
-    <a href="${reviewLink}" style="background: ${accentColor}; color: #ffffff; text-decoration: none; padding: 14px 28px; border-radius: 8px; font-weight: bold; font-size: 15px; display: inline-block;">
+    <a href="${reviewUrl}" style="background: ${accentColor}; color: #ffffff; text-decoration: none; padding: 14px 28px; border-radius: 8px; font-weight: bold; font-size: 15px; display: inline-block;">
       Open Trainee Review & Decisions →
     </a>
   </div>
 
   <p style="font-size: 12.5px; color: #64748b; margin-top: 16px;">
-    Direct secure link: <a href="${reviewLink}" style="color: ${accentColor}; word-break: break-all;">${reviewLink}</a>
+    Direct secure link: <a href="${reviewUrl}" style="color: ${accentColor}; word-break: break-all;">${reviewUrl}</a>
   </p>
 
   <p style="font-size: 12px; color: #94a3b8; border-top: 1px solid #e2e8f0; padding-top: 14px; margin-top: 24px;">

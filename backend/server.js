@@ -21,7 +21,7 @@ import mongoose from 'mongoose';
 import { connectDB, closeDB } from './config/db.js';
 import { seedDatabase } from './seed.js';
 import { getJwtSecret } from './config/jwt.js';
-import { verifySmtpConnection, getEmailProvider, isEmailConfigured } from './services/emailService.js';
+import { verifySmtpConnection, getEmailProvider, isEmailConfigured, getTransporter } from './services/emailService.js';
 
 import authRoutes from './routes/auth.js';
 import publicRoutes from './routes/publicRoutes.js';

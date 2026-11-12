@@ -478,7 +478,8 @@ router.post('/admin/email-template/test', auth, requireSuper, async (req, res) =
     const sampleTraineeId = 'TR-TEST-001';
     const sampleJoiningDate = new Date().toISOString().slice(0, 10);
     const sampleDept = 'Trainee Operations';
-    const sampleLink = `${getAppUrl()}/#/review/TR-TEST-001`;
+    const frontendUrl = (process.env.FRONTEND_URL || getAppUrl() || "http://localhost:5173").trim().replace(/\/+$/, '');
+    const sampleLink = `${frontendUrl}/#/review/TR-TEST-001`;
 
     const replaceTokens = (str = '') =>
       String(str)
@@ -513,7 +514,11 @@ Trainee Details:
 - Joining Date: ${sampleJoiningDate}
 - Organization: ${orgName}
 
-Link: ${sampleLink}
+Please click the secure link below to open the website review page and record your decision:
+${sampleLink}
+
+Direct secure link:
+${sampleLink}
 
 ${footerText}
 `;
@@ -546,6 +551,10 @@ ${footerText}
       Open Trainee Review & Decisions →
     </a>
   </div>
+
+  <p style="font-size: 12.5px; color: #64748b; margin-top: 16px;">
+    Direct secure link: <a href="${sampleLink}" style="color: ${accentColor}; word-break: break-all;">${sampleLink}</a>
+  </p>
 
   <p style="font-size: 12px; color: #94a3b8; border-top: 1px solid #e2e8f0; padding-top: 14px; margin-top: 24px;">
     ${footerText}
@@ -996,7 +1005,7 @@ router.post('/admin/email-templates/:type/test', auth, requireSuper, async (req,
       freeValidityEndDate: '15/04/2026',
       organizationName: branding.orgName || 'APOLLO TYRES LTD',
       organizationLogo: tpl.logoUrl || branding.logo || '',
-      idCardAttachment: `${getAppUrl()}/#/verify/QR-DEMO-001`,
+      idCardAttachment: `${(process.env.FRONTEND_URL || getAppUrl() || "http://localhost:5173").trim().replace(/\/+$/, '')}/#/verify/QR-DEMO-001`,
     };
 
     const subject = `[TEST PREVIEW] ${replaceDynamicPlaceholders(tpl.subject, sampleData)}`;
