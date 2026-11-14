@@ -204,9 +204,9 @@ function Scan() {
     <>
       {/* Session Settings Bar: Persistent Shift and Date */}
       <div className="card" style={{ marginBottom: 16 }}>
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 16, alignItems: 'center', justifyContent: 'space-between' }}>
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, alignItems: 'center' }}>
-            <div>
+        <div className="attendance-toolbar">
+          <div className="attendance-filters">
+            <div className="attendance-filter-group attendance-shift-group">
               <label className="field-label" style={{ fontWeight: 600 }}>Active Attendance Shift *</label>
               <div className="seg">
                 {SHIFT_OPTIONS.map((s) => (
@@ -225,7 +225,7 @@ function Scan() {
               </div>
             </div>
 
-            <div>
+            <div className="attendance-filter-group">
               <label className="field-label" style={{ fontWeight: 600 }}>Attendance Date</label>
               <input
                 className="input"
@@ -678,13 +678,13 @@ function HostelTracker() {
     <>
       {/* Top Controls: Hostel dropdown, Date selector (DD/MM/YYYY), Shift */}
       <div className="card" style={{ marginBottom: 16 }}>
-        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 16, alignItems: 'center', justifyContent: 'space-between' }}>
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 16, alignItems: 'center' }}>
-            <div>
+        <div className="attendance-toolbar">
+          <div className="attendance-filters">
+            <div className="attendance-filter-group">
               <label className="field-label" style={{ fontWeight: 600 }}>Select Hostel *</label>
               <select
                 className="input"
-                style={{ minWidth: 200, fontWeight: 600 }}
+                style={{ fontWeight: 600 }}
                 value={selectedHostel}
                 onChange={(e) => setSelectedHostel(e.target.value)}
               >
@@ -696,7 +696,7 @@ function HostelTracker() {
               </select>
             </div>
 
-            <div>
+            <div className="attendance-filter-group">
               <label className="field-label" style={{ fontWeight: 600 }}>
                 Attendance Date ({fmtDate(date)})
               </label>
@@ -709,7 +709,7 @@ function HostelTracker() {
               />
             </div>
 
-            <div>
+            <div className="attendance-filter-group attendance-shift-group">
               <label className="field-label" style={{ fontWeight: 600 }}>Shift</label>
               <div className="seg">
                 {SHIFT_OPTIONS.map((s) => (
@@ -726,7 +726,7 @@ function HostelTracker() {
             </div>
           </div>
 
-          <div style={{ display: 'flex', gap: 8 }}>
+          <div className="scan-mode-btns">
             <button
               className={`btn ${mode === 'camera' ? 'btn-primary' : 'btn-ghost'}`}
               onClick={() => { setMode('camera'); setCameraActive(true); }}

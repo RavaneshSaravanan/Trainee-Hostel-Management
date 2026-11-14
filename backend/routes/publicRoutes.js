@@ -86,6 +86,7 @@ async function getConfig() {
 router.get('/public', async (req, res) => {
   try {
     const config = await getConfig();
+    const cfg = config;
     return res.json({
       appName: config.appName,
       appSub: config.appSub,
@@ -623,13 +624,13 @@ router.post('/public/register', registerLimiter, async (req, res) => {
       qrStatus: 'ACTIVE',
       custom: d.custom && typeof d.custom === 'object' ? d.custom : {},
       employmentStatus: 'ACTIVE',
-      hostelStatus: (cfg?.approvalConfig?.enabled === false) ? 'ACTIVE' : 'PENDING REVIEW',
-      approvalStatus: (cfg?.approvalConfig?.enabled === false) ? 'APPROVED' : 'PENDING_APPROVAL',
+      hostelStatus: (config?.approvalConfig?.enabled === false) ? 'ACTIVE' : 'PENDING REVIEW',
+      approvalStatus: (config?.approvalConfig?.enabled === false) ? 'APPROVED' : 'PENDING_APPROVAL',
       hostel: '',
       roomNo: '',
       remarks: '',
       submissionDate: todayStr(),
-      approvedBy: (cfg?.approvalConfig?.enabled === false) ? 'SYSTEM_AUTO_APPROVED' : '',
+      approvedBy: (config?.approvalConfig?.enabled === false) ? 'SYSTEM_AUTO_APPROVED' : '',
       joiningDate,
       freeStayExpiryDate,
       paymentStatus: 'FREE',
@@ -641,7 +642,7 @@ router.post('/public/register', registerLimiter, async (req, res) => {
     );
 
     // 2. Dispatch Email 3: Admin AND Warden Approval Request Notification (Only if approval workflow is enabled)
-    if (cfg?.approvalConfig?.enabled !== false) {
+    if (config?.approvalConfig?.enabled !== false) {
       sendApprovalRequestNotification({ trainee: newTrainee }).catch((err) =>
         console.warn('[Admin/Warden Approval Notification Dispatch Error]', err.message)
       );

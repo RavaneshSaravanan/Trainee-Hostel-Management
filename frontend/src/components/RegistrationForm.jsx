@@ -9,6 +9,7 @@ import {
   isValidMobile,
   isValidGuardianContact,
   isValidAadhaar,
+  isValidDob,
   ERROR_MESSAGES,
   SUCCESS_MESSAGES,
 } from '../utils/validators.js';
