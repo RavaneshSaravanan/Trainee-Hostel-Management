@@ -17,6 +17,9 @@ export function navItems(config, can) {
 export default function Layout({ children }) {
   const { session, route, navigate, logout, getTrainee, db, config, can, roleName, syncError, setSyncError } = useStore();
   const NAV = navItems(config, can);
+  const isApprover = (config?.approvalConfig?.approvers || []).some((a) => a.userId === session?.id);
+  const isApprovalEnabled = config?.approvalConfig?.enabled !== false;
+  const pendingApprovalsCount = isApprovalEnabled && isApprover ? db.trainees.filter((t) => t.hostelStatus === 'PENDING REVIEW').length : 0;
   const pendingDetails = db.trainees.filter((t) => t.hostelStatus !== 'INACTIVE' && t.employmentStatus === 'ACTIVE' && !isComplete(t, config.customFields)).length;
   const [open, setOpen] = useState(false);
   const [q, setQ] = useState('');
@@ -56,7 +59,15 @@ export default function Layout({ children }) {
           {NAV.map((n) => (
             <button key={n.id} className={`side-link ${activeId === n.id ? 'active' : ''}`} onClick={() => go(n.id)}>
               <Icon name={n.icon} size={18} /><span>{n.label}</span>
-              {n.id === 'trainees' && pendingDetails > 0 && <span className="nav-badge" title="Trainees with pending details">{pendingDetails}</span>}
+              {n.id === 'trainees' && (pendingApprovalsCount > 0 || pendingDetails > 0) && (
+                <span
+                  className="nav-badge"
+                  style={{ background: pendingApprovalsCount > 0 ? 'var(--red, #DC2626)' : undefined }}
+                  title={pendingApprovalsCount > 0 ? `${pendingApprovalsCount} pending trainee approval(s)` : `${pendingDetails} trainees with pending details`}
+                >
+                  {pendingApprovalsCount > 0 ? pendingApprovalsCount : pendingDetails}
+                </span>
+              )}
             </button>
           ))}
         </nav>

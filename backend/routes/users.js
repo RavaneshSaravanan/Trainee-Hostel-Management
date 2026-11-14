@@ -9,7 +9,7 @@ import { nextId } from '../utils/dates.js';
 
 const router = express.Router();
 
-const safeUser = (u) => ({
+export const safeUser = (u) => ({
   id: u.id,
   name: u.name,
   username: u.username,
@@ -17,8 +17,11 @@ const safeUser = (u) => ({
   mobile: u.mobile || '',
   roleId: u.roleId,
   active: u.active,
+  passwordUpdatedAt: u.passwordUpdatedAt || u.updatedAt || u.createdAt || null,
+  passwordStatus: u.passwordStatus || 'ACTIVE',
 });
 
+// ---------------- User Management (Create / Update / Delete) ----------------
 router.post('/users', auth, requireSuper, async (req, res) => {
   try {
     const { action, user = {}, password } = req.body || {};
@@ -87,6 +90,8 @@ router.post('/users', auth, requireSuper, async (req, res) => {
         cur.active = user.active !== false;
         if (password) {
           cur.passwordHash = await bcrypt.hash(String(password), 10);
+          cur.passwordUpdatedAt = new Date();
+          cur.passwordStatus = 'ACTIVE';
         }
         await cur.save();
 
@@ -132,6 +137,8 @@ router.post('/users', auth, requireSuper, async (req, res) => {
           roleId: user.roleId,
           active: true,
           passwordHash,
+          passwordUpdatedAt: new Date(),
+          passwordStatus: 'ACTIVE',
         });
       }
     }
@@ -139,6 +146,42 @@ router.post('/users', auth, requireSuper, async (req, res) => {
     await bumpRev();
     const updatedUsers = await User.find({}).sort({ createdAt: 1 }).lean();
     return res.json({ users: updatedUsers.map(safeUser) });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------- Super Admin Authorized Password Reset ----------------
+router.post('/users/reset-password', auth, requireSuper, async (req, res) => {
+  try {
+    const { userId, newPassword, temporary = false } = req.body || {};
+
+    if (!userId) {
+      return res.status(400).json({ error: 'User ID is required.' });
+    }
+
+    if (!newPassword || String(newPassword).length < 4) {
+      return res.status(400).json({ error: 'New password must be at least 4 characters.' });
+    }
+
+    const targetUser = await User.findOne({ id: userId });
+    if (!targetUser) {
+      return res.status(404).json({ error: 'User not found.' });
+    }
+
+    targetUser.passwordHash = await bcrypt.hash(String(newPassword), 10);
+    targetUser.passwordUpdatedAt = new Date();
+    targetUser.passwordStatus = temporary ? 'RESET_REQUIRED' : 'ACTIVE';
+    await targetUser.save();
+
+    await bumpRev();
+    const updatedUsers = await User.find({}).sort({ createdAt: 1 }).lean();
+    return res.json({
+      ok: true,
+      message: `Password successfully updated for ${targetUser.name} (${targetUser.username}).`,
+      user: safeUser(targetUser),
+      users: updatedUsers.map(safeUser),
+    });
   } catch (err) {
     return res.status(500).json({ error: err.message });
   }

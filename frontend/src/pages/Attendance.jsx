@@ -237,7 +237,7 @@ function Scan() {
             </div>
           </div>
 
-          <div style={{ display: 'flex', gap: 8 }}>
+          <div className="scan-mode-btns">
             <button
               className={`btn ${mode === 'camera' ? 'btn-primary' : 'btn-ghost'}`}
               onClick={() => { setMode('camera'); setCameraActive(true); }}

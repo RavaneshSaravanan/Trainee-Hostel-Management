@@ -53,6 +53,8 @@ export const DEFAULT_IDCARD_TEMPLATE = {
   textColor: '#1E1B4B',
   cardBorderColor: '#7C3AED',
   footerText: 'Authorized Trainee ID Card · Apollo Tyres Ltd',
+  showLogo: true,
+  customLogo: '',
   showQualification: true,
   showPhone: true,
   showHostel: true,

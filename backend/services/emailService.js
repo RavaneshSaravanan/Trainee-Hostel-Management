@@ -1193,7 +1193,7 @@ ${footerText}
         width: 280,
         color: { dark: '#2E1065', light: '#FFFFFF' },
       });
-      pdfBuffer = await generateIdCardPdf({ trainee, branding, qrBuffer, verifyUrl });
+      pdfBuffer = await generateIdCardPdf({ trainee, branding, idCardTemplate: cfg?.idCardTemplate, qrBuffer, verifyUrl });
     } catch (pdfErr) {
       console.warn('[Welcome Email ID Card PDF Warning]', pdfErr.message);
     }
@@ -1621,12 +1621,16 @@ export async function sendDecisionNotificationEmail({ trainee, decision, rejecti
  * Incorporates Apollo Tyres violet & deep purple theme, company branding,
  * trainee photo/initials avatar, trainee details, and actual scannable QR code.
  */
-export async function generateIdCardPdf({ trainee, branding = {}, qrBuffer, verifyUrl = '' }) {
+export async function generateIdCardPdf({ trainee, branding = {}, idCardTemplate = {}, qrBuffer, verifyUrl = '' }) {
   return new Promise((resolve, reject) => {
     try {
-      const companyName = branding.orgName || 'APOLLO TYRES LTD';
-      const subtitle = 'OFFICIAL TRAINEE ID CARD';
-      const footerText = `Authorized Trainee ID Card · ${companyName}`;
+      const tpl = idCardTemplate || {};
+      const companyName = tpl.companyName || branding.orgName || 'APOLLO TYRES LTD';
+      const subtitle = tpl.subtitle || 'OFFICIAL TRAINEE ID CARD';
+      const footerText = tpl.footerText || `Authorized Trainee ID Card · ${companyName}`;
+      const headerBgStart = tpl.headerBgStart || '#2E1065';
+      const showLogo = tpl.showLogo !== false;
+      const logoSrc = tpl.customLogo || branding.logo || '';
 
       const doc = new PDFDocument({ size: [240, 380], margin: 0 });
       const chunks = [];
@@ -1637,15 +1641,35 @@ export async function generateIdCardPdf({ trainee, branding = {}, qrBuffer, veri
       // Outer border (violet-tinted border with rounded corners)
       doc.roundedRect(2, 2, 236, 376, 8).lineWidth(1).stroke('#DDD6FE');
 
-      // Header background (Deep violet #2E1065)
+      // Header background (Deep violet)
       doc.save();
       doc.roundedRect(2, 2, 236, 60, 8).clip();
-      doc.rect(2, 2, 236, 60).fill('#2E1065');
+      doc.rect(2, 2, 236, 60).fill(headerBgStart);
       doc.restore();
 
-      // Header text: Organization Name & Subtitle
-      doc.fillColor('#FFFFFF').font('Helvetica-Bold').fontSize(11).text(companyName.toUpperCase(), 10, 16, { align: 'center', width: 220 });
-      doc.fillColor('#DDD6FE').font('Helvetica').fontSize(7.5).text(subtitle.toUpperCase(), 10, 32, { align: 'center', width: 220, characterSpacing: 1 });
+      // Header text & Logo layout
+      let logoRendered = false;
+      if (showLogo && logoSrc && typeof logoSrc === 'string' && logoSrc.startsWith('data:image/')) {
+        try {
+          const logoB64 = logoSrc.split(',')[1];
+          if (logoB64) {
+            const logoBuf = Buffer.from(logoB64, 'base64');
+            doc.image(logoBuf, 12, 10, { fit: [38, 38], align: 'center', valign: 'center' });
+            logoRendered = true;
+          }
+        } catch {
+          logoRendered = false;
+        }
+      }
+
+      if (logoRendered) {
+        doc.fillColor('#FFFFFF').font('Helvetica-Bold').fontSize(10).text(companyName.toUpperCase(), 54, 16, { width: 175 });
+        doc.fillColor('#DDD6FE').font('Helvetica').fontSize(7).text(subtitle.toUpperCase(), 54, 32, { width: 175, characterSpacing: 0.5 });
+      } else {
+        // When logo is disabled or absent, center text perfectly across entire header width without empty space
+        doc.fillColor('#FFFFFF').font('Helvetica-Bold').fontSize(11).text(companyName.toUpperCase(), 10, 16, { align: 'center', width: 220 });
+        doc.fillColor('#DDD6FE').font('Helvetica').fontSize(7.5).text(subtitle.toUpperCase(), 10, 32, { align: 'center', width: 220, characterSpacing: 1 });
+      }
 
       // Accent violet stripe (#7C3AED)
       doc.rect(2, 60, 236, 3).fill('#7C3AED');
@@ -2264,105 +2288,98 @@ export async function sendApprovalRequestNotification({ trainee, force = false }
   }
 
   const cfg = await safeGetConfig();
+
+  // Requirement 6: Bypass email dispatch if Approval Workflow is Disabled
+  if (cfg?.approvalConfig && cfg.approvalConfig.enabled === false) {
+    console.log(`[APPROVAL WORKFLOW DISABLED] Skipping approval notification email for trainee ${trainee.traineeId}`);
+    return {
+      ok: true,
+      reason: 'WORKFLOW_DISABLED',
+      message: 'Approval workflow is currently disabled. Auto-approved without sending review emails.',
+    };
+  }
+
   const defaultAdminEmail = (process.env.ADMIN_EMAIL || process.env.GMAIL_USER || 'apollotyres.hostel@gmail.com').trim().toLowerCase();
   const defaultWardenEmail = (process.env.WARDEN_EMAIL || defaultAdminEmail).trim().toLowerCase();
 
-  // 1. Resolve Admin recipients
-  const adminUsers = mongoose.connection?.readyState === 1
-    ? await User.find({
-        roleId: { $in: ['superadmin', 'admin'] },
-        active: true,
-      }).lean()
-    : [];
+  let allApprovers = [];
 
-  let adminRecipients = adminUsers
-    .filter((u) => u.email && isValidEmail(u.email) && !u.email.endsWith('@hostel.com'))
-    .map((u) => ({
-      userId: u.id,
-      name: u.name,
-      username: u.username,
-      email: u.email.trim().toLowerCase(),
-      roleId: u.roleId || 'admin',
-    }));
+  // Requirement 10: Super Admin selects authorized approvers. Send approval emails ONLY to configured approvers!
+  if (Array.isArray(cfg?.approvalConfig?.approvers) && cfg.approvalConfig.approvers.length > 0) {
+    const configuredIds = cfg.approvalConfig.approvers.map((a) => a.userId);
+    const activeDbUsers = mongoose.connection?.readyState === 1
+      ? await User.find({ id: { $in: configuredIds }, active: true }).lean()
+      : [];
 
-  if (adminRecipients.length === 0) {
-    const adminEmail = (cfg?.adminNotificationEmail && isValidEmail(cfg.adminNotificationEmail) && !cfg.adminNotificationEmail.endsWith('@hostel.com'))
-      ? cfg.adminNotificationEmail.trim().toLowerCase()
-      : defaultAdminEmail;
-
-    adminRecipients.push({
-      userId: 'admin',
-      name: 'Hostel Administrator',
-      username: 'admin',
-      email: adminEmail,
-      roleId: 'admin',
-    });
-  }
-
-  // 2. Resolve Warden recipients
-  const wardenUsers = mongoose.connection?.readyState === 1
-    ? await User.find({
-        roleId: 'warden',
-        active: true,
-      }).lean()
-    : [];
-
-  let wardenRecipients = wardenUsers
-    .filter((u) => u.email && isValidEmail(u.email) && !u.email.endsWith('@hostel.com'))
-    .map((u) => ({
-      userId: u.id,
-      name: u.name,
-      username: u.username,
-      email: u.email.trim().toLowerCase(),
-      roleId: 'warden',
-    }));
-
-  if (wardenRecipients.length === 0) {
-    const wardenEmail = (process.env.WARDEN_EMAIL && isValidEmail(process.env.WARDEN_EMAIL))
-      ? process.env.WARDEN_EMAIL.trim().toLowerCase()
-      : defaultWardenEmail;
-
-    wardenRecipients.push({
-      userId: 'warden',
-      name: 'Hostel Warden',
-      username: 'warden',
-      email: wardenEmail,
-      roleId: 'warden',
-    });
-  }
-
-  // Merge custom approvers configured in Config.approvalConfig
-  if (Array.isArray(cfg?.approvalConfig?.approvers)) {
-    for (const app of cfg.approvalConfig.approvers) {
-      if (app && app.email && isValidEmail(app.email)) {
-        const cleanEmail = app.email.trim().toLowerCase();
-        if (app.roleId === 'warden') {
-          if (!wardenRecipients.some((w) => w.email === cleanEmail)) {
-            wardenRecipients.push({
-              userId: app.userId || 'custom_warden',
-              name: app.name || 'Warden',
-              username: app.username || 'warden',
-              email: cleanEmail,
-              roleId: 'warden',
-            });
-          }
-        } else {
-          if (!adminRecipients.some((a) => a.email === cleanEmail)) {
-            adminRecipients.push({
-              userId: app.userId || 'custom_admin',
-              name: app.name || 'Administrator',
-              username: app.username || 'admin',
-              email: cleanEmail,
-              roleId: app.roleId || 'admin',
-            });
-          }
+    allApprovers = cfg.approvalConfig.approvers
+      .filter((app) => {
+        if (!app.email || !isValidEmail(app.email)) return false;
+        if (activeDbUsers.length > 0) {
+          return activeDbUsers.some((u) => u.id === app.userId);
         }
-      }
-    }
+        return true;
+      })
+      .map((app) => ({
+        userId: app.userId,
+        name: app.name || 'Authorized Approver',
+        username: app.username || 'approver',
+        email: app.email.trim().toLowerCase(),
+        roleId: app.roleId || 'approver',
+      }));
   }
 
-  // Combine Admin and Warden recipients
-  const allApprovers = [...adminRecipients, ...wardenRecipients];
+  // Fallback ONLY when no approvers have been explicitly configured in approvalConfig
+  if (allApprovers.length === 0) {
+    const adminUsers = mongoose.connection?.readyState === 1
+      ? await User.find({ roleId: { $in: ['superadmin', 'admin'] }, active: true }).lean()
+      : [];
+
+    let adminRecipients = adminUsers
+      .filter((u) => u.email && isValidEmail(u.email) && !u.email.endsWith('@hostel.com'))
+      .map((u) => ({
+        userId: u.id,
+        name: u.name,
+        username: u.username,
+        email: u.email.trim().toLowerCase(),
+        roleId: u.roleId || 'admin',
+      }));
+
+    if (adminRecipients.length === 0) {
+      adminRecipients.push({
+        userId: 'admin',
+        name: 'Hostel Administrator',
+        username: 'admin',
+        email: defaultAdminEmail,
+        roleId: 'admin',
+      });
+    }
+
+    const wardenUsers = mongoose.connection?.readyState === 1
+      ? await User.find({ roleId: 'warden', active: true }).lean()
+      : [];
+
+    let wardenRecipients = wardenUsers
+      .filter((u) => u.email && isValidEmail(u.email) && !u.email.endsWith('@hostel.com'))
+      .map((u) => ({
+        userId: u.id,
+        name: u.name,
+        username: u.username,
+        email: u.email.trim().toLowerCase(),
+        roleId: 'warden',
+      }));
+
+    if (wardenRecipients.length === 0) {
+      wardenRecipients.push({
+        userId: 'warden',
+        name: 'Hostel Warden',
+        username: 'warden',
+        email: defaultWardenEmail,
+        roleId: 'warden',
+      });
+    }
+
+    allApprovers = [...adminRecipients, ...wardenRecipients];
+  }
   const results = [];
 
   for (const approver of allApprovers) {

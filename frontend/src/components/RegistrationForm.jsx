@@ -322,7 +322,7 @@ export default function RegistrationForm({
     isValidMobile(values.mobile.trim()) &&
     values.guardianName.trim().length > 0 &&
     isValidGuardianContact(values.guardianContact.trim()) &&
-    values.dob.trim().length > 0 &&
+    values.dob.trim().length > 0 && isValidDob(values.dob.trim()) &&
     values.gender.trim().length > 0 &&
     values.joiningDate.trim().length > 0 &&
     (!values.aadhar.trim() || isValidAadhaar(values.aadhar.trim())) &&

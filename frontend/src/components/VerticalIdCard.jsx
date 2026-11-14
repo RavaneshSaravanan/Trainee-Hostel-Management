@@ -80,7 +80,8 @@ export default function VerticalIdCard({ trainee, onClose, embedded = false, cus
   const headerBgEnd = tpl.headerBgEnd || '#4C1D95';
   const accentColor = tpl.accentColor || '#8B5CF6';
   const footerText = tpl.footerText || `Authorized Trainee ID Card · ${companyName}`;
-  const effectiveLogo = branding.logo || config.logo || '';
+  const showLogo = tpl.showLogo !== false;
+  const effectiveLogo = showLogo ? (tpl.customLogo || branding.logo || config.logo || '') : '';
   const photoRadius = tpl.photoShape === 'square' ? '18px' : '50%';
 
   if (!trainee) return null;

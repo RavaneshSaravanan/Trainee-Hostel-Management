@@ -86,8 +86,8 @@ function Edit({ t }) {
     const cleanMobile = mobile.replace(/\D/g, '');
     if (!cleanMobile) {
       errs.mobile = 'Mobile number is required.';
-    } else if (cleanMobile.length !== 10) {
-      errs.mobile = 'Mobile number must be exactly 10 digits (numbers only).';
+    } else if (!isValidMobile(cleanMobile)) {
+      errs.mobile = ERROR_MESSAGES.MOBILE_INVALID;
     }
 
     const cleanAadhar = aadhar.replace(/\D/g, '');
@@ -173,7 +173,8 @@ function Edit({ t }) {
               />
               {errors.email && <div className="field-error" style={{ color: 'var(--red, #ef4444)', fontSize: 12, marginTop: 4 }}>{errors.email}</div>}
             </div>
-            {F('Date of Birth', 'dob', { type: 'date' })}
+            {F('Date of Birth', 'dob', { type: 'date', max: todayStr() })}
+            {errors.dob && <div className="field-error" style={{ color: 'var(--red, #ef4444)', fontSize: 12, marginTop: -6, marginBottom: 8 }}>{errors.dob}</div>}
             {S('Gender', 'gender', ['Male', 'Female', 'Other'])}
             {S('Qualification', 'qualification', QUALIFICATIONS)}
             <div>

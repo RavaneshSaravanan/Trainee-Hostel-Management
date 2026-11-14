@@ -10,6 +10,8 @@ const userSchema = new mongoose.Schema(
     roleId: { type: String, required: true },
     active: { type: Boolean, default: true },
     passwordHash: { type: String, required: true },
+    passwordUpdatedAt: { type: Date, default: Date.now },
+    passwordStatus: { type: String, default: 'ACTIVE' },
   },
   { timestamps: true }
 );

@@ -75,31 +75,171 @@ function UserModal({ user, onClose }) {
   );
 }
 
-function Users() {
-  const { users, roles, session, deleteUser, notify } = useStore();
-  const [edit, setEdit] = useState(null); // null | 'new' | user
-  const roleName = (id) => (roles.find((r) => r.id === id) || {}).name || id;
+/* ---------------- Password Security & Management Modal (Super Admin Only) ---------------- */
+function PasswordManageModal({ user, onClose, onPasswordReset }) {
+  const { notify } = useStore();
+  const [newPassword, setNewPassword] = useState('');
+  const [loading, setLoading] = useState(false);
+
+  const generateRandomPassword = () => {
+    const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789!@#$%';
+    let res = '';
+    for (let i = 0; i < 12; i++) {
+      res += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
+    setNewPassword(res);
+  };
+
+  const handleReset = async (e) => {
+    e.preventDefault();
+    if (!newPassword || newPassword.length < 4) {
+      notify('Password must be at least 4 characters.');
+      return;
+    }
+    setLoading(true);
+    try {
+      await api('/api/users/reset-password', {
+        method: 'POST',
+        body: { userId: user.id, newPassword },
+      });
+      notify(`✓ Password reset successfully for ${user.name}.`);
+      onPasswordReset(user.id);
+      onClose();
+    } catch (err) {
+      notify(err.message || 'Failed to reset password.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const lastUpdated = user.passwordUpdatedAt
+    ? new Date(user.passwordUpdatedAt).toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' })
+    : 'Initial account creation';
+
   return (
-    <Card title="Login members" sub="Add people who can sign in, and choose their role." noPad
+    <Modal title={`Password Security & Management — ${user.name}`} onClose={onClose}>
+      <div style={{ marginBottom: 16 }}>
+        <div style={{ background: 'var(--purple-50, #f5f3ff)', border: '1px solid var(--purple-200, #ddd6fe)', borderRadius: 8, padding: '12px 14px', fontSize: 13, color: 'var(--purple-900, #2e1065)', lineHeight: 1.5 }}>
+          <strong>🔒 Enterprise Security Notice:</strong>
+          <div style={{ marginTop: 4, color: 'var(--gray-700, #374151)' }}>
+            Passwords are irreversibly hashed using standard cryptographic algorithms (bcrypt with salt). For security compliance, stored hashes cannot be reversed or retrieved as plaintext.
+          </div>
+        </div>
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 16, fontSize: 13 }}>
+        <div>
+          <span className="muted">User Account:</span>
+          <div><strong>{user.name}</strong> (@{user.username})</div>
+        </div>
+        <div>
+          <span className="muted">Assigned Role:</span>
+          <div><strong>{user.roleId}</strong></div>
+        </div>
+        <div>
+          <span className="muted">Password Status:</span>
+          <div><Badge status={user.passwordStatus || 'ACTIVE'} /></div>
+        </div>
+        <div>
+          <span className="muted">Last Password Update:</span>
+          <div><strong>{lastUpdated}</strong></div>
+        </div>
+      </div>
+
+      <form onSubmit={handleReset} style={{ borderTop: '1px solid var(--border)', paddingTop: 14 }}>
+        <label className="field-label" style={{ fontWeight: 600 }}>Super Admin Authorized Password Reset</label>
+        <p className="muted" style={{ fontSize: 12.5, margin: '2px 0 10px' }}>
+          Assign a new password or generate a high-entropy credential for this user.
+        </p>
+
+        <div style={{ display: 'flex', gap: 8 }}>
+          <input
+            className="input"
+            type="text"
+            placeholder="Enter new password (min. 4 characters)"
+            value={newPassword}
+            onChange={(e) => setNewPassword(e.target.value)}
+            required
+            autoComplete="off"
+          />
+          <button type="button" className="btn btn-ghost" onClick={generateRandomPassword} title="Generate random secure password">
+            <Icon name="refresh" size={14} /> Generate
+          </button>
+        </div>
+
+        <div style={{ marginTop: 16, display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
+          <button type="button" className="btn btn-ghost" onClick={onClose} disabled={loading}>
+            Cancel
+          </button>
+          <button type="submit" className="btn btn-primary" disabled={loading || !newPassword}>
+            <Icon name="check" size={14} /> {loading ? 'Resetting…' : 'Reset Password'}
+          </button>
+        </div>
+      </form>
+    </Modal>
+  );
+}
+
+function Users() {
+  const { users, setUsers, roles, session, deleteUser, notify } = useStore();
+  const [edit, setEdit] = useState(null); // null | 'new' | user
+  const [passwordUser, setPasswordUser] = useState(null);
+  const roleName = (id) => (roles.find((r) => r.id === id) || {}).name || id;
+
+  const handlePasswordResetSuccess = (userId) => {
+    if (setUsers) {
+      setUsers((prev) =>
+        prev.map((u) => (u.id === userId ? { ...u, passwordUpdatedAt: new Date(), passwordStatus: 'ACTIVE' } : u))
+      );
+    }
+  };
+
+  return (
+    <Card title="User Management & Password Security" sub="Manage user accounts, roles, login credentials, and password security policies." noPad
       action={<button className="btn btn-primary btn-sm" onClick={() => setEdit('new')}><Icon name="plus" size={14} /> Add member</button>}>
-      <Table headers={['Name', 'Username', 'Email / Mobile', 'Role', 'Status', '']}
+      <Table headers={['User Name', 'Email', 'Role', 'Account Status', 'Password', 'Last Password Updated', 'Actions']}
         rows={users.map((u) => [
-          u.name,
-          u.username,
+          <div>
+            <strong>{u.name}</strong>
+            <div className="muted" style={{ fontSize: 12 }}>@{u.username}</div>
+          </div>,
           <div>
             <div style={{ fontSize: 13 }}>{u.email || '—'}</div>
             {u.mobile && <div className="muted" style={{ fontSize: 12 }}>{u.mobile}</div>}
           </div>,
           roleName(u.roleId),
           <Badge status={u.active ? 'ACTIVE' : 'INACTIVE'} />,
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <span style={{ letterSpacing: '2px', fontWeight: 700, color: 'var(--gray-600)' }}>••••••••</span>
+            <button
+              className="btn btn-ghost btn-xs"
+              onClick={() => setPasswordUser(u)}
+              title="View password security details or reset password"
+            >
+              <Icon name="lock" size={12} /> View/Manage
+            </button>
+          </div>,
+          <div style={{ fontSize: 12.5, color: 'var(--gray-600)' }}>
+            {u.passwordUpdatedAt
+              ? new Date(u.passwordUpdatedAt).toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric' })
+              : 'Initial Setup'}
+          </div>,
           <div className="row-actions">
-            <button className="btn btn-ghost btn-xs" onClick={() => setEdit(u)}><Icon name="edit" size={13} /> Edit</button>
+            <button className="btn btn-ghost btn-xs" onClick={() => setEdit(u)} title="Edit user details"><Icon name="edit" size={13} /> Edit</button>
+            <button className="btn btn-ghost btn-xs" onClick={() => setPasswordUser(u)} title="Reset user password"><Icon name="key" size={13} /> Reset</button>
             {u.id !== session.id && <button className="btn btn-danger btn-xs" onClick={async () => {
               if (window.confirm(`Delete login for ${u.name}?`)) { try { await deleteUser(u); notify('Deleted.'); } catch (e) { notify(e.message); } }
             }}><Icon name="trash" size={13} /></button>}
           </div>,
         ])} />
       {edit && <UserModal user={edit === 'new' ? null : edit} onClose={() => setEdit(null)} />}
+      {passwordUser && (
+        <PasswordManageModal
+          user={passwordUser}
+          onClose={() => setPasswordUser(null)}
+          onPasswordReset={handlePasswordResetSuccess}
+        />
+      )}
     </Card>
   );
 }
@@ -151,9 +291,10 @@ function Roles() {
 
 /* ---------------- Approval Authorities (Super Admin Only) ---------------- */
 function Approvers() {
-  const { users, roles, notify } = useStore();
+  const { users, roles, notify, config, setConfig } = useStore();
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [workflowEnabled, setWorkflowEnabled] = useState(true);
   const [selectedIds, setSelectedIds] = useState([]);
   const [policy, setPolicy] = useState('ANY_ONE');
   const [savedConfig, setSavedConfig] = useState(null);
@@ -167,6 +308,7 @@ function Approvers() {
         const res = await api('/api/approval/config');
         if (res.approvalConfig) {
           setSavedConfig(res.approvalConfig);
+          setWorkflowEnabled(res.approvalConfig.enabled !== false);
           setSelectedIds((res.approvalConfig.approvers || []).map((a) => a.userId));
           setPolicy(res.approvalConfig.policy || 'ANY_ONE');
         }
@@ -178,21 +320,29 @@ function Approvers() {
     })();
   }, [notify]);
 
+  const handleToggleWorkflow = () => {
+    if (workflowEnabled) {
+      if (window.confirm('Are you sure you want to disable the trainee approval workflow?\n\nWhen disabled, new trainee registrations will be automatically approved immediately without sending review emails or requiring approvals. Ideal for bulk trainee onboarding.')) {
+        setWorkflowEnabled(false);
+      }
+    } else {
+      if (window.confirm('Enable trainee approval workflow?\n\nNew registrations will require official review by designated approvers before room allocation.')) {
+        setWorkflowEnabled(true);
+      }
+    }
+  };
+
   const toggleUser = (userId) => {
     if (selectedIds.includes(userId)) {
       setSelectedIds(selectedIds.filter((id) => id !== userId));
     } else {
-      if (selectedIds.length >= 3) {
-        notify('Maximum 3 approvers can be selected.');
-        return;
-      }
       setSelectedIds([...selectedIds, userId]);
     }
   };
 
   const handleSave = async () => {
-    if (selectedIds.length < 2 || selectedIds.length > 3) {
-      notify('Please select exactly 2 or 3 active members as approval authorities.');
+    if (workflowEnabled && selectedIds.length === 0) {
+      notify('Please select at least 1 active member as an authorized approver when approval workflow is enabled.');
       return;
     }
     setSaving(true);
@@ -200,12 +350,14 @@ function Approvers() {
       const res = await api('/api/approval/config', {
         method: 'POST',
         body: {
+          enabled: workflowEnabled,
           approverIds: selectedIds,
           policy,
         },
       });
       setSavedConfig(res.approvalConfig);
-      notify('Approval authorities and policy saved successfully.');
+      setConfig((prev) => ({ ...prev, approvalConfig: res.approvalConfig }));
+      notify('✓ Approval workflow configuration saved successfully.');
     } catch (err) {
       notify(err.message || 'Failed to save approver configuration.');
     } finally {
@@ -224,13 +376,39 @@ function Approvers() {
   return (
     <>
       <Card
-        title="Trainee Registration Approval Authorities"
-        sub="Configure exactly 2 or 3 active members authorized to review, approve, or reject new trainee registrations."
+        title="Trainee Registration Approval Workflow"
+        sub="Configure approval policies, enable/disable workflow, and designate authorized approvers."
       >
-        <div className="alert-banner info" style={{ marginBottom: 16 }}>
-          <Icon name="check" size={18} />
-          <div className="alert-text">
-            <strong>Requirements:</strong> Exactly 2 or 3 active user accounts must be designated. Approvers will receive email alerts with direct review links for newly registered trainees.
+        {/* Workflow Master Status & Toggle Banner */}
+        <div style={{ marginBottom: 20, padding: 16, borderRadius: 10, background: workflowEnabled ? '#f0fdf4' : '#fffbeb', border: '1px solid', borderColor: workflowEnabled ? '#86efac' : '#fde68a' }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 14, flexWrap: 'wrap' }}>
+            <div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span style={{ fontWeight: 800, fontSize: 15, color: workflowEnabled ? '#15803d' : '#b45309' }}>
+                  {workflowEnabled ? '● APPROVAL WORKFLOW ACTIVE' : '○ APPROVAL WORKFLOW DISABLED'}
+                </span>
+                <span className="chip" style={{ background: workflowEnabled ? '#dcfce7' : '#fef3c7', color: workflowEnabled ? '#166534' : '#92400e' }}>
+                  {workflowEnabled ? 'Reviews Required' : 'Auto-Approved (Bulk Ready)'}
+                </span>
+              </div>
+              <p className="muted" style={{ fontSize: 13, margin: '6px 0 0' }}>
+                {workflowEnabled
+                  ? 'New trainee registrations will require review and approval by designated approvers before room allocation.'
+                  : 'New registrations are automatically approved upon submission. Ideal for bulk induction of 100+ trainees without review delays.'}
+              </p>
+              {savedConfig?.configuredBy && (
+                <div style={{ fontSize: 12, color: 'var(--gray-500)', marginTop: 6 }}>
+                  Configured by <strong>{savedConfig.configuredBy}</strong> on {fmtDate(savedConfig.configuredAt || savedConfig.updatedAt)}.
+                </div>
+              )}
+            </div>
+            <button
+              type="button"
+              className={`btn ${workflowEnabled ? 'btn-danger' : 'btn-primary'}`}
+              onClick={handleToggleWorkflow}
+            >
+              {workflowEnabled ? 'Disable Approval Workflow' : 'Enable Approval Workflow'}
+            </button>
           </div>
         </div>
 
@@ -245,8 +423,11 @@ function Approvers() {
 
         <div style={{ marginBottom: 16 }}>
           <label className="field-label" style={{ fontWeight: 600 }}>
-            Select Eligible Active Members ({selectedIds.length} of 2-3 selected)
+            Designate Authorized Approvers ({selectedIds.length} designated)
           </label>
+          <p className="muted" style={{ fontSize: 12.5, margin: '2px 0 8px' }}>
+            Select active administrators or wardens who have authority to review and approve registrations. Super Admin is not forced to be an approver unless selected.
+          </p>
           <div className="table-wrap">
             <table className="tbl">
               <thead>
@@ -289,9 +470,9 @@ function Approvers() {
           </div>
         </div>
 
-        {selectedIds.length < 2 && (
+        {workflowEnabled && selectedIds.length === 0 && (
           <div className="notice" style={{ color: 'var(--red, #ef4444)' }}>
-            ⚠️ Please select at least 2 active approvers (currently {selectedIds.length} selected).
+            ⚠️ Please select at least 1 active member as an authorized approver when approval workflow is enabled.
           </div>
         )}
 
@@ -299,13 +480,13 @@ function Approvers() {
           <button
             className="btn btn-primary"
             onClick={handleSave}
-            disabled={saving || selectedIds.length < 2 || selectedIds.length > 3}
+            disabled={saving || (workflowEnabled && selectedIds.length === 0)}
           >
             <Icon name="check" size={15} /> {saving ? 'Saving…' : 'Save Approval Configuration'}
           </button>
           {savedConfig?.configuredAt && (
             <span className="muted" style={{ fontSize: 13 }}>
-              Last updated by {savedConfig.configuredBy} on {new Date(savedConfig.configuredAt).toLocaleDateString()}
+              Last saved by {savedConfig.configuredBy} on {new Date(savedConfig.configuredAt).toLocaleDateString()}
             </span>
           )}
         </div>
@@ -1248,6 +1429,94 @@ function IdCardDesignSettings() {
                 onChange={(e) => setForm({ ...form, footerText: e.target.value })}
                 placeholder="Authorized Trainee ID Card · Apollo Tyres Ltd"
               />
+            </div>
+
+            {/* Organization Logo Configuration */}
+            <div className="span-2" style={{ borderTop: '1px solid var(--border)', paddingTop: 14, marginTop: 8 }}>
+              <label className="field-label" style={{ fontWeight: 700, fontSize: 14, marginBottom: 8 }}>
+                Organization Logo Display & Custom Upload
+              </label>
+              
+              <Switch
+                checked={form.showLogo !== false}
+                onChange={(v) => setForm({ ...form, showLogo: v })}
+                label="Display Organization Logo on ID Card"
+              />
+
+              {form.showLogo !== false && (
+                <div style={{ marginTop: 12, padding: 14, background: 'var(--bg-soft)', borderRadius: 10, border: '1px solid var(--border)' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
+                    <div style={{ width: 60, height: 60, borderRadius: 8, background: '#fff', border: '1.5px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden', padding: 4 }}>
+                      {(form.customLogo || config.orgBranding?.logo || config.logo) ? (
+                        <img
+                          src={form.customLogo || config.orgBranding?.logo || config.logo}
+                          alt="Logo Preview"
+                          style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }}
+                        />
+                      ) : (
+                        <Icon name="home" size={28} />
+                      )}
+                    </div>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontWeight: 700, fontSize: 13.5 }}>
+                        {form.customLogo ? 'Custom ID Card Logo Active' : 'Default Organization Logo Active'}
+                      </div>
+                      <div className="muted" style={{ fontSize: 12 }}>
+                        Supported formats: PNG, JPG, SVG (Max file size &lt; 2MB).
+                      </div>
+                    </div>
+                  </div>
+
+                  <div style={{ display: 'flex', gap: 8, marginTop: 12, flexWrap: 'wrap' }}>
+                    <label className="btn btn-ghost btn-sm" style={{ cursor: 'pointer', margin: 0 }}>
+                      <Icon name="upload" size={13} /> {form.customLogo ? 'Replace Logo' : 'Upload Custom Logo'}
+                      <input
+                        type="file"
+                        accept="image/png,image/jpeg,image/svg+xml"
+                        style={{ display: 'none' }}
+                        onChange={(e) => {
+                          const file = e.target.files?.[0];
+                          if (!file) return;
+                          if (file.size > 2 * 1024 * 1024) {
+                            notify('Logo file must be smaller than 2MB.');
+                            return;
+                          }
+                          const reader = new FileReader();
+                          reader.onloadend = () => {
+                            setForm((prev) => ({ ...prev, customLogo: reader.result }));
+                            notify('✓ Custom logo uploaded for ID Card.');
+                          };
+                          reader.readAsDataURL(file);
+                        }}
+                      />
+                    </label>
+
+                    {form.customLogo && (
+                      <button
+                        type="button"
+                        className="btn btn-ghost btn-sm"
+                        onClick={() => {
+                          setForm((prev) => ({ ...prev, customLogo: '' }));
+                          notify('Custom logo removed. Default logo restored.');
+                        }}
+                      >
+                        <Icon name="trash" size={13} /> Remove Custom Logo
+                      </button>
+                    )}
+
+                    <button
+                      type="button"
+                      className="btn btn-ghost btn-sm"
+                      onClick={() => {
+                        setForm((prev) => ({ ...prev, customLogo: '' }));
+                        notify('Default organization logo restored.');
+                      }}
+                    >
+                      <Icon name="refresh" size={13} /> Restore Default
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
           </div>
 

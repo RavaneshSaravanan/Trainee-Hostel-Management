@@ -45,6 +45,7 @@ const configSchema = new mongoose.Schema(
       default: () => ({}),
     },
     approvalConfig: {
+      enabled: { type: Boolean, default: true },
       approvers: {
         type: [
           {
@@ -64,6 +65,8 @@ const configSchema = new mongoose.Schema(
       },
       configuredAt: { type: Date },
       configuredBy: { type: String, default: '' },
+      updatedAt: { type: Date },
+      updatedBy: { type: String, default: '' },
     },
   },
   { timestamps: true }

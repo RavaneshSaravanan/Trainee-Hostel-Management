@@ -34,13 +34,17 @@ import {
 
 const router = express.Router();
 
-// Helper to check if a user is an authorized approver or Super Admin
+// Helper to check if a user is an authorized approver
+// Section 10: Super Admin is NOT forced to be a mandatory approver.
+// If Super Admin is not selected as an approver, Super Admin does not have approval privileges on reviews.
 async function isAuthorizedApprover(userId) {
   const user = await User.findOne({ id: userId });
   if (!user || !user.active) return false;
-  if (user.roleId === 'superadmin') return true;
 
   const cfg = await Config.findOne({ key: 'main' }).lean();
+  // If workflow is completely disabled, approval is bypassed
+  if (cfg?.approvalConfig && cfg.approvalConfig.enabled === false) return true;
+
   const approvers = cfg?.approvalConfig?.approvers || [];
   return approvers.some((a) => a.userId === userId);
 }
@@ -50,9 +54,11 @@ router.get('/approval/config', auth, async (req, res) => {
   try {
     const cfg = await Config.findOne({ key: 'main' }).lean();
     const approvalConfig = cfg?.approvalConfig || {
+      enabled: true,
       approvers: [],
       policy: 'ANY_ONE',
     };
+    if (approvalConfig.enabled === undefined) approvalConfig.enabled = true;
     return res.json({ approvalConfig, isSuper: req.user.roleId === 'superadmin' });
   } catch (err) {
     return res.status(500).json({ error: err.message });
@@ -62,36 +68,27 @@ router.get('/approval/config', auth, async (req, res) => {
 // ---------------- 2. Save Approval Configuration (Strictly Super Admin Only) ----------------
 router.post('/approval/config', auth, requireSuper, async (req, res) => {
   try {
-    const { approverIds = [], policy = 'ANY_ONE' } = req.body || {};
+    const { enabled = true, approverIds = [], policy = 'ANY_ONE' } = req.body || {};
 
     if (!Array.isArray(approverIds)) {
       return res.status(400).json({ error: 'Approvers must be provided as a list.' });
     }
 
-    // Must be exactly 2 or 3 approvers
-    if (approverIds.length < 2 || approverIds.length > 3) {
+    // If enabled, ensure at least 1 approver is selected
+    if (enabled && approverIds.length === 0) {
       return res.status(400).json({
-        error: 'Exactly 2 or 3 eligible approver members must be authorized.',
+        error: 'Please select at least 1 active member as an authorized approver when approval workflow is enabled.',
       });
     }
 
     // Prevent duplicates
     const uniqueIds = Array.from(new Set(approverIds));
-    if (uniqueIds.length !== approverIds.length) {
-      return res.status(400).json({ error: 'Duplicate approvers are not allowed.' });
-    }
 
     // Validate active eligible users
     const validUsers = await User.find({
       id: { $in: uniqueIds },
       active: true,
     }).lean();
-
-    if (validUsers.length !== approverIds.length) {
-      return res.status(400).json({
-        error: 'One or more selected users are invalid, inactive, or not found.',
-      });
-    }
 
     const approvers = validUsers.map((u) => ({
       userId: u.id,
@@ -101,11 +98,17 @@ router.post('/approval/config', auth, requireSuper, async (req, res) => {
       roleId: u.roleId,
     }));
 
+    const cfg = await Config.findOne({ key: 'main' }).lean();
+    const existing = cfg?.approvalConfig || {};
+
     const approvalConfig = {
+      enabled: Boolean(enabled),
       approvers,
       policy: ['ANY_ONE', 'MAJORITY', 'ALL'].includes(policy) ? policy : 'ANY_ONE',
-      configuredAt: new Date(),
-      configuredBy: `${req.user.name} (${req.user.username})`,
+      configuredAt: existing.configuredAt || new Date(),
+      configuredBy: existing.configuredBy || `${req.user.name} (${req.user.username})`,
+      updatedAt: new Date(),
+      updatedBy: `${req.user.name} (${req.user.username})`,
     };
 
     await Config.findOneAndUpdate(
@@ -120,7 +123,12 @@ router.post('/approval/config', auth, requireSuper, async (req, res) => {
       actorId: req.user.id,
       actorName: req.user.name,
       actorRole: req.user.roleId,
-      metadata: { approversCount: approvers.length, policy },
+      metadata: {
+        enabled: Boolean(enabled),
+        approversCount: approvers.length,
+        policy: approvalConfig.policy,
+        updatedBy: approvalConfig.updatedBy,
+      },
     });
 
     await bumpRev();

@@ -25,6 +25,8 @@ const safeUser = (u) => ({
   mobile: u.mobile || '',
   roleId: u.roleId,
   active: u.active,
+  passwordUpdatedAt: u.passwordUpdatedAt || u.updatedAt || u.createdAt || null,
+  passwordStatus: u.passwordStatus || 'ACTIVE',
 });
 
 // ---------------- Login ----------------
@@ -69,10 +71,12 @@ router.post('/me/password', auth, async (req, res) => {
     }
 
     u.passwordHash = await bcrypt.hash(String(newPassword), 10);
+    u.passwordUpdatedAt = new Date();
+    u.passwordStatus = 'ACTIVE';
     await u.save();
 
     await bumpRev();
-    return res.json({ ok: true });
+    return res.json({ ok: true, user: safeUser(u) });
   } catch (err) {
     return res.status(500).json({ error: err.message });
   }

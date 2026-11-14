@@ -78,12 +78,15 @@ export function isValidPassword(password) {
   return true;
 }
 
-/** Mobile number validation: exactly 10 digits, numeric only, not repeated, not sequential */
+/**
+ * Indian Mobile number validation:
+ * Exactly 10 digits, numeric only, first digit must be between 6 and 9.
+ * Rejects numbers starting with 0, 1, 2, 3, 4 or 5.
+ */
 export function isValidMobile(mobile) {
   const clean = String(mobile || '').trim();
-  if (!/^\d{10}$/.test(clean)) return false;
+  if (!/^[6-9]\d{9}$/.test(clean)) return false;
   if (isRepeatedDigits(clean)) return false;
-  if (isSequential(clean)) return false;
   return true;
 }
 
@@ -94,6 +97,18 @@ export function isValidGuardianContact(contact) {
   if (isRepeatedDigits(clean)) return false;
   if (isSequential(clean)) return false;
   return true;
+}
+
+/**
+ * Date of Birth validation:
+ * Cannot be later than today's date (reject future dates, correct local date).
+ */
+export function isValidDob(dob) {
+  if (!dob) return false;
+  const clean = String(dob).trim().split('T')[0];
+  if (!clean) return false;
+  const today = new Date().toISOString().split('T')[0];
+  return clean <= today;
 }
 
 /** Aadhaar number validation: exactly 12 digits, numeric only, not repeated, not sequential, not 0/1 starting, Verhoeff checksum */
@@ -113,7 +128,8 @@ export const ERROR_MESSAGES = {
   OTP_INVALID: 'Invalid OTP. Please try again.',
   PASSWORD_INVALID: 'Password must contain at least 8 characters, uppercase, lowercase, number and special character.',
   PASSWORD_MISMATCH: 'Passwords do not match.',
-  MOBILE_INVALID: 'Mobile number must contain exactly 10 valid digits.',
+  MOBILE_INVALID: 'Enter a valid 10-digit Indian mobile number starting with 6, 7, 8 or 9.',
+  DOB_FUTURE: 'Date of Birth cannot be in the future.',
   AADHAAR_INVALID: 'Please enter a valid 12-digit Aadhaar number.',
   GUARDIAN_CONTACT_INVALID: 'Guardian Contact No. must contain exactly 10 digits.',
   REQUIRED: 'This field is required.',

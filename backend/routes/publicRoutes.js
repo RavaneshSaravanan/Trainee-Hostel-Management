@@ -465,7 +465,7 @@ router.post('/public/register', registerLimiter, async (req, res) => {
       return res.status(400).json({ error: 'This field is required.', field: 'mobile' });
     }
     if (!isValidMobile(mobile)) {
-      return res.status(400).json({ error: 'Mobile number must contain exactly 10 valid digits.', field: 'mobile' });
+      return res.status(400).json({ error: ERROR_MESSAGES.MOBILE_INVALID, field: 'mobile' });
     }
 
     // 5. Mandatory Date of Birth
@@ -486,7 +486,7 @@ router.post('/public/register', registerLimiter, async (req, res) => {
       return res.status(400).json({ error: 'This field is required.', field: 'guardianContact' });
     }
     if (!isValidGuardianContact(guardianContact)) {
-      return res.status(400).json({ error: 'Guardian Contact No. must contain exactly 10 digits.', field: 'guardianContact' });
+      return res.status(400).json({ error: ERROR_MESSAGES.MOBILE_INVALID, field: 'guardianContact' });
     }
 
     // 8. Mandatory Guardian Name
@@ -623,13 +623,13 @@ router.post('/public/register', registerLimiter, async (req, res) => {
       qrStatus: 'ACTIVE',
       custom: d.custom && typeof d.custom === 'object' ? d.custom : {},
       employmentStatus: 'ACTIVE',
-      hostelStatus: 'PENDING REVIEW',
-      approvalStatus: 'PENDING_APPROVAL',
+      hostelStatus: (cfg?.approvalConfig?.enabled === false) ? 'ACTIVE' : 'PENDING REVIEW',
+      approvalStatus: (cfg?.approvalConfig?.enabled === false) ? 'APPROVED' : 'PENDING_APPROVAL',
       hostel: '',
       roomNo: '',
       remarks: '',
       submissionDate: todayStr(),
-      approvedBy: '',
+      approvedBy: (cfg?.approvalConfig?.enabled === false) ? 'SYSTEM_AUTO_APPROVED' : '',
       joiningDate,
       freeStayExpiryDate,
       paymentStatus: 'FREE',
@@ -640,10 +640,14 @@ router.post('/public/register', registerLimiter, async (req, res) => {
       console.warn('[Registration Confirmation Dispatch Error]', err.message)
     );
 
-    // 2. Dispatch Email 3: Admin AND Warden Approval Request Notification (BOTH recipients)
-    sendApprovalRequestNotification({ trainee: newTrainee }).catch((err) =>
-      console.warn('[Admin/Warden Approval Notification Dispatch Error]', err.message)
-    );
+    // 2. Dispatch Email 3: Admin AND Warden Approval Request Notification (Only if approval workflow is enabled)
+    if (cfg?.approvalConfig?.enabled !== false) {
+      sendApprovalRequestNotification({ trainee: newTrainee }).catch((err) =>
+        console.warn('[Admin/Warden Approval Notification Dispatch Error]', err.message)
+      );
+    } else {
+      console.log(`[APPROVAL WORKFLOW DISABLED] Auto-approved trainee ${finalTraineeId} without sending approval request emails.`);
+    }
 
     await bumpRev();
     return res.json({ ok: true, hostelId, traineeId: finalTraineeId, qrId });
