@@ -1,11 +1,13 @@
 import express from 'express';
 import bcrypt from 'bcryptjs';
+import crypto from 'node:crypto';
 import { User } from '../models/User.js';
 import { Role } from '../models/Role.js';
 import { Config } from '../models/Config.js';
 import { bumpRev } from '../models/Meta.js';
 import { auth, requireSuper } from '../middleware/auth.js';
 import { nextId } from '../utils/dates.js';
+import { getAppUrl } from '../services/emailService.js';
 
 const router = express.Router();
 
@@ -19,6 +21,18 @@ export const safeUser = (u) => ({
   active: u.active,
   passwordUpdatedAt: u.passwordUpdatedAt || u.updatedAt || u.createdAt || null,
   passwordStatus: u.passwordStatus || 'ACTIVE',
+  mustChangePassword: !!u.mustChangePassword,
+  assignedHostels: Array.isArray(u.assignedHostels) ? u.assignedHostels : [],
+  hasActiveResetLink: Boolean(u.resetToken && u.resetTokenExpires && new Date(u.resetTokenExpires) > new Date()),
+  passwordResetHistory: Array.isArray(u.passwordResetHistory)
+    ? u.passwordResetHistory.map((h) => ({
+        requestedBy: h.requestedBy || 'Super Admin',
+        resetType: h.resetType || 'DIRECT',
+        createdAt: h.createdAt,
+        usedAt: h.usedAt,
+        revokedAt: h.revokedAt,
+      }))
+    : [],
 });
 
 // ---------------- User Management (Create / Update / Delete) ----------------
@@ -88,10 +102,14 @@ router.post('/users', auth, requireSuper, async (req, res) => {
         cur.mobile = mobile;
         cur.roleId = user.roleId;
         cur.active = user.active !== false;
+        if (Array.isArray(user.assignedHostels)) {
+          cur.assignedHostels = user.assignedHostels;
+        }
         if (password) {
           cur.passwordHash = await bcrypt.hash(String(password), 10);
           cur.passwordUpdatedAt = new Date();
           cur.passwordStatus = 'ACTIVE';
+          cur.mustChangePassword = false;
         }
         await cur.save();
 
@@ -139,6 +157,8 @@ router.post('/users', auth, requireSuper, async (req, res) => {
           passwordHash,
           passwordUpdatedAt: new Date(),
           passwordStatus: 'ACTIVE',
+          mustChangePassword: false,
+          assignedHostels: Array.isArray(user.assignedHostels) ? user.assignedHostels : [],
         });
       }
     }
@@ -154,7 +174,7 @@ router.post('/users', auth, requireSuper, async (req, res) => {
 // ---------------- Super Admin Authorized Password Reset ----------------
 router.post('/users/reset-password', auth, requireSuper, async (req, res) => {
   try {
-    const { userId, newPassword, temporary = false } = req.body || {};
+    const { userId, newPassword, temporary = false, forceChangeOnLogin = false } = req.body || {};
 
     if (!userId) {
       return res.status(400).json({ error: 'User ID is required.' });
@@ -169,19 +189,143 @@ router.post('/users/reset-password', auth, requireSuper, async (req, res) => {
       return res.status(404).json({ error: 'User not found.' });
     }
 
+    const shouldForce = Boolean(temporary || forceChangeOnLogin);
     targetUser.passwordHash = await bcrypt.hash(String(newPassword), 10);
     targetUser.passwordUpdatedAt = new Date();
-    targetUser.passwordStatus = temporary ? 'RESET_REQUIRED' : 'ACTIVE';
-    await targetUser.save();
+    targetUser.mustChangePassword = shouldForce;
+    targetUser.passwordStatus = shouldForce ? 'CHANGE_REQUIRED' : 'ACTIVE';
+    targetUser.resetToken = '';
+    targetUser.resetTokenExpires = null;
 
+    targetUser.passwordResetHistory.push({
+      requestedBy: req.user?.username || 'superadmin',
+      resetType: shouldForce ? 'TEMPORARY' : 'DIRECT',
+      createdAt: new Date(),
+    });
+
+    await targetUser.save();
     await bumpRev();
+
     const updatedUsers = await User.find({}).sort({ createdAt: 1 }).lean();
     return res.json({
       ok: true,
-      message: `Password successfully updated for ${targetUser.name} (${targetUser.username}).`,
+      message: `Password successfully updated for ${targetUser.name} (${targetUser.username}).` +
+        (shouldForce ? ' User will be prompted to change password at next login.' : ''),
       user: safeUser(targetUser),
       users: updatedUsers.map(safeUser),
     });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------- Generate Secure Reset Link ----------------
+router.post('/users/generate-reset-link', auth, requireSuper, async (req, res) => {
+  try {
+    const { userId } = req.body || {};
+    if (!userId) {
+      return res.status(400).json({ error: 'User ID is required.' });
+    }
+
+    const targetUser = await User.findOne({ id: userId });
+    if (!targetUser) {
+      return res.status(404).json({ error: 'User not found.' });
+    }
+
+    const token = crypto.randomBytes(32).toString('hex');
+    const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 hours
+
+    targetUser.resetToken = token;
+    targetUser.resetTokenExpires = expiresAt;
+    targetUser.passwordResetHistory.push({
+      requestedBy: req.user?.username || 'superadmin',
+      resetType: 'RESET_LINK',
+      createdAt: new Date(),
+    });
+
+    await targetUser.save();
+
+    const appUrl = getAppUrl();
+    const resetUrl = `${appUrl}/#/reset-password?token=${token}`;
+
+    return res.json({
+      ok: true,
+      message: `Secure password reset link generated for ${targetUser.name}.`,
+      resetUrl,
+      token,
+      expiresAt,
+      user: safeUser(targetUser),
+    });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------- Revoke Active Reset Link ----------------
+router.post('/users/revoke-reset-link', auth, requireSuper, async (req, res) => {
+  try {
+    const { userId } = req.body || {};
+    if (!userId) {
+      return res.status(400).json({ error: 'User ID is required.' });
+    }
+
+    const targetUser = await User.findOne({ id: userId });
+    if (!targetUser) {
+      return res.status(404).json({ error: 'User not found.' });
+    }
+
+    targetUser.resetToken = '';
+    targetUser.resetTokenExpires = null;
+
+    if (Array.isArray(targetUser.passwordResetHistory) && targetUser.passwordResetHistory.length > 0) {
+      const last = targetUser.passwordResetHistory[targetUser.passwordResetHistory.length - 1];
+      if (!last.usedAt && !last.revokedAt) {
+        last.revokedAt = new Date();
+      }
+    }
+
+    await targetUser.save();
+
+    return res.json({
+      ok: true,
+      message: `Active reset link revoked for ${targetUser.name}.`,
+      user: safeUser(targetUser),
+    });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------- User Self Change Password (with Current Password Verification) ----------------
+router.post('/users/change-password', auth, async (req, res) => {
+  try {
+    const { currentPassword, newPassword } = req.body || {};
+    if (!currentPassword || !newPassword) {
+      return res.status(400).json({ error: 'Current password and new password are required.' });
+    }
+    if (String(newPassword).length < 4) {
+      return res.status(400).json({ error: 'New password must be at least 4 characters.' });
+    }
+    const user = await User.findOne({ id: req.user.id });
+    if (!user) {
+      return res.status(404).json({ error: 'User not found.' });
+    }
+    const match = await bcrypt.compare(String(currentPassword), user.passwordHash);
+    if (!match) {
+      return res.status(400).json({ error: 'Current password does not match.' });
+    }
+    user.passwordHash = await bcrypt.hash(String(newPassword), 10);
+    user.passwordUpdatedAt = new Date();
+    user.mustChangePassword = false;
+    user.passwordStatus = 'ACTIVE';
+    user.passwordResetHistory.push({
+      requestedBy: user.username,
+      resetType: 'SELF_CHANGE',
+      createdAt: new Date(),
+    });
+    await user.save();
+    await bumpRev();
+    return res.json({ ok: true, message: 'Password changed successfully.', user: safeUser(user) });
   } catch (err) {
     return res.status(500).json({ error: err.message });
   }

@@ -209,12 +209,323 @@ function Rooms() {
   );
 }
 
+
+/* ---------------- Warden Partial Trainee Completion View ---------------- */
+function CompleteTraineeModal({ trainee, hostels, onClose, onCompleted }) {
+  const { notify } = useStore();
+  const [f, setF] = useState({
+    name: trainee.name || '',
+    mobile: trainee.mobile || '',
+    email: trainee.email || '',
+    dob: trainee.dob ? String(trainee.dob).slice(0, 10) : '',
+    gender: trainee.gender || 'MALE',
+    joiningDate: trainee.joiningDate ? String(trainee.joiningDate).slice(0, 10) : new Date().toISOString().slice(0, 10),
+    guardianName: trainee.guardianName || '',
+    guardianContact: trainee.guardianContact || '',
+    aadhar: trainee.aadhar || '',
+    qualification: trainee.qualification || '',
+    bloodGroup: trainee.bloodGroup || '',
+    emergencyContact: trainee.emergencyContact || '',
+    hostel: trainee.hostel || (hostels[0]?.name || ''),
+    roomNo: trainee.roomNo || '',
+    sendWelcomeEmail: true,
+  });
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+
+  const selectedHostelObj = hostels.find((h) => h.name === f.hostel) || hostels[0];
+  const availableRooms = selectedHostelObj?.rooms || [];
+
+  const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    if (!f.name.trim()) { setError('Trainee name is required.'); return; }
+    if (!f.mobile.trim() || !/^[6-9]\d{9}$/.test(f.mobile.trim())) {
+      setError('A valid 10-digit mobile number starting with 6-9 is required.');
+      return;
+    }
+    if (!f.dob) { setError('Date of birth is required.'); return; }
+    if (!f.joiningDate) { setError('Joining date is required.'); return; }
+    if (!f.guardianName.trim()) { setError('Guardian name is required.'); return; }
+    if (!f.guardianContact.trim() || !/^\d{10}$/.test(f.guardianContact.trim())) {
+      setError('A valid 10-digit guardian contact number is required.');
+      return;
+    }
+    if (!f.roomNo) { setError('Please allocate a hostel room to finalize.'); return; }
+
+    setLoading(true);
+    setError('');
+    try {
+      const res = await api(`/api/warden/complete-trainee/${trainee.traineeId || trainee._id}`, {
+        method: 'PUT',
+        body: f,
+      });
+      notify(res.message || '✓ Trainee details completed and finalized successfully.');
+      onCompleted(res.trainee);
+      onClose();
+    } catch (err) {
+      setError(err.message || 'Failed to complete trainee registration.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const missing = Array.isArray(trainee.missingFields) ? trainee.missingFields : [];
+
+  return (
+    <Modal title={`Complete & Finalize Trainee — ${trainee.name}`} onClose={onClose}>
+      <form onSubmit={handleSubmit}>
+        {missing.length > 0 && (
+          <div style={{ background: '#fffbeb', border: '1px solid #fef3c7', borderRadius: 8, padding: '10px 14px', marginBottom: 14, fontSize: 13, color: '#92400e' }}>
+            <strong>Pending Requirements:</strong> {missing.join(', ')}
+          </div>
+        )}
+        {error && (
+          <div style={{ background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 8, padding: '10px 14px', marginBottom: 14, fontSize: 13, color: '#991b1b' }}>
+            {error}
+          </div>
+        )}
+
+        <div className="two-col">
+          <div>
+            <label className="field-label">Trainee Name *</label>
+            <input className="input" value={f.name} onChange={set('name')} required />
+          </div>
+          <div>
+            <label className="field-label">Mobile Number (10 digits) *</label>
+            <input className="input" type="tel" maxLength={10} value={f.mobile} onChange={set('mobile')} placeholder="e.g. 9876543210" required />
+          </div>
+        </div>
+
+        <div className="two-col" style={{ marginTop: 12 }}>
+          <div>
+            <label className="field-label">Email ID (for ID card delivery)</label>
+            <input className="input" type="email" value={f.email} onChange={set('email')} placeholder="trainee@example.com" />
+          </div>
+          <div>
+            <label className="field-label">Date of Birth *</label>
+            <input className="input" type="date" value={f.dob} max={new Date().toISOString().slice(0, 10)} onChange={set('dob')} required />
+          </div>
+        </div>
+
+        <div className="two-col" style={{ marginTop: 12 }}>
+          <div>
+            <label className="field-label">Gender *</label>
+            <select className="input" value={f.gender} onChange={set('gender')} required>
+              <option value="MALE">Male</option>
+              <option value="FEMALE">Female</option>
+              <option value="OTHER">Other</option>
+            </select>
+          </div>
+          <div>
+            <label className="field-label">Joining Date *</label>
+            <input className="input" type="date" value={f.joiningDate} onChange={set('joiningDate')} required />
+          </div>
+        </div>
+
+        <div className="two-col" style={{ marginTop: 12 }}>
+          <div>
+            <label className="field-label">Guardian Name *</label>
+            <input className="input" value={f.guardianName} onChange={set('guardianName')} placeholder="Parent or Guardian" required />
+          </div>
+          <div>
+            <label className="field-label">Guardian Contact (10 digits) *</label>
+            <input className="input" type="tel" maxLength={10} value={f.guardianContact} onChange={set('guardianContact')} placeholder="e.g. 9876543210" required />
+          </div>
+        </div>
+
+        <div className="two-col" style={{ marginTop: 12 }}>
+          <div>
+            <label className="field-label">Aadhaar Number (12 digits)</label>
+            <input className="input" maxLength={12} value={f.aadhar} onChange={set('aadhar')} placeholder="12-digit UID" />
+          </div>
+          <div>
+            <label className="field-label">Qualification / Trade</label>
+            <input className="input" value={f.qualification} onChange={set('qualification')} placeholder="e.g. ITI Fitter / Diploma" />
+          </div>
+        </div>
+
+        <div style={{ marginTop: 14, paddingTop: 14, borderTop: '1px solid var(--border)' }}>
+          <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 8, color: 'var(--purple-900)' }}>
+            🛏️ Hostel & Room Allocation
+          </div>
+          <div className="two-col">
+            <div>
+              <label className="field-label">Hostel *</label>
+              <select className="input" value={f.hostel} onChange={set('hostel')} required>
+                {hostels.map((h) => <option key={h.name} value={h.name}>{h.name}</option>)}
+              </select>
+            </div>
+            <div>
+              <label className="field-label">Room Number *</label>
+              <select className="input" value={f.roomNo} onChange={set('roomNo')} required>
+                <option value="">-- Select Room --</option>
+                {availableRooms.map((r) => (
+                  <option key={r.no} value={r.no}>
+                    Room {r.no} ({r.capacity} beds)
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+        </div>
+
+        <div style={{ marginTop: 14 }}>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, cursor: 'pointer' }}>
+            <input
+              type="checkbox"
+              checked={f.sendWelcomeEmail}
+              onChange={(e) => setF({ ...f, sendWelcomeEmail: e.target.checked })}
+            />
+            <span>Dispatch Welcome Email with printable ID Card PDF and QR code immediately</span>
+          </label>
+        </div>
+
+        <div style={{ marginTop: 18, display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
+          <button type="button" className="btn btn-ghost" onClick={onClose} disabled={loading}>
+            Cancel
+          </button>
+          <button type="submit" className="btn btn-primary" disabled={loading}>
+            <Icon name="check" size={14} /> {loading ? 'Finalizing…' : 'Finalize & Activate Trainee'}
+          </button>
+        </div>
+      </form>
+    </Modal>
+  );
+}
+
+function IncompleteDetails() {
+  const { db, notify, setDb } = useStore();
+  const [data, setData] = useState({ trainees: [], summary: {} });
+  const [loading, setLoading] = useState(true);
+  const [completingTrainee, setCompletingTrainee] = useState(null);
+
+  const fetchIncomplete = async () => {
+    setLoading(true);
+    try {
+      const res = await api('/api/warden/incomplete-trainees');
+      setData(res);
+    } catch (err) {
+      // Fallback to local store filtering
+      const list = db.trainees.filter(
+        (t) => t.completionStatus === 'PARTIAL' || (Array.isArray(t.missingFields) && t.missingFields.length > 0) || !t.roomNo
+      );
+      setData({
+        trainees: list,
+        summary: {
+          totalIncomplete: list.length,
+          missingDetailsCount: list.filter((t) => t.missingFields?.length > 0).length,
+          pendingRoomCount: list.filter((t) => !t.roomNo).length,
+          readyForFinalizationCount: list.filter((t) => (!t.missingFields || t.missingFields.length === 0) && !t.roomNo).length,
+        },
+      });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchIncomplete();
+  }, [db.trainees]);
+
+  const handleCompleted = (updatedTrainee) => {
+    fetchIncomplete();
+  };
+
+  const { summary = {}, trainees = [] } = data;
+
+  return (
+    <>
+      <div className="kpi-grid" style={{ marginBottom: 16 }}>
+        <div className="card kpi-card" style={{ borderLeft: '4px solid #ea580c' }}>
+          <div className="kpi-label" style={{ color: '#ea580c' }}>Incomplete Trainees</div>
+          <div className="kpi-value" style={{ color: '#ea580c' }}>{summary.totalIncomplete || trainees.length}</div>
+          <div className="muted" style={{ fontSize: 11, marginTop: 4 }}>Awaiting warden completion</div>
+        </div>
+        <div className="card kpi-card" style={{ borderLeft: '4px solid #dc2626' }}>
+          <div className="kpi-label" style={{ color: '#dc2626' }}>Missing Required Details</div>
+          <div className="kpi-value" style={{ color: '#dc2626' }}>{summary.missingDetailsCount || 0}</div>
+          <div className="muted" style={{ fontSize: 11, marginTop: 4 }}>Mobile, DOB, or Guardian</div>
+        </div>
+        <div className="card kpi-card" style={{ borderLeft: '4px solid #7c3aed' }}>
+          <div className="kpi-label" style={{ color: '#7c3aed' }}>Pending Room Allocation</div>
+          <div className="kpi-value" style={{ color: '#7c3aed' }}>{summary.pendingRoomCount || 0}</div>
+          <div className="muted" style={{ fontSize: 11, marginTop: 4 }}>Unassigned bed capacity</div>
+        </div>
+        <div className="card kpi-card" style={{ borderLeft: '4px solid #16a34a' }}>
+          <div className="kpi-label" style={{ color: '#16a34a' }}>Ready for Finalization</div>
+          <div className="kpi-value" style={{ color: '#16a34a' }}>{summary.readyForFinalizationCount || 0}</div>
+          <div className="muted" style={{ fontSize: 11, marginTop: 4 }}>Room assignment only</div>
+        </div>
+      </div>
+
+      <Card
+        title={`Incomplete Trainee Records (${trainees.length})`}
+        sub="Trainees imported with partial records or awaiting warden room allocation. Finalizing will generate official ID cards and send welcome notifications."
+        noPad
+      >
+        <Table
+          headers={['Trainee ID', 'Name', 'Hostel', 'Missing Fields', 'Room Status', 'Action']}
+          empty="✓ No incomplete trainee records pending for your assigned hostels."
+          rows={trainees.map((t) => [
+            <strong>{t.traineeId || '—'}</strong>,
+            <div>
+              <div style={{ fontWeight: 700 }}>{t.name}</div>
+              <div className="muted" style={{ fontSize: 12 }}>{t.mobile || 'No mobile'} · {t.email || 'No email'}</div>
+            </div>,
+            t.hostel || 'Unallocated',
+            <div>
+              {(t.missingFields || []).length > 0 ? (
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                  {t.missingFields.map((f) => (
+                    <span key={f} className="chip chip-amber" style={{ fontSize: 11 }}>{f}</span>
+                  ))}
+                </div>
+              ) : (
+                <span className="chip chip-green" style={{ fontSize: 11 }}>All Fields Present</span>
+              )}
+            </div>,
+            t.roomNo ? (
+              <span className="chip chip-blue">Room {t.roomNo}</span>
+            ) : (
+              <span className="chip chip-red">Pending Room</span>
+            ),
+            <button
+              type="button"
+              className="btn btn-primary btn-xs"
+              onClick={() => setCompletingTrainee(t)}
+            >
+              <Icon name="check" size={13} /> Complete & Finalize
+            </button>,
+          ])}
+        />
+      </Card>
+
+      {completingTrainee && (
+        <CompleteTraineeModal
+          trainee={completingTrainee}
+          hostels={db.hostels}
+          onClose={() => setCompletingTrainee(null)}
+          onCompleted={handleCompleted}
+        />
+      )}
+    </>
+  );
+}
+
 export default function Trainees() {
   const { db, route, navigate, notify } = useStore();
   const [exporting, setExporting] = useState(false);
   const tab = route.params.tab || 'all';
   const pendingCount = db.trainees.filter((t) => t.hostelStatus === 'PENDING REVIEW').length;
-  const tabs = [['all', 'All Trainees'], ['pending', 'Pending Review'], ['rooms', 'Room Management']];
+  const incompleteCount = db.trainees.filter((t) => t.completionStatus === 'PARTIAL' || (Array.isArray(t.missingFields) && t.missingFields.length > 0) || !t.roomNo).length;
+  const tabs = [
+    ['all', 'All Trainees'],
+    ['incomplete', 'Incomplete Details'],
+    ['pending', 'Pending Review'],
+    ['rooms', 'Room Management'],
+  ];
 
   const handleDownloadAllTrainees = async () => {
     try {
@@ -262,11 +573,13 @@ export default function Trainees() {
       <div className="tabbar">
         {tabs.map(([id, label]) => (
           <button key={id} className={`tab ${tab === id ? 'active' : ''}`} onClick={() => navigate('trainees', { tab: id })}>
-            {label}{id === 'pending' && pendingCount > 0 && <span className="tab-count">{pendingCount}</span>}
+            {label}
+            {id === 'pending' && pendingCount > 0 && <span className="tab-count">{pendingCount}</span>}
+            {id === 'incomplete' && incompleteCount > 0 && <span className="tab-count" style={{ background: 'var(--amber, #f59e0b)' }}>{incompleteCount}</span>}
           </button>
         ))}
       </div>
-      {tab === 'pending' ? <Pending /> : tab === 'rooms' ? <Rooms /> : <Master key={`${route.params.q || ''}|${route.params.details || ''}`} initialQ={route.params.q} initialDetails={route.params.details} />}
+      {tab === 'incomplete' ? <IncompleteDetails /> : tab === 'pending' ? <Pending /> : tab === 'rooms' ? <Rooms /> : <Master key={`${route.params.q || ''}|${route.params.details || ''}`} initialQ={route.params.q} initialDetails={route.params.details} />}
     </>
   );
 }

@@ -12,6 +12,22 @@ const userSchema = new mongoose.Schema(
     passwordHash: { type: String, required: true },
     passwordUpdatedAt: { type: Date, default: Date.now },
     passwordStatus: { type: String, default: 'ACTIVE' },
+    mustChangePassword: { type: Boolean, default: false },
+    resetToken: { type: String, default: '', index: true },
+    resetTokenExpires: { type: Date },
+    assignedHostels: { type: [String], default: () => [] },
+    passwordResetHistory: {
+      type: [
+        {
+          requestedBy: String,
+          resetType: { type: String, default: 'DIRECT' }, // DIRECT | RESET_LINK | TEMPORARY
+          createdAt: { type: Date, default: Date.now },
+          usedAt: Date,
+          revokedAt: Date,
+        },
+      ],
+      default: () => [],
+    },
   },
   { timestamps: true }
 );

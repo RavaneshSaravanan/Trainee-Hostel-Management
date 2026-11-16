@@ -213,6 +213,9 @@ export default function Dashboard() {
   const recentOv = db.outingVacate.filter((r) => ids.has(r.traineeId)).sort((a, b) => (b.date > a.date ? 1 : -1)).slice(0, 5);
 
   const pendingDetails = ts.filter((t) => t.employmentStatus === 'ACTIVE' && t.hostelStatus !== 'INACTIVE' && !isComplete(t, config.customFields));
+  const incompleteTrainees = ts.filter(
+    (t) => t.completionStatus === 'PARTIAL' || (Array.isArray(t.missingFields) && t.missingFields.length > 0) || !t.roomNo
+  );
   const link = (id) => <a className="link" onClick={() => navigate('trainee-profile', { id })}>{id}</a>;
 
   return (
@@ -248,6 +251,19 @@ export default function Dashboard() {
           </div>
           <button className="btn btn-danger btn-sm" onClick={() => navigate('trainees', { details: 'pending' })}>
             View pending
+          </button>
+        </div>
+      )}
+
+      {/* Alert banner for incomplete trainees (Warden Completion) */}
+      {incompleteTrainees.length > 0 && (
+        <div className="alert-banner" style={{ marginBottom: 16, background: '#fffbeb', border: '1.5px solid #f59e0b', color: '#92400e' }}>
+          <Icon name="alert" size={20} />
+          <div className="alert-text">
+            <strong>{incompleteTrainees.length} trainee{incompleteTrainees.length > 1 ? 's require' : ' requires'} missing detail completion or room allocation.</strong> Complete records to dispatch official welcome and ID card emails.
+          </div>
+          <button className="btn btn-primary btn-sm" style={{ background: '#d97706', borderColor: '#b45309' }} onClick={() => navigate('trainees', { tab: 'incomplete' })}>
+            Complete Trainees
           </button>
         </div>
       )}

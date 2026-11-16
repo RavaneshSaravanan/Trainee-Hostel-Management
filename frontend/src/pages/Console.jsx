@@ -18,6 +18,7 @@ import { Badge, Card, Icon, Modal, Table } from '../components/ui.jsx';
 import { resizeBackground, resizeImage } from '../utils/image.js';
 import { fmtDate } from '../utils/dates.js';
 import VerticalIdCard from '../components/VerticalIdCard.jsx';
+import BulkImport from './BulkImport.jsx';
 
 // ADMIN CONSOLE (Super Admin only): login members, roles, look & feel, pages, form fields, hostels.
 // Everything here is saved to the server automatically — no code changes needed.
@@ -78,8 +79,13 @@ function UserModal({ user, onClose }) {
 /* ---------------- Password Security & Management Modal (Super Admin Only) ---------------- */
 function PasswordManageModal({ user, onClose, onPasswordReset }) {
   const { notify } = useStore();
+  const [modalTab, setModalTab] = useState('direct'); // 'direct' | 'link' | 'history'
   const [newPassword, setNewPassword] = useState('');
+  const [forceChangeOnLogin, setForceChangeOnLogin] = useState(false);
+  const [activeResetLink, setActiveResetLink] = useState(user.resetLink || '');
+  const [linkExpiresAt, setLinkExpiresAt] = useState(user.resetTokenExpires || null);
   const [loading, setLoading] = useState(false);
+  const [currentUser, setCurrentUser] = useState(user);
 
   const generateRandomPassword = () => {
     const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789!@#$%';
@@ -90,7 +96,7 @@ function PasswordManageModal({ user, onClose, onPasswordReset }) {
     setNewPassword(res);
   };
 
-  const handleReset = async (e) => {
+  const handleDirectReset = async (e) => {
     e.preventDefault();
     if (!newPassword || newPassword.length < 4) {
       notify('Password must be at least 4 characters.');
@@ -98,11 +104,12 @@ function PasswordManageModal({ user, onClose, onPasswordReset }) {
     }
     setLoading(true);
     try {
-      await api('/api/users/reset-password', {
+      const res = await api('/api/users/reset-password', {
         method: 'POST',
-        body: { userId: user.id, newPassword },
+        body: { userId: user.id, newPassword, forceChangeOnLogin },
       });
-      notify(`✓ Password reset successfully for ${user.name}.`);
+      notify(res.message || `✓ Password reset successfully for ${user.name}.`);
+      if (res.user) setCurrentUser(res.user);
       onPasswordReset(user.id);
       onClose();
     } catch (err) {
@@ -112,70 +119,198 @@ function PasswordManageModal({ user, onClose, onPasswordReset }) {
     }
   };
 
-  const lastUpdated = user.passwordUpdatedAt
-    ? new Date(user.passwordUpdatedAt).toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' })
+  const handleGenerateResetLink = async () => {
+    setLoading(true);
+    try {
+      const res = await api('/api/users/generate-reset-link', {
+        method: 'POST',
+        body: { userId: user.id },
+      });
+      setActiveResetLink(res.resetUrl);
+      setLinkExpiresAt(res.expiresAt);
+      if (res.user) setCurrentUser(res.user);
+      notify('✓ 24-hour secure reset link generated successfully.');
+    } catch (err) {
+      notify(err.message || 'Failed to generate reset link.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleRevokeResetLink = async () => {
+    setLoading(true);
+    try {
+      const res = await api('/api/users/revoke-reset-link', {
+        method: 'POST',
+        body: { userId: user.id },
+      });
+      setActiveResetLink('');
+      setLinkExpiresAt(null);
+      if (res.user) setCurrentUser(res.user);
+      notify('✓ Active reset link revoked.');
+    } catch (err) {
+      notify(err.message || 'Failed to revoke reset link.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const copyToClipboard = (text) => {
+    if (navigator.clipboard) {
+      navigator.clipboard.writeText(text);
+      notify('Link copied to clipboard.');
+    }
+  };
+
+  const lastUpdated = currentUser.passwordUpdatedAt
+    ? new Date(currentUser.passwordUpdatedAt).toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' })
     : 'Initial account creation';
 
+  const history = Array.isArray(currentUser.passwordResetHistory) ? currentUser.passwordResetHistory : [];
+
   return (
-    <Modal title={`Password Security & Management — ${user.name}`} onClose={onClose}>
-      <div style={{ marginBottom: 16 }}>
-        <div style={{ background: 'var(--purple-50, #f5f3ff)', border: '1px solid var(--purple-200, #ddd6fe)', borderRadius: 8, padding: '12px 14px', fontSize: 13, color: 'var(--purple-900, #2e1065)', lineHeight: 1.5 }}>
-          <strong>🔒 Enterprise Security Notice:</strong>
-          <div style={{ marginTop: 4, color: 'var(--gray-700, #374151)' }}>
-            Passwords are irreversibly hashed using standard cryptographic algorithms (bcrypt with salt). For security compliance, stored hashes cannot be reversed or retrieved as plaintext.
+    <Modal title={`Password Security & Management — ${currentUser.name}`} onClose={onClose}>
+      <div style={{ marginBottom: 14 }}>
+        <div style={{ background: 'var(--purple-50, #f5f3ff)', border: '1px solid var(--purple-200, #ddd6fe)', borderRadius: 8, padding: '10px 14px', fontSize: 13, color: 'var(--purple-900, #2e1065)', lineHeight: 1.5 }}>
+          <strong>🔒 Security Compliance:</strong> Passwords are irreversibly hashed using bcrypt. Plaintext passwords cannot be retrieved or inspected.
+        </div>
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 10, marginBottom: 14, fontSize: 12.5, background: 'var(--gray-50)', padding: 12, borderRadius: 8 }}>
+        <div><span className="muted">Account:</span> <strong>{currentUser.name}</strong> (@{currentUser.username})</div>
+        <div><span className="muted">Role:</span> <strong>{currentUser.roleId}</strong></div>
+        <div><span className="muted">Status:</span> <Badge status={currentUser.passwordStatus || 'ACTIVE'} /></div>
+        <div><span className="muted">Updated:</span> <strong>{lastUpdated}</strong></div>
+      </div>
+
+      <div style={{ display: 'flex', gap: 6, borderBottom: '1px solid var(--border)', marginBottom: 14, paddingBottom: 6 }}>
+        <button
+          type="button"
+          className={`btn btn-xs ${modalTab === 'direct' ? 'btn-primary' : 'btn-ghost'}`}
+          onClick={() => setModalTab('direct')}
+        >
+          Direct Reset
+        </button>
+        <button
+          type="button"
+          className={`btn btn-xs ${modalTab === 'link' ? 'btn-primary' : 'btn-ghost'}`}
+          onClick={() => setModalTab('link')}
+        >
+          24h Reset Link
+        </button>
+        <button
+          type="button"
+          className={`btn btn-xs ${modalTab === 'history' ? 'btn-primary' : 'btn-ghost'}`}
+          onClick={() => setModalTab('history')}
+        >
+          Audit History ({history.length})
+        </button>
+      </div>
+
+      {modalTab === 'direct' && (
+        <form onSubmit={handleDirectReset}>
+          <label className="field-label" style={{ fontWeight: 600 }}>Super Admin Authorized Password Reset</label>
+          <div style={{ display: 'flex', gap: 8, marginTop: 6 }}>
+            <input
+              className="input"
+              type="text"
+              placeholder="Enter new password (min. 4 characters)"
+              value={newPassword}
+              onChange={(e) => setNewPassword(e.target.value)}
+              required
+              autoComplete="off"
+            />
+            <button type="button" className="btn btn-ghost" onClick={generateRandomPassword} title="Generate random secure password">
+              <Icon name="refresh" size={14} /> Generate
+            </button>
           </div>
-        </div>
-      </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, marginBottom: 16, fontSize: 13 }}>
-        <div>
-          <span className="muted">User Account:</span>
-          <div><strong>{user.name}</strong> (@{user.username})</div>
-        </div>
-        <div>
-          <span className="muted">Assigned Role:</span>
-          <div><strong>{user.roleId}</strong></div>
-        </div>
-        <div>
-          <span className="muted">Password Status:</span>
-          <div><Badge status={user.passwordStatus || 'ACTIVE'} /></div>
-        </div>
-        <div>
-          <span className="muted">Last Password Update:</span>
-          <div><strong>{lastUpdated}</strong></div>
-        </div>
-      </div>
+          <div style={{ marginTop: 12 }}>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, cursor: 'pointer' }}>
+              <input
+                type="checkbox"
+                checked={forceChangeOnLogin}
+                onChange={(e) => setForceChangeOnLogin(e.target.checked)}
+              />
+              <span>Force user to change password at next login</span>
+            </label>
+          </div>
 
-      <form onSubmit={handleReset} style={{ borderTop: '1px solid var(--border)', paddingTop: 14 }}>
-        <label className="field-label" style={{ fontWeight: 600 }}>Super Admin Authorized Password Reset</label>
-        <p className="muted" style={{ fontSize: 12.5, margin: '2px 0 10px' }}>
-          Assign a new password or generate a high-entropy credential for this user.
-        </p>
+          <div style={{ marginTop: 16, display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
+            <button type="button" className="btn btn-ghost" onClick={onClose} disabled={loading}>
+              Cancel
+            </button>
+            <button type="submit" className="btn btn-primary" disabled={loading || !newPassword}>
+              <Icon name="check" size={14} /> {loading ? 'Resetting…' : 'Reset Password'}
+            </button>
+          </div>
+        </form>
+      )}
 
-        <div style={{ display: 'flex', gap: 8 }}>
-          <input
-            className="input"
-            type="text"
-            placeholder="Enter new password (min. 4 characters)"
-            value={newPassword}
-            onChange={(e) => setNewPassword(e.target.value)}
-            required
-            autoComplete="off"
-          />
-          <button type="button" className="btn btn-ghost" onClick={generateRandomPassword} title="Generate random secure password">
-            <Icon name="refresh" size={14} /> Generate
-          </button>
-        </div>
+      {modalTab === 'link' && (
+        <div>
+          <label className="field-label" style={{ fontWeight: 600 }}>Single-Use 24-Hour Reset Link</label>
+          <p className="muted" style={{ fontSize: 12.5, margin: '2px 0 10px' }}>
+            Generate a secure, cryptographic 24-hour link for the user to set their own password safely.
+          </p>
 
-        <div style={{ marginTop: 16, display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
-          <button type="button" className="btn btn-ghost" onClick={onClose} disabled={loading}>
-            Cancel
-          </button>
-          <button type="submit" className="btn btn-primary" disabled={loading || !newPassword}>
-            <Icon name="check" size={14} /> {loading ? 'Resetting…' : 'Reset Password'}
-          </button>
+          {activeResetLink ? (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <input className="input" type="text" readOnly value={activeResetLink} style={{ background: '#f8fafc', fontSize: 12 }} />
+                <button type="button" className="btn btn-primary" onClick={() => copyToClipboard(activeResetLink)}>
+                  Copy
+                </button>
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: 12 }}>
+                <span className="chip chip-green">✓ Active Link (Expires in 24h)</span>
+                <button type="button" className="btn btn-danger btn-xs" onClick={handleRevokeResetLink} disabled={loading}>
+                  Revoke Link
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div style={{ textAlign: 'center', padding: '16px 0' }}>
+              <button type="button" className="btn btn-primary" onClick={handleGenerateResetLink} disabled={loading}>
+                <Icon name="link" size={14} /> {loading ? 'Generating…' : 'Generate 24-Hour Reset Link'}
+              </button>
+            </div>
+          )}
         </div>
-      </form>
+      )}
+
+      {modalTab === 'history' && (
+        <div style={{ maxHeight: 240, overflowY: 'auto' }}>
+          {history.length === 0 ? (
+            <div className="muted" style={{ textAlign: 'center', padding: 20 }}>No reset history recorded yet.</div>
+          ) : (
+            <table className="tbl" style={{ fontSize: 12 }}>
+              <thead>
+                <tr>
+                  <th>Timestamp</th>
+                  <th>Type</th>
+                  <th>Requested By</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {history.slice().reverse().map((h, i) => (
+                  <tr key={i}>
+                    <td>{new Date(h.createdAt).toLocaleString('en-GB')}</td>
+                    <td><span className="chip">{h.resetType}</span></td>
+                    <td>{h.requestedBy}</td>
+                    <td>
+                      {h.revokedAt ? <span className="chip chip-red">Revoked</span>
+                        : h.usedAt ? <span className="chip chip-green">Used</span>
+                        : <span className="chip chip-blue">Completed</span>}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      )}
     </Modal>
   );
 }
@@ -2785,6 +2920,7 @@ function UsersAndRoles() {
 
 /* ---------------- Reorganized Admin Console Tabs ---------------- */
 const CONSOLE_TABS = [
+  ['bulk-import', 'Bulk Trainee Import'],
   ['email', 'Email Management'],
   ['branding', 'Organization Branding'],
   ['idcard', 'ID Card Design'],
@@ -2827,7 +2963,8 @@ export default function Console() {
         ))}
       </div>
 
-      {tab === 'email' ? <EmailManagement />
+      {tab === 'bulk-import' ? <BulkImport />
+        : tab === 'email' ? <EmailManagement />
         : tab === 'branding' ? <OrganizationBranding />
         : tab === 'idcard' ? <IdCardDesignSettings />
         : tab === 'users' ? <UsersAndRoles />

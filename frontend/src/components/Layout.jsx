@@ -90,7 +90,7 @@ export default function Layout({ children }) {
             <Icon name="search" size={16} />
             <input
               className="topbar-search-input"
-              placeholder="Search by Trainee ID, name, mobile, room…"
+              placeholder="Search ID, name, room, mobile…"
               value={q}
               onChange={(e) => setQ(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && search()}

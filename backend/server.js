@@ -1,27 +1,13 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import dotenv from 'dotenv';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
-// Strictly load backend/.env using explicit absolute path
-const envPath = path.resolve(__dirname, '.env');
-if (fs.existsSync(envPath)) {
-  dotenv.config({ path: envPath });
-} else {
-  dotenv.config();
-}
-
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
+import dotenv from 'dotenv';
 import mongoose from 'mongoose';
 import { connectDB, closeDB } from './config/db.js';
 import { seedDatabase } from './seed.js';
-import { getJwtSecret } from './config/jwt.js';
-import { verifySmtpConnection, getEmailProvider, isEmailConfigured, getTransporter } from './services/emailService.js';
 
 import authRoutes from './routes/auth.js';
 import publicRoutes from './routes/publicRoutes.js';
@@ -32,12 +18,13 @@ import approvalRoutes from './routes/approval.js';
 import attendanceRoutes from './routes/attendanceRoutes.js';
 import validityRoutes from './routes/validity.js';
 import recordsRoutes from './routes/recordsRoutes.js';
+import bulkImportRoutes from './routes/bulkImportRoutes.js';
 
+dotenv.config();
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PORT = process.env.PORT || 5000;
 const app = express();
-
-// Trust reverse proxy (Render, Vercel, etc.) for accurate client IPs and rate limiting
-app.set('trust proxy', 1);
 
 // Validate required environment variables at startup
 function validateEnv() {
@@ -49,17 +36,8 @@ function validateEnv() {
     process.exit(1);
   }
 
-  if (isProd) {
-    try {
-      getJwtSecret();
-    } catch (jwtErr) {
-      console.error(jwtErr.message);
-      process.exit(1);
-    }
-
-    if (!isEmailConfigured()) {
-      console.warn('[EMAIL WARNING] Gmail API credentials (GMAIL_USER, GMAIL_CLIENT_ID, GMAIL_CLIENT_SECRET, GMAIL_REFRESH_TOKEN) not detected in environment.');
-    }
+  if (isProd && (!process.env.JWT_SECRET || process.env.JWT_SECRET.includes('secret_jwt_key'))) {
+    console.warn('SECURITY WARNING: Using a default or weak JWT_SECRET in production is unsafe.');
   }
 
   console.log(`[Config] Environment: ${process.env.NODE_ENV || 'development'}, Port: ${PORT}`);
@@ -135,14 +113,9 @@ app.get('/api/health', (req, res) => {
     2: 'connecting',
     3: 'disconnecting',
   };
-  const provider = getEmailProvider();
-  const emailConfigured = isEmailConfigured();
   res.json({
     status: dbStatus === 1 ? 'healthy' : 'degraded',
     database: dbStatusMap[dbStatus] || 'unknown',
-    emailConfigured,
-    emailProvider: provider,
-    smtpConfigured: !!getTransporter(),
     timestamp: new Date().toISOString(),
     uptime: process.uptime(),
   });
@@ -150,39 +123,31 @@ app.get('/api/health', (req, res) => {
 
 // Database readiness check for API routes
 app.use('/api', (req, res, next) => {
-  // Allow health check, public config, and revision polling without blocking
-  if (
-    req.path === '/health' ||
-    req.path === '/public' ||
-    req.path === '/rev' ||
-    req.path === '/reviews/summary'
-  ) return next();
+  // Allow health check without blocking
+  if (req.path === '/health') return next();
 
   if (mongoose.connection.readyState === 1) {
     return next();
   }
 
-  // If disconnected, trigger reconnection
-  if (mongoose.connection.readyState === 0) {
-    connectDB().catch((err) => console.warn('[Auto-reconnect warning]', err.message));
+  // If currently connecting, wait briefly
+  if (mongoose.connection.readyState === 2) {
+    let retries = 0;
+    const interval = setInterval(() => {
+      retries++;
+      if (mongoose.connection.readyState === 1) {
+        clearInterval(interval);
+        return next();
+      }
+      if (retries > 25) { // 2.5s wait
+        clearInterval(interval);
+        return res.status(503).json({ error: 'Database is initializing. Please try again in a moment.' });
+      }
+    }, 100);
+    return;
   }
 
-  // If connecting or reconnecting, wait gracefully up to 15 seconds for Atlas/cloud handshake
-  let retries = 0;
-  const interval = setInterval(() => {
-    retries++;
-    if (mongoose.connection.readyState === 1) {
-      clearInterval(interval);
-      return next();
-    }
-    if (retries > 150) { // 15s wait
-      clearInterval(interval);
-      return res.status(503).json({
-        error: 'Database connection in progress. Please retry in a moment.',
-        code: 'DB_CONNECTING',
-      });
-    }
-  }, 100);
+  return res.status(503).json({ error: 'Database service unavailable. Please retry shortly.' });
 });
 
 // API routes
@@ -195,6 +160,7 @@ app.use('/api', approvalRoutes);
 app.use('/api', attendanceRoutes);
 app.use('/api', validityRoutes);
 app.use('/api', recordsRoutes);
+app.use('/api', bulkImportRoutes);
 
 // Production frontend serving (if built as monolith)
 const DIST = path.resolve(__dirname, '../frontend/dist');
@@ -225,24 +191,11 @@ let httpServer = null;
 
 export async function startServer() {
   validateEnv();
-
-  // Bind HTTP server immediately so Render detects port binding
+  await connectDB();
+  await seedDatabase();
   httpServer = app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Hostel backend running on port ${PORT}`);
+    console.log(`Hostel backend running on http://localhost:${PORT}`);
   });
-
-  try {
-    await connectDB();
-    await seedDatabase();
-  } catch (dbErr) {
-    console.error('[Startup DB Warning] Initial MongoDB connection postponed:', dbErr.message);
-    console.log('[Startup DB] Background readiness middleware will connect on incoming requests.');
-  }
-
-  await verifySmtpConnection().catch((err) => {
-    console.warn('[Startup] Non-fatal Email verification warning:', err.message);
-  });
-
   return httpServer;
 }
 

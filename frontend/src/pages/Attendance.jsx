@@ -208,7 +208,7 @@ function Scan() {
           <div className="attendance-filters">
             <div className="attendance-filter-group attendance-shift-group">
               <label className="field-label" style={{ fontWeight: 600 }}>Active Attendance Shift *</label>
-              <div className="seg">
+              <div className="seg-wrap">
                 {SHIFT_OPTIONS.map((s) => (
                   <button
                     key={s.id}
@@ -711,7 +711,7 @@ function HostelTracker() {
 
             <div className="attendance-filter-group attendance-shift-group">
               <label className="field-label" style={{ fontWeight: 600 }}>Shift</label>
-              <div className="seg">
+              <div className="seg-wrap">
                 {SHIFT_OPTIONS.map((s) => (
                   <button
                     key={s.id}
@@ -869,21 +869,82 @@ function HostelTracker() {
         </Card>
 
         {/* Members Not Yet Scanned Live Table */}
-        <Card title={`Members Not Yet Scanned (${notScannedCount} remaining)`} noPad>
-          <Table
-            headers={['S.No', 'Trainee Name', 'Trainee ID', 'QR ID', 'Hostel Name', 'Room Number', 'Department', 'Attendance Status']}
-            empty="✓ All living members of this hostel have been successfully scanned!"
-            rows={notScannedMembers.map((t, idx) => [
-              idx + 1,
-              <strong>{t.name}</strong>,
-              t.traineeId || '—',
-              t.qrId || '—',
-              t.hostel,
-              `Room ${t.roomNo}`,
-              t.qualification || '—',
-              <span className="chip chip-orange">Not Yet Scanned</span>,
-            ])}
-          />
+        <Card
+          title={`Members Not Yet Scanned (${notScannedCount} remaining)`}
+          action={
+            notScannedCount > 0 ? (
+              <div style={{ display: 'flex', gap: 6 }}>
+                <button
+                  type="button"
+                  className={`btn btn-xs ${viewType === 'card' ? 'btn-primary' : 'btn-ghost'}`}
+                  onClick={() => setViewType('card')}
+                  title="Card View (optimized for mobile)"
+                >
+                  Cards
+                </button>
+                <button
+                  type="button"
+                  className={`btn btn-xs ${viewType === 'table' ? 'btn-primary' : 'btn-ghost'}`}
+                  onClick={() => setViewType('table')}
+                  title="Table View"
+                >
+                  Table
+                </button>
+              </div>
+            ) : null
+          }
+          noPad
+        >
+          {notScannedCount === 0 ? (
+            <div style={{ padding: '24px 16px', textAlign: 'center', color: '#16a34a', fontWeight: 600 }}>
+              ✓ All living members of this hostel have been successfully scanned!
+            </div>
+          ) : viewType === 'card' ? (
+            <div className="mobile-member-list">
+              {notScannedMembers.map((t, idx) => (
+                <div key={t.traineeId || t.qrId || idx} className="mobile-member-card">
+                  <div className="mm-head">
+                    <div className="mm-title">
+                      <span className="mm-sno">#{idx + 1}</span>
+                      <strong>{t.name}</strong>
+                    </div>
+                    <span className="chip chip-orange" style={{ fontSize: 11 }}>Not Scanned</span>
+                  </div>
+                  <div className="mm-body">
+                    <div className="mm-field"><span className="muted">Trainee ID:</span> <strong>{t.traineeId || '—'}</strong></div>
+                    <div className="mm-field"><span className="muted">QR ID:</span> {t.qrId || '—'}</div>
+                    <div className="mm-field"><span className="muted">Room:</span> <strong>Room {t.roomNo}</strong></div>
+                    <div className="mm-field"><span className="muted">Hostel:</span> {t.hostel || selectedHostel}</div>
+                    {t.qualification && <div className="mm-field" style={{ gridColumn: 'span 2' }}><span className="muted">Dept:</span> {t.qualification}</div>}
+                  </div>
+                  <button
+                    type="button"
+                    className="btn btn-ghost btn-xs btn-block"
+                    style={{ marginTop: 10, borderColor: 'var(--purple-300)' }}
+                    onClick={() => handleHostelScan(t.traineeId || t.qrId, 'MANUAL_ENTRY')}
+                    disabled={submitting}
+                  >
+                    <Icon name="check" size={13} /> Quick Mark Present
+                  </button>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <Table
+              headers={['S.No', 'Trainee Name', 'Trainee ID', 'QR ID', 'Hostel Name', 'Room Number', 'Department', 'Attendance Status']}
+              empty="✓ All living members of this hostel have been successfully scanned!"
+              rows={notScannedMembers.map((t, idx) => [
+                idx + 1,
+                <strong>{t.name}</strong>,
+                t.traineeId || '—',
+                t.qrId || '—',
+                t.hostel,
+                `Room ${t.roomNo}`,
+                t.qualification || '—',
+                <span className="chip chip-orange">Not Yet Scanned</span>,
+              ])}
+            />
+          )}
         </Card>
       </div>
     </>

@@ -144,3 +144,6 @@ export function TraineeIdInput({ trainees, defaultValue = '', name = 'traineeId'
 }
 
 export const formData = (e) => Object.fromEntries(new FormData(e.target));
+
+export { default as ModernLoader } from './ModernLoader.jsx';
+

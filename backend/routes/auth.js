@@ -27,6 +27,8 @@ const safeUser = (u) => ({
   active: u.active,
   passwordUpdatedAt: u.passwordUpdatedAt || u.updatedAt || u.createdAt || null,
   passwordStatus: u.passwordStatus || 'ACTIVE',
+  mustChangePassword: !!u.mustChangePassword,
+  assignedHostels: Array.isArray(u.assignedHostels) ? u.assignedHostels : [],
 });
 
 // ---------------- Login ----------------
@@ -55,28 +57,104 @@ router.post('/login', loginLimiter, async (req, res) => {
   }
 });
 
-// ---------------- Change Password (when logged in) ----------------
+// ---------------- Change Password (when logged in or forced at login) ----------------
 router.post('/me/password', auth, async (req, res) => {
   try {
     const { oldPassword, newPassword } = req.body || {};
     const u = req.user;
 
-    const matches = await bcrypt.compare(String(oldPassword || ''), u.passwordHash);
-    if (!matches) {
-      return res.status(400).json({ error: 'Current password is wrong.' });
+    // If user is forced to change password (mustChangePassword), they might not know or need oldPassword if temporary
+    if (!u.mustChangePassword) {
+      const matches = await bcrypt.compare(String(oldPassword || ''), u.passwordHash);
+      if (!matches) {
+        return res.status(400).json({ error: 'Current password is wrong.' });
+      }
     }
 
-    if (String(newPassword || '').length < 4) {
+    if (!newPassword || String(newPassword).length < 4) {
       return res.status(400).json({ error: 'New password must be at least 4 characters.' });
     }
 
     u.passwordHash = await bcrypt.hash(String(newPassword), 10);
     u.passwordUpdatedAt = new Date();
     u.passwordStatus = 'ACTIVE';
+    u.mustChangePassword = false;
     await u.save();
 
     await bumpRev();
-    return res.json({ ok: true, user: safeUser(u) });
+    return res.json({ ok: true, message: 'Password updated successfully.', user: safeUser(u) });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------- Verify Password Reset Link Token ----------------
+router.get('/auth/verify-reset-token/:token', async (req, res) => {
+  try {
+    const { token } = req.params;
+    if (!token) return res.status(400).json({ error: 'Token is required.' });
+
+    const user = await User.findOne({
+      resetToken: token,
+      resetTokenExpires: { $gt: new Date() },
+    }).lean();
+
+    if (!user) {
+      return res.status(400).json({ error: 'This password reset link is invalid or has expired.' });
+    }
+
+    return res.json({
+      ok: true,
+      user: { id: user.id, name: user.name, username: user.username },
+    });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------- Reset Password with Link Token (Public) ----------------
+router.post('/auth/reset-password-with-token', async (req, res) => {
+  try {
+    const { token, newPassword } = req.body || {};
+
+    if (!token) {
+      return res.status(400).json({ error: 'Reset token is required.' });
+    }
+
+    if (!newPassword || String(newPassword).length < 4) {
+      return res.status(400).json({ error: 'New password must be at least 4 characters.' });
+    }
+
+    const user = await User.findOne({
+      resetToken: token,
+      resetTokenExpires: { $gt: new Date() },
+    });
+
+    if (!user) {
+      return res.status(400).json({ error: 'This reset link has expired or is invalid. Please request a new one.' });
+    }
+
+    user.passwordHash = await bcrypt.hash(String(newPassword), 10);
+    user.passwordUpdatedAt = new Date();
+    user.passwordStatus = 'ACTIVE';
+    user.mustChangePassword = false;
+    user.resetToken = '';
+    user.resetTokenExpires = null;
+
+    if (Array.isArray(user.passwordResetHistory) && user.passwordResetHistory.length > 0) {
+      const last = user.passwordResetHistory[user.passwordResetHistory.length - 1];
+      if (!last.usedAt && !last.revokedAt) {
+        last.usedAt = new Date();
+      }
+    }
+
+    await user.save();
+    await bumpRev();
+
+    return res.json({
+      ok: true,
+      message: 'Password successfully reset. You can now log in with your new password.',
+    });
   } catch (err) {
     return res.status(500).json({ error: err.message });
   }

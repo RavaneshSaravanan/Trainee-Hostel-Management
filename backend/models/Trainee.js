@@ -38,6 +38,38 @@ const traineeSchema = new mongoose.Schema(
     approvedBy: { type: String, default: '' },
     custom: { type: mongoose.Schema.Types.Mixed, default: () => ({}) },
 
+    // Bulk Import, Partial Registration & Warden Completion
+    designation: { type: String, default: '' },
+    emergencyContact: { type: String, default: '' },
+    completionStatus: {
+      type: String,
+      enum: ['COMPLETE', 'INCOMPLETE', 'PENDING_DETAILS'],
+      default: 'COMPLETE',
+      index: true,
+    },
+    missingFields: { type: [String], default: () => [] },
+    roomAllocationStatus: {
+      type: String,
+      enum: ['ALLOCATED', 'PENDING', 'UNALLOCATED', 'REJECTED_CAPACITY'],
+      default: 'UNALLOCATED',
+      index: true,
+    },
+    importBatchId: { type: String, default: '', index: true },
+    importRowNumber: { type: Number },
+    auditHistory: {
+      type: [
+        {
+          action: String,
+          updatedBy: String,
+          updatedByName: String,
+          updatedFields: [String],
+          timestamp: { type: Date, default: Date.now },
+          notes: String,
+        },
+      ],
+      default: () => [],
+    },
+
     // Approval workflow
     approvalStatus: {
       type: String,
@@ -76,27 +108,6 @@ const traineeSchema = new mongoose.Schema(
           notes: String,
           recordedBy: String,
           recordedAt: { type: Date, default: Date.now },
-        },
-      ],
-      default: () => [],
-    },
-
-    // Registration Confirmation Email tracking
-    registrationConfirmationSent: { type: Boolean, default: false },
-    registrationConfirmationSentAt: { type: Date },
-    registrationConfirmationError: { type: String, default: '' },
-
-    // Admin & Warden Approval Request Notification tracking
-    approvalNotificationSent: { type: Boolean, default: false },
-    approvalNotificationSentAt: { type: Date },
-    approvalNotificationRecipients: {
-      type: [
-        {
-          email: String,
-          role: String,
-          status: { type: String, enum: ['SENT', 'FAILED', 'SKIPPED'] },
-          sentAt: { type: Date, default: Date.now },
-          error: String,
         },
       ],
       default: () => [],
