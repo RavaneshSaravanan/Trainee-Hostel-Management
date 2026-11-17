@@ -19,6 +19,7 @@ import attendanceRoutes from './routes/attendanceRoutes.js';
 import validityRoutes from './routes/validity.js';
 import recordsRoutes from './routes/recordsRoutes.js';
 import bulkImportRoutes from './routes/bulkImportRoutes.js';
+import traineesRoutes from './routes/traineesRoutes.js';
 
 dotenv.config();
 
@@ -161,6 +162,7 @@ app.use('/api', attendanceRoutes);
 app.use('/api', validityRoutes);
 app.use('/api', recordsRoutes);
 app.use('/api', bulkImportRoutes);
+app.use('/api', traineesRoutes);
 
 // Production frontend serving (if built as monolith)
 const DIST = path.resolve(__dirname, '../frontend/dist');

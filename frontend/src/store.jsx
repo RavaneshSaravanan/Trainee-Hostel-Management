@@ -53,29 +53,18 @@ export function StoreProvider({ children }) {
     setUsers(s.users || []);
   };
 
-  const dropSession = useCallback(() => {
-    setToken('');
-    try { localStorage.removeItem('hostel_me'); } catch {}
-    setSession(null);
-    setRoute({ view: 'dashboard', params: {} });
-  }, []);
+  const dropSession = useCallback(() => { setToken(''); setSession(null); setRoute({ view: 'dashboard', params: {} }); }, []);
 
   // ---------- boot: restore login, or load public look (for the login screen) ----------
   useEffect(() => {
     (async () => {
       try {
-        const token = getToken();
-        const me = JSON.parse(localStorage.getItem('hostel_me') || 'null');
-        if (token && me) {
+        if (getToken()) {
           const s = await api('/api/state');
-          applyServer(s);
-          setSession(me);
-        } else if (token && !me) {
-          dropSession();
+          const me = JSON.parse(localStorage.getItem('hostel_me') || 'null');
+          if (me) { applyServer(s); setSession(me); }
         }
-      } catch (e) {
-        if (e.status === 401) dropSession();
-      }
+      } catch (e) { if (e.status === 401) setToken(''); }
       try {
         const p = await api('/api/public', { auth: false });
         if (!getToken()) setConfigRaw((c) => withDefaults({ ...c, ...p }));
@@ -122,90 +111,20 @@ export function StoreProvider({ children }) {
     return () => clearTimeout(h);
   }, [db, config, roles, session, flush]);
 
-  // ---------- Smart multi-device revision polling with exponential backoff ----------
+  // ---------- poll other devices ----------
   useEffect(() => {
     if (!session) return undefined;
-
-    let isMounted = true;
-    let pollTimeout = null;
-    let consecutiveFailures = 0;
-
-    const poll = async () => {
-      if (!isMounted) return;
-
-      // 1. Skip polling when tab is backgrounded
-      if (typeof document !== 'undefined' && document.hidden) {
-        pollTimeout = setTimeout(poll, 15000);
-        return;
-      }
-
-      // 2. Skip polling when offline
-      if (typeof navigator !== 'undefined' && navigator.onLine === false) {
-        pollTimeout = setTimeout(poll, 15000);
-        return;
-      }
-
-      // 3. Skip polling if local edits are pending save
-      if (dirty.current || saving.current) {
-        pollTimeout = setTimeout(poll, 8000);
-        return;
-      }
-
+    const id = setInterval(async () => {
+      if (dirty.current || saving.current) return;
       try {
-        const res = await api('/api/rev');
-        const r = res?.rev;
-        if (typeof r === 'number' && r !== rev.current && !dirty.current && !saving.current) {
-          applyServer(await api('/api/state'));
-        }
+        const { rev: r } = await api('/api/rev');
+        if (r !== rev.current && !dirty.current && !saving.current) applyServer(await api('/api/state'));
         setSyncError('');
-        consecutiveFailures = 0;
-        if (isMounted) pollTimeout = setTimeout(poll, 10000);
-      } catch (e) {
-        if (e.status === 401) {
-          dropSession();
-          return;
-        }
-        consecutiveFailures++;
-        // Exponential backoff on server or network error: 15s -> 30s -> 60s max
-        const backoff = Math.min(15000 * Math.pow(1.5, consecutiveFailures - 1), 60000);
-        if (isMounted) pollTimeout = setTimeout(poll, backoff);
-      }
-    };
-
-    // Initial poll after short delay
-    pollTimeout = setTimeout(poll, 8000);
-
-    // Wake up immediately when tab is refocused or network reconnects
-    const onVisibilityChange = () => {
-      if (typeof document !== 'undefined' && !document.hidden) {
-        clearTimeout(pollTimeout);
-        poll();
-      }
-    };
-    const onOnline = () => {
-      clearTimeout(pollTimeout);
-      consecutiveFailures = 0;
-      poll();
-    };
-
-    if (typeof document !== 'undefined') {
-      document.addEventListener('visibilitychange', onVisibilityChange);
-    }
-    if (typeof window !== 'undefined') {
-      window.addEventListener('online', onOnline);
-    }
-
-    return () => {
-      isMounted = false;
-      clearTimeout(pollTimeout);
-      if (typeof document !== 'undefined') {
-        document.removeEventListener('visibilitychange', onVisibilityChange);
-      }
-      if (typeof window !== 'undefined') {
-        window.removeEventListener('online', onOnline);
-      }
-    };
-  }, [session, dropSession]);
+      } catch (e) { if (e.status === 401) dropSession(); }
+    }, 6000);
+    return () => clearInterval(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session]);
 
   // ---------- auth + permissions ----------
   const role = session ? roles.find((r) => r.id === session.roleId) : null;
@@ -344,6 +263,31 @@ export function StoreProvider({ children }) {
       remarks: auditLog ? [auditLog, ...p.remarks] : p.remarks,
     }));
     return true;
+  };
+
+  // Direct backend update for Trainee Profile Edit with MongoDB confirmation
+  const saveTraineeProfile = async (traineeKey, payload) => {
+    try {
+      const res = await api(`/api/trainees/${encodeURIComponent(traineeKey)}`, {
+        method: 'PUT',
+        body: payload,
+      });
+      if (res && res.ok && res.trainee) {
+        setDb((prev) => ({
+          ...prev,
+          trainees: prev.trainees.map((t) =>
+            (t.traineeId && t.traineeId === traineeKey) ||
+            (t.qrId && t.qrId === traineeKey) ||
+            (t._id && String(t._id) === String(traineeKey))
+              ? { ...t, ...res.trainee }
+              : t
+          ),
+        }));
+      }
+      return res;
+    } catch (err) {
+      throw err;
+    }
   };
 
   // Allocate room and activate an approved trainee (QR already exists).
@@ -741,7 +685,7 @@ export function StoreProvider({ children }) {
     setConfig, setRoles,
     login, logout, navigate, notify,
     getTrainee, actor,
-    addTrainee, updateTrainee, approveTrainee, rejectTrainee, deleteTrainee, changeRoom,
+    addTrainee, updateTrainee, saveTraineeProfile, approveTrainee, rejectTrainee, deleteTrainee, changeRoom,
     saveAttendance, startDay, saveDaySummary, saveLeave, saveOutingVacate, saveResignation, saveRemark,
     deleteLeaveRecord, deleteOutingRecord, deleteResignationRecord,
     addHostel, addRoom, setRoomCapacity, deleteHostel, deleteRoom, saveUser, deleteUser, changePassword,
