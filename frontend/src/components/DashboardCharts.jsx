@@ -91,8 +91,8 @@ export function HostelOccupancyChart({ data = [] }) {
 }
 
 // ---------------- Chart 2: Free vs Paid Stay Distribution (Donut Chart) ----------------
-export function FreeVsPaidDonutChart({ free = 0, paid = 0 }) {
-  const total = free + paid;
+export function FreeVsPaidDonutChart({ free = 0, paid = 0, expired = 0 }) {
+  const total = free + paid + expired;
   const [hovered, setHovered] = useState(null);
 
   if (total === 0) {
@@ -100,48 +100,70 @@ export function FreeVsPaidDonutChart({ free = 0, paid = 0 }) {
   }
 
   const freePct = Math.round((free / total) * 100);
-  const paidPct = 100 - freePct;
+  const paidPct = Math.round((paid / total) * 100);
+  const expiredPct = Math.max(0, 100 - freePct - paidPct);
 
   const r = 60;
   const cx = 90;
   const cy = 90;
   const strokeW = 28;
   const circum = 2 * Math.PI * r;
-  const freeStroke = (freePct / 100) * circum;
-  const paidStroke = circum - freeStroke;
+  const freeStroke = (free / total) * circum;
+  const paidStroke = (paid / total) * circum;
+  const expiredStroke = (expired / total) * circum;
 
   return (
     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-around', gap: 14, flexWrap: 'wrap' }}>
       <svg width="180" height="180" viewBox="0 0 180 180">
         <circle cx={cx} cy={cy} r={r} fill="none" stroke="#F3E8FF" strokeWidth={strokeW} />
+        {/* Expired Slice */}
+        {expired > 0 && (
+          <circle
+            cx={cx}
+            cy={cy}
+            r={r}
+            fill="none"
+            stroke={THEME.red}
+            strokeWidth={strokeW}
+            strokeDasharray={`${expiredStroke} ${circum}`}
+            strokeDashoffset={-(freeStroke + paidStroke)}
+            style={{ transition: 'stroke-width .2s', cursor: 'pointer' }}
+            onMouseEnter={() => setHovered('EXPIRED')}
+            onMouseLeave={() => setHovered(null)}
+          />
+        )}
         {/* Paid Slice */}
-        <circle
-          cx={cx}
-          cy={cy}
-          r={r}
-          fill="none"
-          stroke={THEME.amber}
-          strokeWidth={strokeW}
-          strokeDasharray={`${paidStroke} ${circum}`}
-          strokeDashoffset={-freeStroke}
-          style={{ transition: 'stroke-width .2s', cursor: 'pointer' }}
-          onMouseEnter={() => setHovered('PAID')}
-          onMouseLeave={() => setHovered(null)}
-        />
+        {paid > 0 && (
+          <circle
+            cx={cx}
+            cy={cy}
+            r={r}
+            fill="none"
+            stroke={THEME.green}
+            strokeWidth={strokeW}
+            strokeDasharray={`${paidStroke} ${circum}`}
+            strokeDashoffset={-freeStroke}
+            style={{ transition: 'stroke-width .2s', cursor: 'pointer' }}
+            onMouseEnter={() => setHovered('PAID')}
+            onMouseLeave={() => setHovered(null)}
+          />
+        )}
         {/* Free Slice */}
-        <circle
-          cx={cx}
-          cy={cy}
-          r={r}
-          fill="none"
-          stroke={THEME.purple600}
-          strokeWidth={strokeW}
-          strokeDasharray={`${freeStroke} ${circum}`}
-          strokeDashoffset="0"
-          style={{ transition: 'stroke-width .2s', cursor: 'pointer' }}
-          onMouseEnter={() => setHovered('FREE')}
-          onMouseLeave={() => setHovered(null)}
-        />
+        {free > 0 && (
+          <circle
+            cx={cx}
+            cy={cy}
+            r={r}
+            fill="none"
+            stroke={THEME.purple600}
+            strokeWidth={strokeW}
+            strokeDasharray={`${freeStroke} ${circum}`}
+            strokeDashoffset="0"
+            style={{ transition: 'stroke-width .2s', cursor: 'pointer' }}
+            onMouseEnter={() => setHovered('FREE')}
+            onMouseLeave={() => setHovered(null)}
+          />
+        )}
         {/* Center label */}
         <text x={cx} y={cy - 4} textAnchor="middle" fontSize="16" fontWeight="800" fill={THEME.purple900}>
           {total}
@@ -159,11 +181,19 @@ export function FreeVsPaidDonutChart({ free = 0, paid = 0 }) {
           </div>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <span style={{ width: 12, height: 12, borderRadius: 3, background: THEME.amber }} />
+          <span style={{ width: 12, height: 12, borderRadius: 3, background: THEME.green }} />
           <div>
             <strong>Paid Stay:</strong> {paid} ({paidPct}%)
           </div>
         </div>
+        {expired > 0 && (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <span style={{ width: 12, height: 12, borderRadius: 3, background: THEME.red }} />
+            <div>
+              <strong>Expired / Due:</strong> {expired} ({expiredPct}%)
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

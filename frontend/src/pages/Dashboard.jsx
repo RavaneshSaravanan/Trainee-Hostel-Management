@@ -5,6 +5,7 @@ import { Badge, Card, Icon, Table } from '../components/ui.jsx';
 import { fmtDate, todayStr } from '../utils/dates.js';
 import { dayCounts, occupantsOf } from '../utils/summary.js';
 import { isComplete } from '../utils/details.js';
+import { classifyTrainee } from '../utils/validity.js';
 import { exportDashboardPptx } from '../utils/pptxExport.js';
 import {
   HostelOccupancyChart,
@@ -71,8 +72,9 @@ export default function Dashboard() {
         );
         const freeBeds = Math.max(0, cap - occupied);
         const pct = cap > 0 ? Math.round((occupied / cap) * 100) : 0;
-        const freeTrainees = ts.filter((t) => t.hostel === h.name && t.hostelStatus === 'ACTIVE' && (t.paymentStatus === 'FREE' || !t.paymentStatus)).length;
-        const paidTrainees = ts.filter((t) => t.hostel === h.name && t.hostelStatus === 'ACTIVE' && t.paymentStatus === 'PAID').length;
+        const freeTrainees = ts.filter((t) => t.hostel === h.name && t.hostelStatus === 'ACTIVE' && classifyTrainee(t, today).isFree).length;
+        const paidTrainees = ts.filter((t) => t.hostel === h.name && t.hostelStatus === 'ACTIVE' && classifyTrainee(t, today).isPaid).length;
+        const expiredTrainees = ts.filter((t) => t.hostel === h.name && t.hostelStatus === 'ACTIVE' && classifyTrainee(t, today).isExpired).length;
         const presentToday = db.attendance.filter((a) => a.date === today && a.hostel === h.name && (a.status === 'P' || a.code === 'P' || a.shift)).length;
 
         return {
@@ -85,6 +87,7 @@ export default function Dashboard() {
           pct,
           freeTrainees,
           paidTrainees,
+          expiredTrainees,
           presentToday,
         };
       });
@@ -97,11 +100,11 @@ export default function Dashboard() {
   const overallOccupancyRate = totalCapacity > 0 ? Math.round((totalOccupiedBeds / totalCapacity) * 100) : 0;
 
   // Free vs Paid Stay Active Trainees
-  const freeStayActive = count((t) => t.hostelStatus === 'ACTIVE' && (t.paymentStatus === 'FREE' || !t.paymentStatus));
-  const paidStayActive = count((t) => t.hostelStatus === 'ACTIVE' && t.paymentStatus === 'PAID');
+  const freeStayActive = count((t) => t.hostelStatus === 'ACTIVE' && classifyTrainee(t, today).isFree);
+  const paidStayActive = count((t) => t.hostelStatus === 'ACTIVE' && classifyTrainee(t, today).isPaid);
+  const expiredStayActive = count((t) => t.hostelStatus === 'ACTIVE' && classifyTrainee(t, today).isExpired);
 
   // Expiring Free Stays in next 15 days
-  const todayDateObj = new Date(today);
   const expiryBuckets = useMemo(() => {
     let critical = 0; // 0 - 7 days
     let approaching = 0; // 8 - 15 days
@@ -109,18 +112,20 @@ export default function Dashboard() {
     let safe = 0; // > 30 days
 
     ts.forEach((t) => {
-      if (t.hostelStatus === 'ACTIVE' && (t.paymentStatus === 'FREE' || !t.paymentStatus) && t.freeStayExpiryDate) {
-        const expDate = new Date(t.freeStayExpiryDate);
-        const diffDays = Math.ceil((expDate - todayDateObj) / (1000 * 60 * 60 * 24));
-        if (diffDays >= 0 && diffDays <= 7) critical++;
-        else if (diffDays > 7 && diffDays <= 15) approaching++;
-        else if (diffDays > 15 && diffDays <= 30) upcoming++;
-        else if (diffDays > 30) safe++;
+      if (t.hostelStatus === 'ACTIVE') {
+        const c = classifyTrainee(t, today);
+        if (c.isFree && c.daysRemaining !== null) {
+          const diffDays = c.daysRemaining;
+          if (diffDays >= 0 && diffDays <= 7) critical++;
+          else if (diffDays > 7 && diffDays <= 15) approaching++;
+          else if (diffDays > 15 && diffDays <= 30) upcoming++;
+          else if (diffDays > 30) safe++;
+        }
       }
     });
 
     return { critical, approaching, upcoming, safe };
-  }, [ts, todayDateObj]);
+  }, [ts, today]);
 
   const expiringNext15Days = expiryBuckets.critical + expiryBuckets.approaching;
 
@@ -145,8 +150,9 @@ export default function Dashboard() {
     { label: 'Free Beds Available', value: totalFreeBeds, icon: 'arrowBox', color: '#059669' },
     { label: 'Overall Occupancy Rate', value: `${overallOccupancyRate}%`, icon: 'bar', color: overallOccupancyRate >= 90 ? '#DC2626' : '#7C3AED' },
     { label: 'Free Stay Trainees', value: freeStayActive, icon: 'users', color: '#8B5CF6' },
-    { label: 'Paid Stay Trainees', value: paidStayActive, icon: 'checkSquare', color: '#D97706' },
-    { label: 'Expiring Stays (≤15 Days)', value: expiringNext15Days, icon: 'calendar', color: expiringNext15Days > 0 ? '#DC2626' : '#16A34A' },
+    { label: 'Paid Stay Trainees', value: paidStayActive, icon: 'checkSquare', color: '#16A34A' },
+    { label: 'Expired Stay (Payment Due)', value: expiredStayActive, icon: 'alert', color: expiredStayActive > 0 ? '#DC2626' : '#6B7280' },
+    { label: 'Expiring Stays (≤15 Days)', value: expiringNext15Days, icon: 'calendar', color: expiringNext15Days > 0 ? '#D97706' : '#16A34A' },
     { label: 'Present Today', value: presentToday, icon: 'check', color: '#16A34A' },
     { label: 'Absent Today', value: absentToday, icon: 'x', color: '#DC2626' },
     { label: 'On Leave / Outing', value: activeOnLeaveOuting, icon: 'calendarX', color: '#6366F1' },
@@ -352,7 +358,7 @@ export default function Dashboard() {
           </Card>
 
           <Card title="2. Free Stay vs Paid Stay Distribution" sub="Active trainee proportion in 3-month free vs paid tenure.">
-            <FreeVsPaidDonutChart free={freeStayActive} paid={paidStayActive} />
+            <FreeVsPaidDonutChart free={freeStayActive} paid={paidStayActive} expired={expiredStayActive} />
           </Card>
         </div>
 

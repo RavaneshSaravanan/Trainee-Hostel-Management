@@ -8,6 +8,7 @@ import VerticalIdCard from '../components/VerticalIdCard.jsx';
 import { fmtDate } from '../utils/dates.js';
 import { occupantsOf } from '../utils/summary.js';
 import { isComplete, missingDetails } from '../utils/details.js';
+import { classifyTrainee } from '../utils/validity.js';
 import { getToken, BASE_URL } from '../utils/api.js';
 
 // Printable sheet of QR cards (one per trainee) — stick them on ID cards / room doors.
@@ -40,13 +41,20 @@ function Master({ initialQ, initialDetails }) {
   const [q, setQ] = useState(initialQ || '');
   const [hostel, setHostel] = useState('');
   const [status, setStatus] = useState('');
+  const [stayCategory, setStayCategory] = useState('');
 
   const lc = q.toLowerCase();
   const list = db.trainees.filter((t) =>
     (!lc || [t.traineeId, t.hostelId, t.name, t.mobile, t.hostel, t.roomNo].some((v) => String(v || '').toLowerCase().includes(lc))) &&
     (!hostel || t.hostel === hostel) &&
     (!status || t.hostelStatus === status) &&
-    (!details || (details === 'pending') === !isComplete(t, config.customFields))
+    (!details || (details === 'pending') === !isComplete(t, config.customFields)) &&
+    (!stayCategory || (
+      stayCategory === 'FREE' ? classifyTrainee(t).isFree :
+      stayCategory === 'PAID' ? classifyTrainee(t).isPaid :
+      stayCategory === 'EXPIRING_SOON' ? classifyTrainee(t).isExpiringSoon :
+      stayCategory === 'EXPIRED_DUE' ? classifyTrainee(t).isExpired : true
+    ))
   );
 
   const open = (id) => navigate('trainee-profile', { id });
@@ -61,19 +69,27 @@ function Master({ initialQ, initialDetails }) {
         <select className="input" value={status} onChange={(e) => setStatus(e.target.value)}>
           <option value="">All Hostel Status</option>{HOSTEL_STATUSES.map((s) => <option key={s}>{s}</option>)}
         </select>
+        <select className="input" value={stayCategory} onChange={(e) => setStayCategory(e.target.value)}>
+          <option value="">All Stay Types</option>
+          <option value="FREE">Free Stay (Active)</option>
+          <option value="EXPIRING_SOON">Expiring Soon (≤15 Days)</option>
+          <option value="PAID">Paid Stay (Verified)</option>
+          <option value="EXPIRED_DUE">Expired Free Stay (Payment Due)</option>
+        </select>
         <select className="input" value={details} onChange={(e) => setDetails(e.target.value)}>
           <option value="">All Details</option><option value="pending">Details pending (red)</option><option value="complete">Details complete (green)</option>
         </select>
         <button className="btn btn-ghost" onClick={() => setSheet(true)}><Icon name="qr" size={15} /> Print QR cards</button>
       </div>
       <Table
-        headers={['Photo', 'Trainee ID', 'Name', 'Details', 'Hostel ID', 'Hostel', 'Room', 'Hostel Status', 'QR', '']}
+        headers={['Photo', 'Trainee ID', 'Name', 'Stay Status', 'Details', 'Hostel ID', 'Hostel', 'Room', 'Hostel Status', 'QR', '']}
         empty="No trainees found in database."
         rowClass={(i) => (isComplete(list[i], config.customFields) ? 'row-ok' : 'row-pending')}
         rows={list.map((t) => [
           <Avatar trainee={t} />,
           <a className="link" onClick={() => open(t.traineeId)}>{t.traineeId}</a>,
           t.name,
+          <span title={classifyTrainee(t).label}><Badge status={classifyTrainee(t).status} /></span>,
           isComplete(t, config.customFields) ? <Badge status="COMPLETE" /> : <span title={missingDetails(t, config.customFields).join(', ')}><Badge status="DETAILS PENDING" /></span>,
           t.hostelId || '—', t.hostel || '—', t.roomNo || '—',
           <Badge status={t.hostelStatus} />, <Badge status={t.qrStatus} />,

@@ -273,16 +273,58 @@ export function StoreProvider({ children }) {
         body: payload,
       });
       if (res && res.ok && res.trainee) {
-        setDb((prev) => ({
-          ...prev,
-          trainees: prev.trainees.map((t) =>
+        const updated = res.trainee;
+        const oldTrainee = (db.trainees || []).find((t) =>
+          (t.traineeId && t.traineeId === traineeKey) ||
+          (t.qrId && t.qrId === traineeKey) ||
+          (t._id && String(t._id) === String(traineeKey))
+        );
+        const oldId = oldTrainee?.traineeId;
+        const newId = updated.traineeId;
+
+        setDb((prev) => {
+          const nextTrainees = (prev.trainees || []).map((t) =>
             (t.traineeId && t.traineeId === traineeKey) ||
             (t.qrId && t.qrId === traineeKey) ||
             (t._id && String(t._id) === String(traineeKey))
-              ? { ...t, ...res.trainee }
+              ? { ...t, ...updated }
               : t
-          ),
-        }));
+          );
+
+          if (oldId !== undefined && newId !== undefined && oldId !== newId) {
+            const matchesTrainee = (item) =>
+              (oldId && item.traineeId && item.traineeId === oldId) ||
+              (updated.qrId && item.qrId === updated.qrId);
+
+            return {
+              ...prev,
+              trainees: nextTrainees,
+              attendance: (prev.attendance || []).map((a) =>
+                matchesTrainee(a) ? { ...a, traineeId: newId } : a
+              ),
+              leaves: (prev.leaves || []).map((l) =>
+                matchesTrainee(l) ? { ...l, traineeId: newId } : l
+              ),
+              outingVacate: (prev.outingVacate || []).map((o) =>
+                matchesTrainee(o) ? { ...o, traineeId: newId } : o
+              ),
+              resignations: (prev.resignations || []).map((r) =>
+                oldId && r.traineeId === oldId ? { ...r, traineeId: newId } : r
+              ),
+              remarks: (prev.remarks || []).map((rm) =>
+                oldId && rm.traineeId === oldId ? { ...rm, traineeId: newId } : rm
+              ),
+              roomHistory: (prev.roomHistory || []).map((rh) =>
+                oldId && rh.traineeId === oldId ? { ...rh, traineeId: newId } : rh
+              ),
+            };
+          }
+
+          return {
+            ...prev,
+            trainees: nextTrainees,
+          };
+        });
       }
       return res;
     } catch (err) {

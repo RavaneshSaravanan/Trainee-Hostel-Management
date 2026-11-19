@@ -2,6 +2,7 @@ import PptxGenJS from 'pptxgenjs';
 import { fmtDate, todayStr } from './dates.js';
 import { SHIFTS, ATT_CODES, ATT_LABELS } from '../data/constants.js';
 import { occupantsOf, dayCounts } from './summary.js';
+import { classifyTrainee } from './validity.js';
 
 /**
  * Generates and downloads an executive widescreen 16:9 PowerPoint presentation (.pptx)
@@ -170,8 +171,9 @@ export async function exportDashboardPptx({ db, config, session, selectedHostel 
   const ids = new Set(trainees.map((t) => t.traineeId));
   const activeInHostel = trainees.filter((t) => t.hostelStatus === 'ACTIVE').length;
   const pendingApprovals = trainees.filter((t) => t.hostelStatus === 'PENDING REVIEW' || t.approvalStatus === 'PENDING_APPROVAL').length;
-  const freeTrainees = trainees.filter((t) => t.hostelStatus === 'ACTIVE' && (t.paymentStatus === 'FREE' || !t.paymentStatus)).length;
-  const paidTrainees = trainees.filter((t) => t.hostelStatus === 'ACTIVE' && t.paymentStatus === 'PAID').length;
+  const freeTrainees = trainees.filter((t) => t.hostelStatus === 'ACTIVE' && classifyTrainee(t, today).isFree).length;
+  const paidTrainees = trainees.filter((t) => t.hostelStatus === 'ACTIVE' && classifyTrainee(t, today).isPaid).length;
+  const expiredTrainees = trainees.filter((t) => t.hostelStatus === 'ACTIVE' && classifyTrainee(t, today).isExpired).length;
 
   const hostels = db.hostels.filter((h) => !selectedHostel || h.name === selectedHostel);
   const hostelStats = hostels.map((h) => {
@@ -180,9 +182,10 @@ export async function exportDashboardPptx({ db, config, session, selectedHostel 
     const occupied = h.rooms.reduce((s, r) => s + occupantsOf(db, h.name, r.no).filter((t) => ids.has(t.traineeId)).length, 0);
     const vacant = Math.max(0, cap - occupied);
     const pct = cap > 0 ? Math.round((occupied / cap) * 100) : 0;
-    const freeCount = trainees.filter((t) => t.hostel === h.name && t.hostelStatus === 'ACTIVE' && (t.paymentStatus === 'FREE' || !t.paymentStatus)).length;
-    const paidCount = trainees.filter((t) => t.hostel === h.name && t.hostelStatus === 'ACTIVE' && t.paymentStatus === 'PAID').length;
-    return { name: h.name, totalRooms, cap, occupied, vacant, pct, freeCount, paidCount };
+    const freeCount = trainees.filter((t) => t.hostel === h.name && t.hostelStatus === 'ACTIVE' && classifyTrainee(t, today).isFree).length;
+    const paidCount = trainees.filter((t) => t.hostel === h.name && t.hostelStatus === 'ACTIVE' && classifyTrainee(t, today).isPaid).length;
+    const expiredCount = trainees.filter((t) => t.hostel === h.name && t.hostelStatus === 'ACTIVE' && classifyTrainee(t, today).isExpired).length;
+    return { name: h.name, totalRooms, cap, occupied, vacant, pct, freeCount, paidCount, expiredCount };
   });
 
   const totalCapacity = hostelStats.reduce((s, h) => s + h.cap, 0);
@@ -521,15 +524,16 @@ export async function exportDashboardPptx({ db, config, session, selectedHostel 
     const slide = pptx.addSlide();
     addSlideHeader(slide, 'Trainee Stay Category Breakdown (Free vs Paid Stay)', 'TENURE & BILLING');
 
-    const totalActive = freeTrainees + paidTrainees;
+    const totalActive = freeTrainees + paidTrainees + expiredTrainees;
     const freePct = totalActive > 0 ? Math.round((freeTrainees / totalActive) * 100) : 0;
-    const paidPct = totalActive > 0 ? 100 - freePct : 0;
+    const paidPct = totalActive > 0 ? Math.round((paidTrainees / totalActive) * 100) : 0;
+    const expiredPct = Math.max(0, 100 - freePct - paidPct);
 
-    // Left Column: Free Stay Entitlement
+    // Column 1: Free Stay Entitlement (w: 3.85, x: 0.6)
     slide.addShape(pptx.ShapeType.roundRect, {
       x: 0.6,
       y: 1.25,
-      w: 5.85,
+      w: 3.85,
       h: 5.4,
       rectRadius: 0.08,
       fill: { color: COLOR_CARD_BG },
@@ -538,125 +542,220 @@ export async function exportDashboardPptx({ db, config, session, selectedHostel 
     slide.addShape(pptx.ShapeType.rect, {
       x: 0.6,
       y: 1.25,
-      w: 5.85,
+      w: 3.85,
       h: 0.6,
       fill: { color: COLOR_HEADER_BG },
     });
-    slide.addText('FREE STAY ENTITLEMENT (First 3 Calendar Months)', {
-      x: 0.8,
-      y: 1.4,
-      w: 5.4,
-      h: 0.35,
-      fontSize: 12,
+    slide.addText('FREE STAY ENTITLEMENT', {
+      x: 0.75,
+      y: 1.35,
+      w: 3.55,
+      h: 0.22,
+      fontSize: 11,
       bold: true,
       color: 'FFFFFF',
       fontFace: 'Arial',
     });
+    slide.addText('Initial 3 Calendar Months', {
+      x: 0.75,
+      y: 1.57,
+      w: 3.55,
+      h: 0.2,
+      fontSize: 9,
+      color: 'E9D5FF',
+      fontFace: 'Arial',
+    });
 
     slide.addText(String(freeTrainees), {
-      x: 0.9,
+      x: 0.8,
       y: 2.1,
-      w: 2.5,
-      h: 0.9,
-      fontSize: 38,
+      w: 2.2,
+      h: 0.8,
+      fontSize: 34,
       bold: true,
       color: COLOR_HEADER_MID,
       fontFace: 'Arial',
     });
-    slide.addText(`TRAINEES (${freePct}% of active hostel fleet)`, {
-      x: 0.9,
-      y: 3.0,
-      w: 5.2,
+    slide.addText(`TRAINEES (${freePct}% of residents)`, {
+      x: 0.8,
+      y: 2.9,
+      w: 3.4,
       h: 0.3,
-      fontSize: 11,
+      fontSize: 10,
       bold: true,
       color: COLOR_MUTED,
       fontFace: 'Arial',
     });
 
     const freeNotes = [
-      'Entitled policy: Initial 3 calendar months subsidized accommodation for new inductees.',
-      'Automated expiry tracking: System calculates exact calendar-month boundary from joining date.',
-      'No billing active: Subsidized corporate accommodation allowance applies.',
-      'Seamless transition: System alerts administration 15 days prior to free stay expiration.',
+      'Subsidized stay: First 3 calendar months from joining date.',
+      'Active validity: Trainees currently within eligible free tenure.',
+      'No billing required: Corporate subsidized allowance applies.',
+      'Auto-tracking: System alerts 15 days before free stay expiration.',
     ];
     freeNotes.forEach((n, idx) => {
-      slide.addText(`•  ${n}`, {
-        x: 0.9,
-        y: 3.5 + idx * 0.7,
-        w: 5.2,
-        h: 0.6,
-        fontSize: 10,
+      slide.addText(`• ${n}`, {
+        x: 0.8,
+        y: 3.4 + idx * 0.75,
+        w: 3.45,
+        h: 0.65,
+        fontSize: 9.5,
         color: COLOR_TEXT_DARK,
-        lineSpacing: 14,
+        lineSpacing: 13,
         fontFace: 'Arial',
       });
     });
 
-    // Right Column: Paid Stay Extended Tenure
+    // Column 2: Paid Stay Extended Tenure (w: 3.85, x: 4.74)
     slide.addShape(pptx.ShapeType.roundRect, {
-      x: 6.85,
+      x: 4.74,
       y: 1.25,
-      w: 5.85,
+      w: 3.85,
       h: 5.4,
       rectRadius: 0.08,
       fill: { color: COLOR_CARD_BG },
       line: { color: COLOR_BORDER, width: 1.5 },
     });
     slide.addShape(pptx.ShapeType.rect, {
-      x: 6.85,
+      x: 4.74,
       y: 1.25,
-      w: 5.85,
+      w: 3.85,
       h: 0.6,
-      fill: { color: COLOR_HEADER_MID },
+      fill: { color: COLOR_SUCCESS },
     });
-    slide.addText('PAID STAY TENURE (Post 3-Month Extension)', {
-      x: 7.05,
-      y: 1.4,
-      w: 5.4,
-      h: 0.35,
-      fontSize: 12,
+    slide.addText('PAID STAY TENURE', {
+      x: 4.89,
+      y: 1.35,
+      w: 3.55,
+      h: 0.22,
+      fontSize: 11,
       bold: true,
       color: 'FFFFFF',
       fontFace: 'Arial',
     });
-
-    slide.addText(String(paidTrainees), {
-      x: 7.15,
-      y: 2.1,
-      w: 2.5,
-      h: 0.9,
-      fontSize: 38,
-      bold: true,
-      color: COLOR_GOLD,
+    slide.addText('Verified Payment / Billing Active', {
+      x: 4.89,
+      y: 1.57,
+      w: 3.55,
+      h: 0.2,
+      fontSize: 9,
+      color: 'DCFCE7',
       fontFace: 'Arial',
     });
-    slide.addText(`TRAINEES (${paidPct}% of active hostel fleet)`, {
-      x: 7.15,
-      y: 3.0,
-      w: 5.2,
+
+    slide.addText(String(paidTrainees), {
+      x: 4.94,
+      y: 2.1,
+      w: 2.2,
+      h: 0.8,
+      fontSize: 34,
+      bold: true,
+      color: COLOR_SUCCESS,
+      fontFace: 'Arial',
+    });
+    slide.addText(`TRAINEES (${paidPct}% of residents)`, {
+      x: 4.94,
+      y: 2.9,
+      w: 3.4,
       h: 0.3,
-      fontSize: 11,
+      fontSize: 10,
       bold: true,
       color: COLOR_MUTED,
       fontFace: 'Arial',
     });
 
     const paidNotes = [
-      'Extension status: Trainees residing beyond 3 months upon approved operational extension.',
-      'Corporate billing active: Monthly accommodation fee deductions processed.',
-      'Room continuity: Trainees retain original allocated bed without room disruption.',
-      'Quarterly audit: Warden verification ensures timely payment records and authorization renewals.',
+      'Approved extension: Trainees with confirmed payment records.',
+      'Corporate billing: Monthly accommodation fee collected.',
+      'Room retention: Trainees continue in original allocated room.',
+      'Finance reconciled: Recorded in MongoDB payment history.',
     ];
     paidNotes.forEach((n, idx) => {
-      slide.addText(`•  ${n}`, {
-        x: 7.15,
-        y: 3.5 + idx * 0.7,
-        w: 5.2,
-        h: 0.6,
-        fontSize: 10,
+      slide.addText(`• ${n}`, {
+        x: 4.94,
+        y: 3.4 + idx * 0.75,
+        w: 3.45,
+        h: 0.65,
+        fontSize: 9.5,
         color: COLOR_TEXT_DARK,
-        lineSpacing: 14,
+        lineSpacing: 13,
+        fontFace: 'Arial',
+      });
+    });
+
+    // Column 3: Expired Stay / Payment Due (w: 3.85, x: 8.88)
+    slide.addShape(pptx.ShapeType.roundRect, {
+      x: 8.88,
+      y: 1.25,
+      w: 3.85,
+      h: 5.4,
+      rectRadius: 0.08,
+      fill: { color: COLOR_CARD_BG },
+      line: { color: 'FECACA', width: 1.5 },
+    });
+    slide.addShape(pptx.ShapeType.rect, {
+      x: 8.88,
+      y: 1.25,
+      w: 3.85,
+      h: 0.6,
+      fill: { color: COLOR_DANGER },
+    });
+    slide.addText('EXPIRED STAY / DUE', {
+      x: 9.03,
+      y: 1.35,
+      w: 3.55,
+      h: 0.22,
+      fontSize: 11,
+      bold: true,
+      color: 'FFFFFF',
+      fontFace: 'Arial',
+    });
+    slide.addText('Free Validity Elapsed · Unpaid', {
+      x: 9.03,
+      y: 1.57,
+      w: 3.55,
+      h: 0.2,
+      fontSize: 9,
+      color: 'FEE2E2',
+      fontFace: 'Arial',
+    });
+
+    slide.addText(String(expiredTrainees), {
+      x: 9.08,
+      y: 2.1,
+      w: 2.2,
+      h: 0.8,
+      fontSize: 34,
+      bold: true,
+      color: COLOR_DANGER,
+      fontFace: 'Arial',
+    });
+    slide.addText(`TRAINEES (${expiredPct}% of residents)`, {
+      x: 9.08,
+      y: 2.9,
+      w: 3.4,
+      h: 0.3,
+      fontSize: 10,
+      bold: true,
+      color: COLOR_MUTED,
+      fontFace: 'Arial',
+    });
+
+    const expiredNotes = [
+      'Validity elapsed: Initial 3-month free period has passed.',
+      'Action required: Trainee must submit payment or vacate room.',
+      'No false billing: Not marked Paid until verified payment.',
+      'Administrative review: Prompt renewal notice dispatched.',
+    ];
+    expiredNotes.forEach((n, idx) => {
+      slide.addText(`• ${n}`, {
+        x: 9.08,
+        y: 3.4 + idx * 0.75,
+        w: 3.45,
+        h: 0.65,
+        fontSize: 9.5,
+        color: COLOR_TEXT_DARK,
+        lineSpacing: 13,
         fontFace: 'Arial',
       });
     });
@@ -1174,14 +1273,13 @@ export async function exportDashboardPptx({ db, config, session, selectedHostel 
     const slide = pptx.addSlide();
     addSlideHeader(slide, 'Stay Validity & Expiration Risk Management', 'COMPLIANCE & RENEWALS');
 
-    const todayDate = new Date(today);
     const expiringList = trainees
-      .filter((t) => t.hostelStatus === 'ACTIVE' && (t.paymentStatus === 'FREE' || !t.paymentStatus) && t.freeStayExpiryDate)
+      .filter((t) => t.hostelStatus === 'ACTIVE')
       .map((t) => {
-        const exp = new Date(t.freeStayExpiryDate);
-        const daysLeft = Math.ceil((exp - todayDate) / (1000 * 60 * 60 * 24));
-        return { ...t, daysLeft };
+        const c = classifyTrainee(t, today);
+        return { ...t, c, daysLeft: c.daysRemaining };
       })
+      .filter((t) => t.c.isFree && t.daysLeft !== null)
       .sort((a, b) => a.daysLeft - b.daysLeft);
 
     const urgentCount = expiringList.filter((t) => t.daysLeft <= 7).length;
@@ -1261,7 +1359,7 @@ export async function exportDashboardPptx({ db, config, session, selectedHostel 
           { text: t.name, options: { fill: { color: isAlt ? COLOR_PURPLE_LIGHT : 'FFFFFF' } } },
           { text: `${t.hostel || 'Hostel'} · ${t.roomNo ? `Room ${t.roomNo}` : 'Unassigned'}`, options: { fill: { color: isAlt ? COLOR_PURPLE_LIGHT : 'FFFFFF' } } },
           { text: fmtDate(t.joiningDate), options: { align: 'center', fill: { color: isAlt ? COLOR_PURPLE_LIGHT : 'FFFFFF' } } },
-          { text: fmtDate(t.freeStayExpiryDate), options: { align: 'center', bold: true, fill: { color: isAlt ? COLOR_PURPLE_LIGHT : 'FFFFFF' } } },
+          { text: fmtDate(t.c?.expiryDate || t.freeStayExpiryDate), options: { align: 'center', bold: true, fill: { color: isAlt ? COLOR_PURPLE_LIGHT : 'FFFFFF' } } },
           { text: `${t.daysLeft} Day${t.daysLeft !== 1 ? 's' : ''}`, options: { align: 'center', bold: true, color: urgencyColor, fill: { color: isAlt ? COLOR_PURPLE_LIGHT : 'FFFFFF' } } },
           { text: actionStr, options: { align: 'center', bold: true, fill: { color: isAlt ? COLOR_PURPLE_LIGHT : 'FFFFFF' } } },
         ]);

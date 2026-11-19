@@ -20,6 +20,7 @@ import { ApproveModal, ChangeRoomModal } from '../components/RoomModals.jsx';
 import VerticalIdCard from '../components/VerticalIdCard.jsx';
 import { addDays, fmtDate, todayStr } from '../utils/dates.js';
 import { computeSummary } from '../utils/summary.js';
+import { classifyTrainee } from '../utils/validity.js';
 
 function maskAadhaar(num) {
   if (!num) return '—';
@@ -35,7 +36,11 @@ function Overview({ t }) {
   const { db, config, navigate } = useStore();
   const missing = missingDetails(t, config.customFields);
   const traineeKey = t.traineeId || t.qrId;
+  const val = classifyTrainee(t);
   const info = [
+    ['Stay Classification', val.label],
+    ['Free Stay Expiry Date', fmtDate(val.expiryDate) || '—'],
+    ['Days Remaining in Free Stay', val.daysRemaining !== null ? (val.daysRemaining >= 0 ? `${val.daysRemaining} days` : `Expired (${Math.abs(val.daysRemaining)} days ago)`) : '—'],
     ['Trainee ID', t.traineeId || '—'], ['Hostel ID', t.hostelId || '—'], ['Mobile', t.mobile], ['E-mail', t.email || '—'],
     ['Date of Birth', fmtDate(t.dob)], ['Gender', t.gender], ['Qualification', t.qualification], ['Aadhar No.', maskAadhaar(t.aadhar)],
     ['Food', t.food], ['Joining Date', fmtDate(t.joiningDate)], ['Address', t.address1 || '—'],
@@ -82,7 +87,8 @@ function Overview({ t }) {
 
 /* ---------------- Edit ---------------- */
 function Edit({ t }) {
-  const { saveTraineeProfile, notify, navigate, config } = useStore();
+  const { saveTraineeProfile, notify, navigate, config, db } = useStore();
+  const [traineeId, setTraineeId] = useState(t.traineeId || '');
   const [name, setName] = useState(t.name || '');
   const [mobile, setMobile] = useState(t.mobile ? String(t.mobile).replace(/\D/g, '') : '');
   const [email, setEmail] = useState(t.email || '');
@@ -121,6 +127,22 @@ function Edit({ t }) {
 
   const validate = () => {
     const errs = {};
+    const cleanTraineeId = String(traineeId || '').trim();
+    if (cleanTraineeId) {
+      const dup = (db.trainees || []).find((other) => {
+        if (!other.traineeId) return false;
+        const isCurrent =
+          (t._id && other._id && String(other._id) === String(t._id)) ||
+          (t.qrId && other.qrId && other.qrId === t.qrId) ||
+          (t.traineeId && other.traineeId && other.traineeId === t.traineeId);
+        if (isCurrent) return false;
+        return other.traineeId.trim().toLowerCase() === cleanTraineeId.toLowerCase();
+      });
+      if (dup) {
+        errs.traineeId = 'This Trainee ID is already assigned to another trainee.';
+      }
+    }
+
     const cleanName = String(name || '').trim();
     if (!cleanName || cleanName.length < 2) {
       errs.name = 'Trainee name is required (at least 2 characters).';
@@ -187,8 +209,10 @@ function Edit({ t }) {
 
     setSaving(true);
     const targetKey = t.traineeId || t.qrId || t._id;
+    const cleanTraineeId = String(traineeId || '').trim();
 
     const payload = {
+      traineeId: cleanTraineeId,
       name: name.trim(),
       mobile: mobile.replace(/\D/g, ''),
       email: email.trim().toLowerCase(),
@@ -218,13 +242,14 @@ function Edit({ t }) {
       const res = await saveTraineeProfile(targetKey, payload);
       if (res && res.ok) {
         notify(res.message || 'Trainee profile updated successfully.');
-        navigate('trainee-profile', { id: targetKey, sub: 'overview' });
+        const nextKey = res.trainee?.traineeId || res.trainee?.qrId || targetKey;
+        navigate('trainee-profile', { id: nextKey, sub: 'overview' });
       } else {
         throw new Error(res?.error || 'Failed to update trainee details.');
       }
     } catch (err) {
       console.error('[TraineeProfile Submit Error]:', err);
-      const msg = err.message || 'Failed to save changes. Please try again.';
+      const msg = err.message || err.data?.error || 'Failed to save changes. Please try again.';
       setFormError(msg);
       if (err.data?.errors) {
         setErrors((prev) => ({ ...prev, ...err.data.errors }));
@@ -263,6 +288,25 @@ function Edit({ t }) {
         <div className="form-section">
           <div className="form-section-title">Personal Details</div>
           <div className="form-grid">
+            <div>
+              <label className="field-label">Trainee ID</label>
+              <input
+                className={`input ${errors.traineeId ? 'input-error' : ''}`}
+                name="traineeId"
+                value={traineeId}
+                onChange={(e) => {
+                  setTraineeId(e.target.value);
+                  clearFieldError('traineeId');
+                }}
+                placeholder="e.g. TRN-001 (Optional)"
+              />
+              {errors.traineeId && (
+                <div className="field-error" style={{ color: 'var(--red, #ef4444)', fontSize: 12, marginTop: 4 }}>
+                  {errors.traineeId}
+                </div>
+              )}
+            </div>
+
             <div>
               <label className="field-label">Trainee Name *</label>
               <input
@@ -828,6 +872,13 @@ export default function TraineeProfile() {
           <div className="profile-chips">
             <span className="chip">Employment: {t.employmentStatus}</span>
             <span className="chip">QR: {t.qrStatus}</span>
+            <span className="chip" style={{
+              background: classifyTrainee(t).isFree ? '#F3E8FF' : classifyTrainee(t).isPaid ? '#DCFCE7' : '#FEE2E2',
+              color: classifyTrainee(t).isFree ? '#6D28D9' : classifyTrainee(t).isPaid ? '#15803D' : '#B91C1C',
+              borderColor: classifyTrainee(t).isFree ? '#DDD6FE' : classifyTrainee(t).isPaid ? '#BBF7D0' : '#FECACA',
+            }}>
+              Stay: {classifyTrainee(t).label}
+            </span>
             {t.idCardDelivered && <span className="chip chip-green">ID Card Sent</span>}
           </div>
         </div>

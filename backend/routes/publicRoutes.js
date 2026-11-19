@@ -219,19 +219,32 @@ router.get('/trainees/:traineeId/photo', serveTraineePhoto);
 const checkTraineeIdHandler = async (req, res) => {
   try {
     const rawId = String((req.method === 'GET' ? req.query.traineeId : req.body?.traineeId) || '').trim();
+    const excludeId = String((req.method === 'GET' ? req.query.excludeId : req.body?.excludeId) || '').trim();
     if (!rawId) {
       return res.json({ available: true, message: '' });
     }
 
     const cleanId = rawId.toUpperCase();
-    const exists = await Trainee.findOne({
+    const query = {
       traineeId: { $regex: new RegExp(`^${escapeRegex(cleanId)}$`, 'i') },
-    }).lean();
+    };
+    if (excludeId) {
+      if (mongoose.Types.ObjectId.isValid(excludeId)) {
+        query._id = { $ne: excludeId };
+      } else {
+        query.$and = [
+          { traineeId: { $ne: excludeId } },
+          { qrId: { $ne: excludeId } },
+        ];
+      }
+    }
+
+    const exists = await Trainee.findOne(query).lean();
 
     if (exists) {
       return res.json({
         available: false,
-        error: 'Trainee ID already exists. Please enter a different Trainee ID.',
+        error: 'This Trainee ID is already assigned to another trainee.',
       });
     }
 

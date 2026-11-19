@@ -2,6 +2,14 @@ import express from 'express';
 import mongoose from 'mongoose';
 import { Trainee } from '../models/Trainee.js';
 import { Role } from '../models/Role.js';
+import { Attendance } from '../models/Attendance.js';
+import { Leave } from '../models/Leave.js';
+import { OutingVacate } from '../models/OutingVacate.js';
+import { Resignation } from '../models/Resignation.js';
+import { Remark } from '../models/Remark.js';
+import { RoomHistory } from '../models/RoomHistory.js';
+import { ApprovalLog } from '../models/ApprovalLog.js';
+import { EmailLog } from '../models/EmailLog.js';
 import { auth } from '../middleware/auth.js';
 import { bumpRev } from '../models/Meta.js';
 import { SUPER_ROLE, DEFAULT_ROLES } from '../defaults.js';
@@ -20,6 +28,10 @@ import {
 import { addThreeCalendarMonths } from '../utils/validity.js';
 
 const router = express.Router();
+
+function escapeRegex(text) {
+  return String(text || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
 
 function sanitizeTraineeOutput(t) {
   if (!t) return null;
@@ -113,6 +125,21 @@ router.put('/trainees/:id', auth, async (req, res) => {
     const body = req.body || {};
 
     // 4. Validate fields
+    // Trainee ID (Optional, but must be unique if provided)
+    let cleanTraineeId = undefined;
+    if (body.traineeId !== undefined) {
+      cleanTraineeId = String(body.traineeId || '').trim();
+      if (cleanTraineeId) {
+        const dupTraineeId = await Trainee.findOne({
+          traineeId: { $regex: new RegExp(`^${escapeRegex(cleanTraineeId)}$`, 'i') },
+          _id: { $ne: trainee._id },
+        }).lean();
+        if (dupTraineeId) {
+          errors.traineeId = 'This Trainee ID is already assigned to another trainee.';
+        }
+      }
+    }
+
     // Name
     if (body.name !== undefined) {
       const cleanName = String(body.name || '').trim();
@@ -218,6 +245,14 @@ router.put('/trainees/:id', auth, async (req, res) => {
 
     // 5. Apply valid updates
     const updatedFieldsList = [];
+    const oldTraineeId = trainee.traineeId || '';
+    let traineeIdChanged = false;
+
+    if (cleanTraineeId !== undefined && cleanTraineeId !== oldTraineeId) {
+      trainee.traineeId = cleanTraineeId;
+      updatedFieldsList.push('traineeId');
+      traineeIdChanged = true;
+    }
 
     if (body.name !== undefined) {
       trainee.name = String(body.name).trim();
@@ -323,6 +358,33 @@ router.put('/trainees/:id', auth, async (req, res) => {
     }
 
     await trainee.save();
+
+    // Cascade update related records across modules if traineeId was modified
+    if (traineeIdChanged) {
+      try {
+        const filterWithQr = oldTraineeId
+          ? { $or: [{ traineeId: oldTraineeId }, { qrId: trainee.qrId }] }
+          : { qrId: trainee.qrId };
+
+        await Promise.all([
+          Attendance.updateMany(filterWithQr, { $set: { traineeId: cleanTraineeId } }),
+          Leave.updateMany(filterWithQr, { $set: { traineeId: cleanTraineeId } }),
+          OutingVacate.updateMany(filterWithQr, { $set: { traineeId: cleanTraineeId } }),
+          ...(oldTraineeId
+            ? [
+                Resignation.updateMany({ traineeId: oldTraineeId }, { $set: { traineeId: cleanTraineeId } }),
+                Remark.updateMany({ traineeId: oldTraineeId }, { $set: { traineeId: cleanTraineeId } }),
+                RoomHistory.updateMany({ traineeId: oldTraineeId }, { $set: { traineeId: cleanTraineeId } }),
+                ApprovalLog.updateMany({ traineeId: oldTraineeId }, { $set: { traineeId: cleanTraineeId } }),
+                EmailLog.updateMany({ traineeId: oldTraineeId }, { $set: { traineeId: cleanTraineeId } }),
+              ]
+            : []),
+        ]);
+      } catch (cascadeErr) {
+        console.error('[PUT /api/trainees/:id] Cascade update error:', cascadeErr);
+      }
+    }
+
     await bumpRev();
 
     return res.json({
@@ -344,6 +406,12 @@ router.put('/trainees/:id', auth, async (req, res) => {
     }
     if (err.code === 11000) {
       const field = Object.keys(err.keyPattern || {})[0] || 'field';
+      if (field === 'traineeId') {
+        return res.status(409).json({
+          error: 'This Trainee ID is already assigned to another trainee.',
+          errors: { traineeId: 'This Trainee ID is already assigned to another trainee.' },
+        });
+      }
       return res.status(409).json({
         error: `A trainee with this ${field} already exists in the system.`,
         errors: { [field]: `Duplicate ${field} value.` },

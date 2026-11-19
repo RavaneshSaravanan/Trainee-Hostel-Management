@@ -89,6 +89,8 @@ export function computeSummary(db, traineeId, from, to) {
     }
   }
 
+  const isConfirmedPaid = trainee?.paymentStatus === 'PAID' || (Array.isArray(trainee?.paymentHistory) && trainee.paymentHistory.length > 0);
+
   return {
     A, B, C, G, H12, WO, L, OUT,
     workingDays, livingDays,
@@ -98,7 +100,7 @@ export function computeSummary(db, traineeId, from, to) {
     paidLivingDays,
     totalLivingDays: livingDays,
     isFreeTrainee: freeLivingDays > 0,
-    isPaidTrainee: paidLivingDays > 0 || trainee?.paymentStatus === 'PAID',
+    isPaidTrainee: isConfirmedPaid,
   };
 }
 

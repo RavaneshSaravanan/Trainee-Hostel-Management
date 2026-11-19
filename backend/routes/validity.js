@@ -3,7 +3,7 @@ import { auth } from '../middleware/auth.js';
 import { Trainee } from '../models/Trainee.js';
 import { Hostel } from '../models/Hostel.js';
 import { bumpRev } from '../models/Meta.js';
-import { computeValidity, todayStr } from '../utils/validity.js';
+import { computeValidity, classifyTrainee, todayStr } from '../utils/validity.js';
 
 const router = express.Router();
 
@@ -36,7 +36,7 @@ router.get('/validity/report', auth, async (req, res) => {
 
     // Compute dynamic validity for each trainee
     let processed = trainees.map((t) => {
-      const val = computeValidity(t.joiningDate, t.paymentStatus, today);
+      const val = classifyTrainee(t, today);
       return {
         _id: t._id,
         traineeId: t.traineeId,
@@ -50,7 +50,11 @@ router.get('/validity/report', auth, async (req, res) => {
         joiningDate: t.joiningDate || '—',
         freeStayExpiryDate: val.expiryDate || '—',
         daysRemaining: val.daysRemaining,
-        validityStatus: val.status, // 'FREE' | 'EXPIRING_SOON' | 'EXPIRED_DUE' | 'PAID'
+        validityStatus: val.status, // 'FREE' | 'EXPIRING_SOON' | 'EXPIRED_DUE' | 'PAID' | 'PENDING_DETAILS'
+        classification: val.label,
+        isFree: val.isFree,
+        isPaid: val.isPaid,
+        isExpired: val.isExpired,
         paymentStatus: t.paymentStatus || 'FREE',
         paymentHistory: t.paymentHistory || [],
       };
@@ -61,16 +65,26 @@ router.get('/validity/report', auth, async (req, res) => {
       const lcq = q.toLowerCase().trim();
       processed = processed.filter(
         (t) =>
-          t.traineeId.toLowerCase().includes(lcq) ||
-          t.name.toLowerCase().includes(lcq) ||
-          t.roomNo.toLowerCase().includes(lcq) ||
-          t.hostel.toLowerCase().includes(lcq)
+          (t.traineeId || '').toLowerCase().includes(lcq) ||
+          (t.name || '').toLowerCase().includes(lcq) ||
+          (t.roomNo || '').toLowerCase().includes(lcq) ||
+          (t.hostel || '').toLowerCase().includes(lcq)
       );
     }
 
     // Apply status filter
     if (status) {
-      processed = processed.filter((t) => t.validityStatus === status);
+      if (status === 'FREE') {
+        processed = processed.filter((t) => t.isFree);
+      } else if (status === 'EXPIRING_SOON') {
+        processed = processed.filter((t) => t.validityStatus === 'EXPIRING_SOON');
+      } else if (status === 'PAID') {
+        processed = processed.filter((t) => t.isPaid);
+      } else if (status === 'EXPIRED_DUE') {
+        processed = processed.filter((t) => t.isExpired);
+      } else {
+        processed = processed.filter((t) => t.validityStatus === status);
+      }
     }
 
     // KPI Counters (Exact requirement alignment: Total Living Trainees, Free Trainees, Paid Trainees, Expiring Soon, Expired Trainees)
@@ -80,6 +94,7 @@ router.get('/validity/report', auth, async (req, res) => {
       paidTrainees: 0,
       expiringSoon: 0,
       expiredTrainees: 0,
+      pendingDetails: 0,
       // Compatibility keys
       totalResiding: trainees.length,
       freeStay: 0,
@@ -92,22 +107,25 @@ router.get('/validity/report', auth, async (req, res) => {
     };
 
     for (const t of trainees) {
-      const val = computeValidity(t.joiningDate, t.paymentStatus, today);
-      if (val.status === 'PAID') {
+      const c = classifyTrainee(t, today);
+      if (c.isPaid) {
         kpis.paidTrainees++;
         kpis.paid++;
         kpis.paidCount++;
-      } else if (val.status === 'EXPIRED_DUE') {
+      } else if (c.isExpired) {
         kpis.expiredTrainees++;
         kpis.expiredDue++;
         kpis.expiredDueCount++;
-      } else if (val.status === 'EXPIRING_SOON') {
-        kpis.expiringSoon++;
-        kpis.expiringSoonCount++;
-      } else {
+      } else if (c.isFree) {
         kpis.freeTrainees++;
         kpis.freeStay++;
         kpis.freeCount++;
+        if (c.isExpiringSoon) {
+          kpis.expiringSoon++;
+          kpis.expiringSoonCount++;
+        }
+      } else if (c.isPending) {
+        kpis.pendingDetails++;
       }
     }
 
@@ -142,7 +160,9 @@ router.post('/validity/payment', auth, async (req, res) => {
       return res.status(400).json({ error: 'Trainee ID is required.' });
     }
 
-    const trainee = await Trainee.findOne({ traineeId: cleanId });
+    const trainee = await Trainee.findOne({
+      $or: [{ traineeId: cleanId }, { qrId: cleanId }],
+    });
     if (!trainee) {
       return res.status(404).json({ error: 'Trainee not found.' });
     }
@@ -157,6 +177,7 @@ router.post('/validity/payment', auth, async (req, res) => {
     };
 
     trainee.paymentStatus = 'PAID';
+    trainee.paymentHistory = trainee.paymentHistory || [];
     trainee.paymentHistory.push(paymentRecord);
     await trainee.save();
 
