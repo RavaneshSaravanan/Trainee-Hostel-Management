@@ -25,27 +25,39 @@ import {
   getGmailConfigStatus,
   scrubSensitive,
 } from './gmailService.js';
+import {
+  isResendConfigured,
+  verifyResendConnection,
+  sendEmailViaResendSdk,
+  resolveSenderAddress,
+  maskEmailForLogs,
+} from './resendClient.js';
+import {
+  renderWelcomeTemplate,
+  renderEmailOtpTemplate,
+  renderLoginOtpTemplate,
+  renderForgotPasswordTemplate,
+  renderPasswordResetConfirmationTemplate,
+  renderHostelApplicationConfirmationTemplate,
+  renderAdminNotificationTemplate,
+  renderApplicationStatusUpdateTemplate,
+  replaceDynamicTokens,
+} from './emailTemplates.js';
 
-// Re-export centralized Gmail API helpers
+// Re-export centralized Gmail & Resend API helpers
 export {
   isGmailConfigured,
   verifyGmailConnection,
   getGmailConfigStatus,
   sendMailViaGmail,
+  isResendConfigured,
+  verifyResendConnection,
+  resolveSenderAddress,
+  resolveSenderAddress as resolveResendSender,
+  maskEmailForLogs,
 };
 
 let transporter = null;
-
-// Safe recipient masking for structured production logging
-function maskEmailForLogs(email) {
-  if (!email || typeof email !== 'string') return '***';
-  const parts = email.trim().split('@');
-  if (parts.length !== 2) return '***';
-  const name = parts[0];
-  const domain = parts[1];
-  const visible = name.slice(0, 2);
-  return `${visible}***@${domain}`;
-}
 
 // Sequential dispatch queue to prevent concurrent SMTP socket timeouts
 let emailQueue = Promise.resolve();
@@ -150,11 +162,11 @@ export function getAppUrl() {
  * Prioritizes official Google Gmail API (OAuth 2.0).
  */
 export function getEmailProvider() {
+  if (isResendConfigured()) {
+    return 'resend';
+  }
   if (isGmailConfigured()) {
     return 'gmail';
-  }
-  if (process.env.RESEND_API_KEY && process.env.RESEND_API_KEY.trim()) {
-    return 'resend';
   }
   if (process.env.BREVO_API_KEY || process.env.SENDINBLUE_API_KEY) {
     return 'brevo';
@@ -166,10 +178,10 @@ export function getEmailProvider() {
 }
 
 /**
- * Returns true if any live email service (Gmail API, Resend, Brevo) is configured.
+ * Returns true if any live email service (Resend SDK, Gmail API, Brevo) is configured.
  */
 export function isEmailConfigured() {
-  return isGmailConfigured() || getEmailProvider() !== 'none';
+  return isResendConfigured() || isGmailConfigured() || getEmailProvider() !== 'none';
 }
 
 /**
@@ -240,158 +252,6 @@ async function sendViaBrevo({ from, to, cc = [], bcc = [], subject, html, text, 
 }
 
 /**
- * Resolves and validates the sender address for Resend.
- * In Resend, sending with an unverified domain (e.g. @gmail.com) causes HTTP 403.
- * Uses RESEND_FROM if valid, or falls back to 'Apollo Tyres Ltd <onboarding@resend.dev>'.
- */
-export function resolveResendSender(requestedFrom) {
-  const envFrom = (process.env.RESEND_FROM || '').trim();
-  if (envFrom) {
-    const match = envFrom.match(/^(.*?)(?:<(.+?)>)?$/);
-    const candidate = (match && match[2] ? match[2] : envFrom).trim();
-    if (isValidEmail(candidate)) {
-      return envFrom;
-    }
-    console.warn(`[EMAIL WARNING] RESEND_FROM "${envFrom}" is not a valid email address. Falling back to default.`);
-  }
-
-  let displayName = 'Apollo Tyres Ltd';
-  if (requestedFrom) {
-    const match = requestedFrom.match(/^(.*?)(?:<(.+?)>)?$/);
-    if (match && match[1]?.trim()) {
-      displayName = match[1].trim().replace(/^["']|["']$/g, '');
-    }
-  }
-
-  // If requestedFrom is already from a custom domain (not public webmail), keep it
-  if (requestedFrom) {
-    const match = requestedFrom.match(/<(.+?)>/) || [null, requestedFrom];
-    const candidateEmail = (match[1] || requestedFrom).trim();
-    const domain = candidateEmail.split('@')[1]?.toLowerCase() || '';
-    const publicDomains = ['gmail.com', 'googlemail.com', 'yahoo.com', 'hotmail.com', 'outlook.com', 'hostel.com'];
-    if (isValidEmail(candidateEmail) && !publicDomains.includes(domain)) {
-      return requestedFrom;
-    }
-  }
-
-  return `${displayName} <onboarding@resend.dev>`;
-}
-
-/**
- * Sends email via Resend HTTPS REST API (Port 443 - Render Free tier compatible).
- * Sourced from environment variable: RESEND_API_KEY.
- * Includes timeout handling (15s) and strict provider response verification.
- */
-async function sendViaResend({ from, to, cc = [], bcc = [], subject, html, text, attachments = [] }) {
-  const apiKey = (process.env.RESEND_API_KEY || '').trim();
-  if (!apiKey) {
-    throw new Error('RESEND_API_KEY is not configured in environment variables');
-  }
-
-  const sender = resolveResendSender(from);
-  const toList = (Array.isArray(to) ? to : [to])
-    .map((e) => String(e || '').trim())
-    .filter((e) => isValidEmail(e));
-
-  if (toList.length === 0) {
-    throw new Error('Resend dispatch failed: No valid recipient email addresses found');
-  }
-
-  const payload = {
-    from: sender,
-    to: toList,
-    subject: subject || 'No Subject',
-    html: html || text || '',
-  };
-
-  if (text) payload.text = text;
-
-  const validCc = (Array.isArray(cc) ? cc : [cc])
-    .map((e) => String(e || '').trim())
-    .filter((e) => isValidEmail(e));
-  if (validCc.length > 0) payload.cc = validCc;
-
-  const validBcc = (Array.isArray(bcc) ? bcc : [bcc])
-    .map((e) => String(e || '').trim())
-    .filter((e) => isValidEmail(e));
-  if (validBcc.length > 0) payload.bcc = validBcc;
-
-  if (Array.isArray(attachments) && attachments.length > 0) {
-    payload.attachments = attachments.map((att) => {
-      let base64 = '';
-      if (Buffer.isBuffer(att.content)) {
-        base64 = att.content.toString('base64');
-      } else if (typeof att.content === 'string') {
-        base64 = Buffer.from(att.content).toString('base64');
-      }
-      return {
-        filename: att.filename || 'attachment.pdf',
-        content: base64,
-      };
-    });
-  }
-
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 15000);
-
-  let res;
-  try {
-    res = await fetch('https://api.resend.com/emails', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
-        'User-Agent': 'Trainee-Hostel-Management/1.0',
-      },
-      body: JSON.stringify(payload),
-      signal: controller.signal,
-    });
-  } catch (fetchErr) {
-    if (fetchErr.name === 'AbortError' || controller.signal.aborted) {
-      throw new Error('Resend API request timed out after 15 seconds');
-    }
-    throw new Error(`Resend HTTPS connection failed: ${fetchErr.message}`);
-  } finally {
-    clearTimeout(timeoutId);
-  }
-
-  const data = await res.json().catch(() => ({}));
-
-  if (!res.ok) {
-    const errorDetail = data.message || data.error || (data.name ? `${data.name}: ${data.message || ''}` : `HTTP error ${res.status}`);
-    throw new Error(`Resend API Error (${res.status}): ${errorDetail}`);
-  }
-
-  if (!data.id) {
-    throw new Error('Resend API returned successful HTTP status but response was missing message ID');
-  }
-
-  return { messageId: data.id, provider: 'resend' };
-}
-
-/**
- * Dispatches an email via Resend with automatic retry for transient errors (429 rate limit or 5xx server error).
- * Permanent client errors (400, 401, 403, 422) are not retried.
- */
-async function sendViaResendWithRetry(params, maxRetries = 2) {
-  let attempt = 0;
-  while (true) {
-    try {
-      attempt++;
-      return await sendViaResend(params);
-    } catch (err) {
-      const isClientError = /API Error \((400|401|403|422)\)/.test(err.message);
-      if (attempt >= maxRetries || isClientError) {
-        throw err;
-      }
-      const backoffMs = attempt * 1000;
-      console.warn(`[EMAIL RETRY] Resend attempt ${attempt} failed (${err.message}). Retrying in ${backoffMs}ms...`);
-      await new Promise((resolve) => setTimeout(resolve, backoffMs));
-    }
-  }
-}
-
-/**
  * Configures and returns live Nodemailer SMTP transporter.
  * Sourced from environment variables: SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SMTP_SECURE, SMTP_FROM.
  */
@@ -446,6 +306,17 @@ export async function verifySmtpConnection() {
   const isProd = process.env.NODE_ENV === 'production';
   const provider = getEmailProvider();
 
+  if (provider === 'resend') {
+    const res = await verifyResendConnection();
+    if (res.ok) {
+      console.log(`[EMAIL] Active Provider: Official Resend Node.js SDK (Port 443 — Render Free Tier compatible). Configured Sender: ${res.sender}`);
+      return { ok: true, status: 'CONNECTED', provider: 'resend', sender: res.sender };
+    } else {
+      console.error(`[EMAIL ERROR] Resend connection check failed: ${res.error}`);
+      return { ok: false, status: 'FAILED', error: res.error, provider: 'resend' };
+    }
+  }
+
   if (provider === 'gmail') {
     const res = await verifyGmailConnection();
     if (res.ok) {
@@ -455,17 +326,6 @@ export async function verifySmtpConnection() {
       console.error(`[EMAIL ERROR] Google Gmail API connection failed: ${res.error}`);
       return { ok: false, status: 'FAILED', error: res.error, provider: 'gmail' };
     }
-  }
-
-  if (provider === 'resend') {
-    const apiKey = (process.env.RESEND_API_KEY || '').trim();
-    if (!apiKey) {
-      console.error('[EMAIL ERROR] RESEND_API_KEY is not configured.');
-      return { ok: false, status: 'FAILED', error: 'RESEND_API_KEY is not configured', provider: 'resend' };
-    }
-    const sender = resolveResendSender();
-    console.log(`[EMAIL] Provider: Resend HTTPS REST API (Port 443 — Render Free Tier compatible). Configured Sender: ${sender}`);
-    return { ok: true, status: 'CONNECTED', provider: 'resend', sender };
   }
 
   if (provider === 'brevo') {
@@ -645,7 +505,112 @@ export async function sendEmail({
   };
   console.log(`[EMAIL DISPATCH INITIATED] ${JSON.stringify(diagnosticInfo)}`);
 
-  // 1. Google Gmail API (Primary OAuth 2.0 HTTPS Dispatch)
+  // 1. Official Resend Node.js SDK (Primary Reliable Transactional Provider)
+  if (provider === 'resend') {
+    try {
+      const dispatchResult = await sendEmailViaResendSdk({
+        from,
+        to: finalTo,
+        cc: finalCc,
+        bcc: finalBcc,
+        subject,
+        html,
+        text,
+        attachments,
+      });
+
+      const messageId = dispatchResult.id || dispatchResult.messageId;
+      const status = 'ACCEPTED';
+
+      await safeAuditLog([
+        () => NotificationLog.create({
+          type,
+          recipient: recipientString,
+          subject,
+          content: text || html,
+          status,
+          metadata: {
+            ...metadata,
+            to: finalTo,
+            cc: finalCc,
+            bcc: finalBcc,
+            messageId,
+            deliveryState: 'QUEUED_BY_GATEWAY',
+            provider: 'resend',
+          },
+        }),
+        () => EmailLog.create({
+          recipient: recipientString,
+          to: finalTo,
+          cc: finalCc,
+          bcc: finalBcc,
+          subject,
+          emailType: type,
+          status,
+          traineeId,
+          traineeName,
+          triggeredBy,
+          content: html || text,
+          metadata: {
+            ...metadata,
+            html,
+            text,
+            messageId,
+            deliveryState: 'QUEUED_BY_GATEWAY',
+            provider: 'resend',
+          },
+        }),
+      ]);
+
+      console.log(`[EMAIL DISPATCH ACCEPTED via Resend SDK] ${JSON.stringify({ ...diagnosticInfo, status: 'ACCEPTED', messageId, provider: 'resend', deliveryState: 'QUEUED_BY_GATEWAY' })}`);
+      return {
+        ok: true,
+        status: 'ACCEPTED',
+        messageId,
+        id: messageId,
+        to: finalTo,
+        cc: finalCc,
+        bcc: finalBcc,
+        provider: 'resend',
+        deliveryState: 'QUEUED_BY_GATEWAY',
+        cached: Boolean(dispatchResult.cached),
+      };
+    } catch (err) {
+      const friendlyError = err.message;
+      console.error(`[EMAIL DISPATCH FAILED via Resend SDK] ${JSON.stringify({ ...diagnosticInfo, status: 'FAILED', error: friendlyError, provider: 'resend' })}`);
+
+      await safeAuditLog([
+        () => NotificationLog.create({
+          type,
+          recipient: recipientString,
+          subject,
+          content: text || html,
+          status: 'FAILED',
+          error: friendlyError,
+          metadata: { ...metadata, to: finalTo, cc: finalCc, bcc: finalBcc, provider: 'resend' },
+        }),
+        () => EmailLog.create({
+          recipient: recipientString,
+          to: finalTo,
+          cc: finalCc,
+          bcc: finalBcc,
+          subject,
+          emailType: type,
+          status: 'FAILED',
+          error: friendlyError,
+          traineeId,
+          traineeName,
+          triggeredBy,
+          content: html || text,
+          metadata: { ...metadata, html, text, provider: 'resend' },
+        }),
+      ]);
+
+      return { ok: false, status: 'FAILED', error: friendlyError, to: finalTo, cc: finalCc, bcc: finalBcc, provider: 'resend' };
+    }
+  }
+
+  // 2. Google Gmail API (Secondary OAuth 2.0 HTTPS Dispatch)
   if (provider === 'gmail') {
     try {
       const dispatchResult = await sendMailViaGmail({
@@ -783,17 +748,13 @@ export async function sendEmail({
     }
   }
 
-  // 2. Legacy fallback providers (Brevo, Resend, local SMTP if configured)
-  if (provider === 'brevo' || provider === 'resend' || provider === 'smtp') {
+  // 3. Fallback providers (Brevo, local SMTP if configured)
+  if (provider === 'brevo' || provider === 'smtp') {
     try {
       let dispatchResult;
       if (provider === 'brevo') {
         dispatchResult = await enqueueEmail(() =>
           sendViaBrevo({ from, to: finalTo, cc: finalCc, bcc: finalBcc, subject, html, text, attachments })
-        );
-      } else if (provider === 'resend') {
-        dispatchResult = await enqueueEmail(() =>
-          sendViaResendWithRetry({ from, to: finalTo, cc: finalCc, bcc: finalBcc, subject, html, text, attachments })
         );
       } else {
         const transport = getTransporter();
@@ -2053,28 +2014,97 @@ ${footerText}
 
 /**
  * Sends a 4-digit verification OTP to the user's email during trainee registration.
- * Expires in 5 minutes.
+ * Expires in 5 minutes. Formatted with professional responsive HTML styling.
  */
 export async function sendRegistrationOtpEmail({ email, otp }) {
-  const subject = 'Your Trainee Hostel Registration Verification Code';
-  const html = `
-    <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 24px; border: 1px solid #e2e8f0; border-radius: 8px;">
-      <h2 style="color: #1e293b; margin-top: 0;">Email Verification</h2>
-      <p style="color: #475569; font-size: 15px;">Use the verification code below to complete your Trainee Registration. This code is valid for 5 minutes.</p>
-      <div style="margin: 24px 0; padding: 16px; background-color: #f1f5f9; border-radius: 8px; text-align: center;">
-        <span style="font-size: 32px; font-weight: 700; letter-spacing: 6px; color: #0284c7;">${otp}</span>
-      </div>
-      <p style="color: #64748b; font-size: 13px;">If you did not request this verification code, please ignore this email.</p>
-    </div>
-  `;
-  const text = `Your verification code for Trainee Registration is: ${otp}. It expires in 5 minutes.`;
+  const cfg = await safeGetConfig();
+  const orgName = cfg?.orgBranding?.orgName || 'Apollo Tyres Ltd';
+  const rendered = renderEmailOtpTemplate({
+    otp,
+    email,
+    expiresMinutes: 5,
+    organizationName: orgName,
+    purpose: 'Trainee Registration Verification',
+  });
+
   return sendEmail({
     to: email,
-    subject,
-    html,
-    text,
+    subject: rendered.subject,
+    html: rendered.html,
+    text: rendered.text,
     type: 'OTP',
     triggeredBy: 'Registration OTP Request',
+  });
+}
+
+/**
+ * Sends Login OTP for 2FA or passwordless portal login.
+ * Expires in 5 minutes.
+ */
+export async function sendLoginOtpEmail({ email, otp, username = '', ipAddress = '' }) {
+  const cfg = await safeGetConfig();
+  const orgName = cfg?.orgBranding?.orgName || 'Apollo Tyres Ltd';
+  const rendered = renderLoginOtpTemplate({
+    otp,
+    email,
+    username,
+    ipAddress,
+    expiresMinutes: 5,
+    organizationName: orgName,
+  });
+
+  return sendEmail({
+    to: email,
+    subject: rendered.subject,
+    html: rendered.html,
+    text: rendered.text,
+    type: 'LOGIN_OTP',
+    triggeredBy: 'Login OTP Verification',
+  });
+}
+
+/**
+ * Sends Forgot Password Email with secure, expiring reset link.
+ */
+export async function sendForgotPasswordEmail({ email, resetUrl, name = 'User', expiresHours = 1 }) {
+  const cfg = await safeGetConfig();
+  const orgName = cfg?.orgBranding?.orgName || 'Apollo Tyres Ltd';
+  const rendered = renderForgotPasswordTemplate({
+    name,
+    resetUrl,
+    expiresHours,
+    organizationName: orgName,
+  });
+
+  return sendEmail({
+    to: email,
+    subject: rendered.subject,
+    html: rendered.html,
+    text: rendered.text,
+    type: 'PASSWORD_RESET',
+    triggeredBy: 'Forgot Password Request',
+  });
+}
+
+/**
+ * Sends Password Reset Confirmation Email after successful password update.
+ */
+export async function sendPasswordResetConfirmationEmail({ email, name = 'User', loginUrl = '' }) {
+  const cfg = await safeGetConfig();
+  const orgName = cfg?.orgBranding?.orgName || 'Apollo Tyres Ltd';
+  const rendered = renderPasswordResetConfirmationTemplate({
+    name,
+    loginUrl: loginUrl || `${getAppUrl()}/#/login`,
+    organizationName: orgName,
+  });
+
+  return sendEmail({
+    to: email,
+    subject: rendered.subject,
+    html: rendered.html,
+    text: rendered.text,
+    type: 'PASSWORD_RESET_CONFIRMATION',
+    triggeredBy: 'Password Reset Success',
   });
 }
 

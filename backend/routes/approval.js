@@ -21,6 +21,10 @@ import {
   replaceDynamicPlaceholders,
   verifyGmailConnection,
   getGmailConfigStatus,
+  isResendConfigured,
+  verifyResendConnection,
+  resolveSenderAddress,
+  getEmailProvider,
 } from '../services/emailService.js';
 import { computeValidity } from '../utils/validity.js';
 import { migrateExistingPhotosToDrive } from '../services/googleDriveService.js';
@@ -1115,7 +1119,29 @@ router.get('/admin/notification-email', auth, async (req, res) => {
   }
 });
 
-// ---------------- 16b. Gmail API Integration Status (Super Admin & Admin) ----------------
+// ---------------- 16b. Resend / Transactional Email Provider Status (Super Admin & Admin) ----------------
+router.get(['/admin/email/status', '/admin/resend/status'], auth, async (req, res) => {
+  try {
+    const configured = isResendConfigured();
+    const activeProvider = getEmailProvider();
+    const sender = resolveSenderAddress();
+    let testResult = null;
+    if (configured && req.query.test === 'true') {
+      testResult = await verifyResendConnection();
+    }
+    return res.json({
+      ok: true,
+      provider: activeProvider,
+      configured,
+      sender,
+      connectionTest: testResult,
+    });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// ---------------- 16c. Gmail API Integration Status (Legacy) ----------------
 router.get('/admin/gmail/status', auth, async (req, res) => {
   try {
     const configStatus = getGmailConfigStatus();

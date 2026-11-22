@@ -1876,6 +1876,8 @@ function AdminNotificationEmailConfig() {
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
   const [testResult, setTestResult] = useState(null);
+  const [providerStatus, setProviderStatus] = useState(null);
+  const [testingProvider, setTestingProvider] = useState(false);
 
   const loadAdminEmail = async () => {
     try {
@@ -1891,8 +1893,28 @@ function AdminNotificationEmailConfig() {
     }
   };
 
+  const loadProviderStatus = async (runTest = false) => {
+    try {
+      if (runTest) setTestingProvider(true);
+      const res = await api(`/api/admin/email/status${runTest ? '?test=true' : ''}`);
+      setProviderStatus(res);
+      if (runTest) {
+        if (res.connectionTest?.ok) {
+          notify(`✓ Resend API connection verified successfully as ${res.sender}`);
+        } else {
+          notify(`Resend check: ${res.connectionTest?.error || 'Verification failed'}`);
+        }
+      }
+    } catch (err) {
+      console.warn('Could not load email provider status:', err.message);
+    } finally {
+      if (runTest) setTestingProvider(false);
+    }
+  };
+
   useEffect(() => {
     loadAdminEmail();
+    loadProviderStatus(false);
   }, []);
 
   const handleSave = async (e) => {
@@ -1931,7 +1953,7 @@ function AdminNotificationEmailConfig() {
         method: 'POST',
         body: { targetEmail: savedEmail },
       });
-      setTestResult({ ok: true, recipient: res.recipient, message: 'Test alert dispatched successfully.' });
+      setTestResult({ ok: true, recipient: res.recipient, message: 'Test alert dispatched successfully via ' + (res.dispatch?.provider || 'email service') + '.' });
       notify(`✓ Test notification sent to ${res.recipient}.`);
     } catch (err) {
       setTestResult({ ok: false, error: err.message });
@@ -1943,9 +1965,46 @@ function AdminNotificationEmailConfig() {
 
   return (
     <Card
-      title="Admin Notification Email Configuration"
-      sub="Single source of truth in MongoDB for system alerts, approval notifications, and administrator communications."
+      title="Admin Notification Email & Resend Infrastructure"
+      sub="Single source of truth in MongoDB for system alerts, approval notifications, and transactional email infrastructure."
     >
+      {/* Active Infrastructure Provider Banner */}
+      <div
+        style={{
+          background: providerStatus?.configured ? '#f0fdf4' : '#fffbeb',
+          border: `1px solid ${providerStatus?.configured ? '#bbf7d0' : '#fde68a'}`,
+          borderRadius: 8,
+          padding: '14px 18px',
+          marginBottom: 18,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          flexWrap: 'wrap',
+          gap: 10,
+        }}
+      >
+        <div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontWeight: 700, fontSize: 13.5, color: providerStatus?.configured ? '#166534' : '#92400e' }}>
+            <span>{providerStatus?.configured ? '🟢' : '🟡'}</span>
+            <span>Active Email Engine: <strong>{providerStatus?.provider ? providerStatus.provider.toUpperCase() : 'RESEND'} (Official SDK)</strong></span>
+            <span style={{ fontSize: 11, background: providerStatus?.configured ? '#dcfce7' : '#fef3c7', padding: '2px 8px', borderRadius: 12 }}>
+              Port 443 &middot; Render Free Tier Compatible
+            </span>
+          </div>
+          <div style={{ fontSize: 12, color: '#64748b', marginTop: 4 }}>
+            Configured Sender Address: <code style={{ color: '#5b21b6', fontWeight: 600 }}>{providerStatus?.sender || 'Apollo Tyres Ltd <onboarding@resend.dev>'}</code>
+          </div>
+        </div>
+        <button
+          type="button"
+          className="btn btn-ghost btn-xs"
+          onClick={() => loadProviderStatus(true)}
+          disabled={testingProvider}
+          style={{ whiteSpace: 'nowrap' }}
+        >
+          <Icon name="refresh" size={12} /> {testingProvider ? 'Testing API…' : 'Test Resend API'}
+        </button>
+      </div>
       <div
         style={{
           background: 'linear-gradient(135deg, #1e1b4b 0%, #312e81 100%)',
@@ -2231,6 +2290,12 @@ const TEMPLATE_TABS = [
   ['approval', 'Approval Request Email'],
   ['approvalApproved', 'Approval Decision (Approved)'],
   ['approvalRejected', 'Approval Decision (Rejected)'],
+  ['registrationConfirmation', 'Application Confirmation'],
+  ['emailOtp', 'Email OTP Verification'],
+  ['loginOtp', 'Login OTP (2FA)'],
+  ['forgotPassword', 'Forgot Password'],
+  ['passwordResetConfirmation', 'Password Reset Confirmed'],
+  ['adminAlert', 'Admin System Alert'],
 ];
 
 function EmailTemplateEditor() {
