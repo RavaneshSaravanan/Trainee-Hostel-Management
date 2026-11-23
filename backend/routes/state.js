@@ -521,4 +521,54 @@ router.put('/state', auth, async (req, res) => {
   }
 });
 
+
+// ---------------- Email & Verification Control (Super Admin Only) ----------------
+router.get('/config/email-verification-control', auth, async (req, res) => {
+  try {
+    const configDoc = await Config.findOne({ key: 'main' }).lean();
+    const config = withDefaults(configDoc || DEFAULT_CONFIG);
+    return res.json({
+      ok: true,
+      emailVerificationControl: config.emailVerificationControl,
+    });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+router.patch('/config/email-verification-control', auth, requireSuper, async (req, res) => {
+  try {
+    const updates = req.body || {};
+    const configDoc = await Config.findOne({ key: 'main' }).lean();
+    const current = configDoc?.emailVerificationControl || DEFAULT_CONFIG.emailVerificationControl;
+
+    const newControl = {
+      welcomeEmail: updates.welcomeEmail !== undefined ? Boolean(updates.welcomeEmail) : (current.welcomeEmail !== false),
+      idCardEmail: updates.idCardEmail !== undefined ? Boolean(updates.idCardEmail) : (current.idCardEmail !== false),
+      registrationCompleteEmail: updates.registrationCompleteEmail !== undefined ? Boolean(updates.registrationCompleteEmail) : (current.registrationCompleteEmail !== false),
+      approvalEmail: updates.approvalEmail !== undefined ? Boolean(updates.approvalEmail) : (current.approvalEmail !== false),
+      registrationOtp: updates.registrationOtp !== undefined ? Boolean(updates.registrationOtp) : (current.registrationOtp !== false),
+      emailVerification: updates.emailVerification !== undefined ? Boolean(updates.emailVerification) : (current.emailVerification !== false),
+      configuredAt: new Date(),
+      configuredBy: req.user.username || req.user.name || 'Super Admin',
+    };
+
+    const updated = await Config.findOneAndUpdate(
+      { key: 'main' },
+      { $set: { emailVerificationControl: newControl } },
+      { upsert: true, new: true, setDefaultsOnInsert: true }
+    );
+
+    await bumpRev();
+
+    return res.json({
+      ok: true,
+      message: 'Email & Verification Control settings updated successfully.',
+      emailVerificationControl: updated.emailVerificationControl,
+    });
+  } catch (err) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
 export default router;

@@ -177,6 +177,7 @@ export default function NewTrainee() {
 
         <RegistrationForm
           customFields={config.customFields}
+          emailVerificationControl={config.emailVerificationControl}
           onSubmit={submit}
           busy={busy}
           submitText={busy ? 'Saving to Database…' : 'Submit Registration'}

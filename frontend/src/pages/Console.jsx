@@ -6,6 +6,7 @@ import {
   DEFAULT_CONFIG,
   DEFAULT_EMAIL_TEMPLATE,
   DEFAULT_EMAIL_TEMPLATES,
+  DEFAULT_EMAIL_VERIFICATION_CONTROL,
   DEFAULT_IDCARD_TEMPLATE,
   DEFAULT_ORG_BRANDING,
   FONTS,
@@ -2905,12 +2906,341 @@ function EmailDeliveryHistory() {
   );
 }
 
+
+/* ---------------- Email & Verification Control ---------------- */
+export function EmailVerificationControl() {
+  const { config, updateConfig, notify } = useStore();
+  const currentControl = config.emailVerificationControl || DEFAULT_EMAIL_VERIFICATION_CONTROL;
+
+  const [controls, setControls] = useState({
+    welcomeEmail: currentControl.welcomeEmail !== false,
+    idCardEmail: currentControl.idCardEmail !== false,
+    registrationCompleteEmail: currentControl.registrationCompleteEmail !== false,
+    approvalEmail: currentControl.approvalEmail !== false,
+    registrationOtp: currentControl.registrationOtp !== false,
+    emailVerification: currentControl.emailVerification !== false,
+  });
+
+  const [saving, setSaving] = useState(false);
+  const [saveSuccess, setSaveSuccess] = useState(false);
+  const [saveError, setSaveError] = useState('');
+  const [confirmModal, setConfirmModal] = useState(null);
+
+  useEffect(() => {
+    if (config.emailVerificationControl) {
+      setControls({
+        welcomeEmail: config.emailVerificationControl.welcomeEmail !== false,
+        idCardEmail: config.emailVerificationControl.idCardEmail !== false,
+        registrationCompleteEmail: config.emailVerificationControl.registrationCompleteEmail !== false,
+        approvalEmail: config.emailVerificationControl.approvalEmail !== false,
+        registrationOtp: config.emailVerificationControl.registrationOtp !== false,
+        emailVerification: config.emailVerificationControl.emailVerification !== false,
+      });
+    }
+  }, [config.emailVerificationControl]);
+
+  const handleToggle = (key, title) => {
+    const nextVal = !controls[key];
+
+    if (!nextVal && (key === 'registrationOtp' || key === 'emailVerification')) {
+      const desc = key === 'registrationOtp'
+        ? 'Disabling Registration OTP allows trainees to submit registration without 4-digit email verification. Ensure this is intended before turning it off.'
+        : 'Disabling Email Address Verification will bypass email ownership validation for onboarding communications.';
+
+      setConfirmModal({
+        key,
+        title: `Disable ${title}?`,
+        desc,
+        onConfirm: () => {
+          setControls((prev) => ({ ...prev, [key]: false }));
+          setConfirmModal(null);
+        },
+      });
+      return;
+    }
+
+    setControls((prev) => ({ ...prev, [key]: nextVal }));
+  };
+
+  const handleSave = async () => {
+    setSaving(true);
+    setSaveSuccess(false);
+    setSaveError('');
+
+    try {
+      const res = await api('/api/config/email-verification-control', {
+        method: 'PATCH',
+        body: controls,
+      });
+
+      if (res && res.ok) {
+        updateConfig({
+          ...config,
+          emailVerificationControl: res.emailVerificationControl,
+        });
+        setSaveSuccess(true);
+        notify('Email & Verification Control settings saved successfully.');
+        setTimeout(() => setSaveSuccess(false), 4000);
+      } else {
+        setSaveError(res?.error || 'Failed to save settings.');
+      }
+    } catch (err) {
+      setSaveError(err.message || 'Failed to save settings.');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const items = [
+    {
+      key: 'welcomeEmail',
+      title: '1. Welcome Email',
+      desc: 'Send official onboarding welcome packet and hostel guidelines upon approval & room allocation.',
+      category: 'Trainee Communications',
+    },
+    {
+      key: 'idCardEmail',
+      title: '2. ID Card Email',
+      desc: 'Deliver official printable PDF Trainee Identity Card with scannable QR code to registered email.',
+      category: 'Identity & Access',
+    },
+    {
+      key: 'registrationCompleteEmail',
+      title: '3. Registration Complete Email',
+      desc: 'Send registration received confirmation email to trainee upon self-registration submission.',
+      category: 'Trainee Communications',
+    },
+    {
+      key: 'approvalEmail',
+      title: '4. Approval Email',
+      desc: 'Send review requests to designated approvers, and dispatch approval/rejection notices to trainees.',
+      category: 'Administrative Workflow',
+    },
+    {
+      key: 'registrationOtp',
+      title: '5. Registration OTP Authentication',
+      desc: 'Require 4-digit email OTP verification before completing trainee self-registration.',
+      category: 'Security & Verification',
+      critical: true,
+    },
+    {
+      key: 'emailVerification',
+      title: '6. Email Address Verification',
+      desc: 'Enforce verified email ownership before sending official welcome and ID card emails.',
+      category: 'Security & Verification',
+      critical: true,
+    },
+  ];
+
+  const auditInfo = config.emailVerificationControl?.configuredAt
+    ? `Last updated on ${fmtDate(config.emailVerificationControl.configuredAt)} by ${config.emailVerificationControl.configuredBy || 'Super Admin'}`
+    : 'Default configuration active (All flows enabled)';
+
+  return (
+    <div style={{ maxWidth: 960, margin: '0 auto' }}>
+      <Card
+        title="Email & Verification Control"
+        sub="Independently configure automated email flows, trainee OTP challenge, and email address verification."
+      >
+        <div style={{ padding: '4px 0 16px' }}>
+          <p className="muted" style={{ fontSize: 13.5, lineHeight: 1.5, margin: '0 0 20px' }}>
+            Control which automated emails are dispatched by the system and configure trainee identity verification rules.
+            Each flow operates independently. Disabling one flow will not affect other enabled flows.
+          </p>
+
+          {saveSuccess && (
+            <div className="alert-banner good" style={{ marginBottom: 20 }}>
+              <Icon name="check" size={18} />
+              <div className="alert-text"><strong>Settings Saved:</strong> All email and verification settings have been saved permanently to MongoDB.</div>
+            </div>
+          )}
+
+          {saveError && (
+            <div className="alert-banner bad" style={{ marginBottom: 20 }}>
+              <Icon name="alert" size={18} />
+              <div className="alert-text"><strong>Error:</strong> {saveError}</div>
+            </div>
+          )}
+
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(380px, 1fr))', gap: 16 }}>
+            {items.map((item) => {
+              const isOn = controls[item.key];
+              return (
+                <div
+                  key={item.key}
+                  style={{
+                    background: 'var(--card-bg, #ffffff)',
+                    border: isOn ? '1.5px solid var(--primary, #7c3aed)' : '1px solid var(--border, #e2e8f0)',
+                    borderRadius: 12,
+                    padding: '16px 18px',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    justifyContent: 'space-between',
+                    boxShadow: isOn ? '0 2px 8px rgba(124, 58, 237, 0.08)' : 'none',
+                    transition: 'all 0.2s ease',
+                  }}
+                >
+                  <div>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+                      <span style={{ fontSize: 11, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.5, color: 'var(--muted, #64748b)' }}>
+                        {item.category}
+                      </span>
+                      <span
+                        style={{
+                          padding: '3px 10px',
+                          borderRadius: 20,
+                          fontSize: 12,
+                          fontWeight: 700,
+                          backgroundColor: isOn ? '#dcfce7' : '#f1f5f9',
+                          color: isOn ? '#15803d' : '#64748b',
+                          border: isOn ? '1px solid #bbf7d0' : '1px solid #e2e8f0',
+                        }}
+                      >
+                        {isOn ? '● ON' : '○ OFF'}
+                      </span>
+                    </div>
+
+                    <div style={{ fontWeight: 600, fontSize: 15, color: 'var(--text, #1e293b)', marginBottom: 6 }}>
+                      {item.title}
+                    </div>
+
+                    <p style={{ fontSize: 13, color: 'var(--muted, #64748b)', margin: '0 0 14px', lineHeight: 1.45 }}>
+                      {item.desc}
+                    </p>
+                  </div>
+
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', borderTop: '1px solid var(--border, #f1f5f9)', paddingTop: 12 }}>
+                    <span style={{ fontSize: 12, color: 'var(--muted)' }}>
+                      Current status: <strong>{isOn ? 'Enabled' : 'Disabled'}</strong>
+                    </span>
+                    <button
+                      type="button"
+                      className={`btn btn-xs ${isOn ? 'btn-primary' : 'btn-ghost'}`}
+                      style={{ minWidth: 80, fontWeight: 600 }}
+                      onClick={() => handleToggle(item.key, item.title)}
+                    >
+                      {isOn ? 'Turn OFF' : 'Turn ON'}
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Aadhaar Verification Status Section */}
+          <div
+            style={{
+              marginTop: 24,
+              padding: '18px 20px',
+              borderRadius: 12,
+              background: '#f8fafc',
+              border: '1px solid #e2e8f0',
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8, flexWrap: 'wrap', gap: 8 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span style={{ fontSize: 16 }}>🛡️</span>
+                <span style={{ fontWeight: 700, fontSize: 15, color: '#1e293b' }}>
+                  Aadhaar Validation & Verification Status
+                </span>
+              </div>
+              <span
+                style={{
+                  padding: '3px 12px',
+                  borderRadius: 20,
+                  fontSize: 12,
+                  fontWeight: 700,
+                  backgroundColor: '#e0e7ff',
+                  color: '#4338ca',
+                  border: '1px solid #c7d2fe',
+                }}
+              >
+                Format Validated (12-Digit)
+              </span>
+            </div>
+
+            <p style={{ fontSize: 13, color: '#475569', margin: '4px 0 10px', lineHeight: 1.5 }}>
+              The system strictly validates the 12-digit format and Verhoeff checksum algorithm on both frontend and backend.
+              Aadhaar numbers are stored using AES-256 encryption with HMAC SHA-256 duplicate checking, and displayed in masked format (<code style={{ background: '#f1f5f9', padding: '1px 5px', borderRadius: 4 }}>XXXX-XXXX-1234</code>).
+            </p>
+
+            <div style={{ fontSize: 12.5, color: '#64748b', background: '#ffffff', padding: '10px 14px', borderRadius: 8, border: '1px solid #e2e8f0' }}>
+              ℹ️ <strong>Official Live UIDAI / DigiLocker Verification:</strong> Government live verification requires an authorized UIDAI or DigiLocker business integration. In the absence of an authorized API key and biometric gateway, genuine format validation is enforced without simulating fake verification.
+            </div>
+          </div>
+
+          {/* Action Bar */}
+          <div
+            style={{
+              marginTop: 24,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              borderTop: '1px solid var(--border, #e2e8f0)',
+              paddingTop: 18,
+              flexWrap: 'wrap',
+              gap: 12,
+            }}
+          >
+            <div style={{ fontSize: 12.5, color: 'var(--muted, #64748b)' }}>
+              {auditInfo}
+            </div>
+
+            <div style={{ display: 'flex', gap: 10 }}>
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={handleSave}
+                disabled={saving}
+                style={{ minWidth: 140 }}
+              >
+                {saving ? 'Saving Changes…' : 'Save Settings'}
+              </button>
+            </div>
+          </div>
+        </div>
+      </Card>
+
+      {/* Confirmation Modal for Disabling Critical Verification */}
+      {confirmModal && (
+        <Modal
+          title={confirmModal.title}
+          onClose={() => setConfirmModal(null)}
+          onSubmit={confirmModal.onConfirm}
+          submitText="Confirm Disable"
+        >
+          <div style={{ padding: 6 }}>
+            <div style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
+              <div style={{ fontSize: 28, color: '#f59e0b' }}>⚠️</div>
+              <div>
+                <p style={{ fontSize: 14, color: 'var(--text, #1e293b)', margin: '0 0 10px', lineHeight: 1.5 }}>
+                  {confirmModal.desc}
+                </p>
+                <p style={{ fontSize: 13, color: 'var(--muted, #64748b)', margin: 0 }}>
+                  Are you sure you want to turn this setting OFF?
+                </p>
+              </div>
+            </div>
+          </div>
+        </Modal>
+      )}
+    </div>
+  );
+}
+
 /* ---------------- Combined Email Management Container ---------------- */
 function EmailManagement() {
-  const [subTab, setSubTab] = useState('admin-email');
+  const [subTab, setSubTab] = useState('controls');
   return (
     <div>
       <div style={{ display: 'flex', gap: 8, marginBottom: 20, borderBottom: '1px solid var(--border)', paddingBottom: 12, flexWrap: 'wrap' }}>
+        <button
+          className={`btn btn-sm ${subTab === 'controls' ? 'btn-primary' : 'btn-ghost'}`}
+          onClick={() => setSubTab('controls')}
+          style={{ fontWeight: 600 }}
+        >
+          <Icon name="shield" size={14} /> Email &amp; Verification Control
+        </button>
         <button
           className={`btn btn-sm ${subTab === 'admin-email' ? 'btn-primary' : 'btn-ghost'}`}
           onClick={() => setSubTab('admin-email')}
@@ -2941,6 +3271,7 @@ function EmailManagement() {
         </button>
       </div>
 
+      {subTab === 'controls' && <EmailVerificationControl />}
       {subTab === 'admin-email' && <AdminNotificationEmailConfig />}
       {subTab === 'recipients' && (
         <>
@@ -2985,6 +3316,7 @@ function UsersAndRoles() {
 
 /* ---------------- Reorganized Admin Console Tabs ---------------- */
 const CONSOLE_TABS = [
+  ['email-controls', 'Email & Verification Control'],
   ['bulk-import', 'Bulk Trainee Import'],
   ['email', 'Email Management'],
   ['branding', 'Organization Branding'],
@@ -2998,7 +3330,7 @@ const CONSOLE_TABS = [
 
 export default function Console() {
   const { isSuper } = useStore();
-  const [tab, setTab] = useState('email');
+  const [tab, setTab] = useState('email-controls');
 
   if (!isSuper) {
     return (
@@ -3028,7 +3360,8 @@ export default function Console() {
         ))}
       </div>
 
-      {tab === 'bulk-import' ? <BulkImport />
+      {tab === 'email-controls' ? <EmailVerificationControl />
+        : tab === 'bulk-import' ? <BulkImport />
         : tab === 'email' ? <EmailManagement />
         : tab === 'branding' ? <OrganizationBranding />
         : tab === 'idcard' ? <IdCardDesignSettings />

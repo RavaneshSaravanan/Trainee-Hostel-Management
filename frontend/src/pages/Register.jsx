@@ -65,6 +65,7 @@ export default function Register() {
             {msg && <div className="notice" style={{ margin: '12px 20px 0' }}>{msg}</div>}
             <RegistrationForm
               customFields={cfg.customFields}
+              emailVerificationControl={cfg.emailVerificationControl}
               onSubmit={submit}
               busy={busy}
               note="Your details are reviewed by the hostel warden."

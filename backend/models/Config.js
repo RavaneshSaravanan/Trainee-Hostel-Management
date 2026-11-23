@@ -44,6 +44,16 @@ const configSchema = new mongoose.Schema(
       type: mongoose.Schema.Types.Mixed,
       default: () => ({}),
     },
+    emailVerificationControl: {
+      welcomeEmail: { type: Boolean, default: true },
+      idCardEmail: { type: Boolean, default: true },
+      registrationCompleteEmail: { type: Boolean, default: true },
+      approvalEmail: { type: Boolean, default: true },
+      registrationOtp: { type: Boolean, default: true },
+      emailVerification: { type: Boolean, default: true },
+      configuredAt: { type: Date },
+      configuredBy: { type: String, default: '' },
+    },
     approvalConfig: {
       enabled: { type: Boolean, default: true },
       approvers: {
@@ -72,4 +82,5 @@ const configSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-export const Config = mongoose.model('Config', configSchema);
+export const Config = mongoose.models.Config || mongoose.model('Config', configSchema);
+export default Config;

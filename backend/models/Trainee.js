@@ -129,6 +129,23 @@ const traineeSchema = new mongoose.Schema(
     approvalEmailSent: { type: Boolean, default: false },
     approvalEmailSentAt: { type: Date },
     approvalEmailError: { type: String, default: '' },
+
+    // Registration Complete Email Delivery tracking
+    registrationConfirmationSent: { type: Boolean, default: false },
+    registrationConfirmationSentAt: { type: Date },
+    registrationConfirmationError: { type: String, default: '' },
+
+    // Email Address Verification tracking
+    emailVerified: { type: Boolean, default: false, index: true },
+    emailVerifiedAt: { type: Date },
+
+    // Aadhaar Verification status (live integration vs format validation)
+    aadhaarVerificationStatus: {
+      type: String,
+      enum: ['FORMAT_VALIDATED', 'UNVERIFIED', 'VERIFIED'],
+      default: 'FORMAT_VALIDATED',
+      index: true,
+    },
   },
   { timestamps: true }
 );
@@ -155,4 +172,5 @@ traineeSchema.index(
   }
 );
 
-export const Trainee = mongoose.model('Trainee', traineeSchema);
+export const Trainee = mongoose.models.Trainee || mongoose.model('Trainee', traineeSchema);
+export default Trainee;

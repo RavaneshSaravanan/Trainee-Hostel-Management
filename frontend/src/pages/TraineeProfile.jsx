@@ -41,8 +41,28 @@ function Overview({ t }) {
     ['Stay Classification', val.label],
     ['Free Stay Expiry Date', fmtDate(val.expiryDate) || '—'],
     ['Days Remaining in Free Stay', val.daysRemaining !== null ? (val.daysRemaining >= 0 ? `${val.daysRemaining} days` : `Expired (${Math.abs(val.daysRemaining)} days ago)`) : '—'],
-    ['Trainee ID', t.traineeId || '—'], ['Hostel ID', t.hostelId || '—'], ['Mobile', t.mobile], ['E-mail', t.email || '—'],
-    ['Date of Birth', fmtDate(t.dob)], ['Gender', t.gender], ['Qualification', t.qualification], ['Aadhar No.', maskAadhaar(t.aadhar)],
+    ['Trainee ID', t.traineeId || '—'], ['Hostel ID', t.hostelId || '—'], ['Mobile', t.mobile],
+    ['E-mail', t.email ? (
+      <span>
+        {t.email}
+        {t.emailVerified ? (
+          <span style={{ marginLeft: 8, padding: '2px 8px', borderRadius: 12, fontSize: 11, fontWeight: 700, backgroundColor: '#dcfce7', color: '#15803d', border: '1px solid #bbf7d0' }}>
+            Verified ✓
+          </span>
+        ) : (
+          <span style={{ marginLeft: 8, padding: '2px 8px', borderRadius: 12, fontSize: 11, fontWeight: 600, backgroundColor: '#f1f5f9', color: '#64748b', border: '1px solid #e2e8f0' }}>
+            Unverified
+          </span>
+        )}
+      </span>
+    ) : '—'],
+    ['Date of Birth', fmtDate(t.dob)], ['Gender', t.gender], ['Qualification', t.qualification],
+    ['Aadhar No.', maskAadhaar(t.aadhar)],
+    ['Aadhaar Status', t.aadhar ? (
+      <span style={{ padding: '2px 8px', borderRadius: 12, fontSize: 11, fontWeight: 700, backgroundColor: '#e0e7ff', color: '#4338ca', border: '1px solid #c7d2fe' }}>
+        {t.aadhaarVerificationStatus || 'FORMAT_VALIDATED'}
+      </span>
+    ) : '—'],
     ['Food', t.food], ['Joining Date', fmtDate(t.joiningDate)], ['Address', t.address1 || '—'],
     ['State', t.state || '—'], ['Guardian Name', t.guardianName || '—'], ['Guardian Contact', t.guardianContact || '—'],
     ['Employment Status', t.employmentStatus], ['Hostel Status', t.hostelStatus],

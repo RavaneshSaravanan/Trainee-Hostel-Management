@@ -948,6 +948,28 @@ export async function sendTraineeWelcomeEmail({ trainee, force = false, triggere
 
   // 6. Load customizable welcome template and branding from Config
   const cfg = await safeGetConfig();
+
+  // Super Admin Email Flow Controls
+  if (cfg?.emailVerificationControl?.welcomeEmail === false) {
+    console.log(`[WELCOME EMAIL SKIPPED] Welcome email flow disabled by Super Admin configuration for ${trainee.traineeId || trainee.qrId}`);
+    return {
+      ok: true,
+      status: 'SKIPPED_BY_CONFIG',
+      reason: 'WELCOME_EMAIL_DISABLED',
+      message: 'Welcome email skipped: Flow disabled by Super Admin configuration.',
+    };
+  }
+
+  // Super Admin Email Address Verification Guard
+  if (cfg?.emailVerificationControl?.emailVerification !== false && trainee.email && !trainee.emailVerified) {
+    console.log(`[WELCOME EMAIL DEFERRED] Trainee email ${trainee.email} is unverified and Email Verification is enabled.`);
+    return {
+      ok: false,
+      status: 'UNVERIFIED_EMAIL',
+      reason: 'EMAIL_NOT_VERIFIED',
+      message: 'Welcome email deferred: Trainee email address has not been verified.',
+    };
+  }
   const welcomeTpl = {
     ...DEFAULT_EMAIL_TEMPLATES.welcome,
     ...(cfg?.emailTemplates?.welcome || {}),
@@ -1241,6 +1263,14 @@ export async function sendApprovalRequestEmail({ approver, trainee }) {
   const reviewLink = reviewUrl;
 
   const cfg = await safeGetConfig();
+  if (cfg?.emailVerificationControl?.approvalEmail === false) {
+    return {
+      ok: true,
+      status: 'SKIPPED_BY_CONFIG',
+      reason: 'APPROVAL_EMAIL_DISABLED',
+      message: 'Approval review email skipped: Flow disabled by Super Admin configuration.',
+    };
+  }
   const approvalTpl = {
     ...DEFAULT_EMAIL_TEMPLATES.approval,
     ...(cfg?.emailTemplates?.approval || {}),
@@ -1518,6 +1548,18 @@ export async function sendDecisionNotificationEmail({ trainee, decision, rejecti
   }
 
   const cfg = await safeGetConfig();
+
+  // Super Admin Email Flow Controls
+  if (cfg?.emailVerificationControl?.approvalEmail === false) {
+    console.log(`[APPROVAL DECISION EMAIL SKIPPED] Approval decision email flow disabled by Super Admin configuration for ${trainee.traineeId || trainee.qrId}`);
+    return {
+      ok: true,
+      status: 'SKIPPED_BY_CONFIG',
+      reason: 'APPROVAL_EMAIL_DISABLED',
+      message: 'Approval decision email skipped: Flow disabled by Super Admin configuration.',
+    };
+  }
+
   const branding = { ...DEFAULT_ORG_BRANDING, ...(cfg?.orgBranding || {}) };
 
   const norm = String(decision || trainee?.approvalStatus || '').trim().toUpperCase();
@@ -1749,6 +1791,28 @@ export async function sendTraineeIdCardEmail({ trainee, force = false, isUpdated
 
   // 4. Load configuration template and organization branding
   const cfg = await safeGetConfig();
+
+  // Super Admin Email Flow Controls
+  if (cfg?.emailVerificationControl?.idCardEmail === false) {
+    console.log(`[ID CARD EMAIL SKIPPED] ID card email flow disabled by Super Admin configuration for ${trainee.traineeId || trainee.qrId}`);
+    return {
+      ok: true,
+      status: 'SKIPPED_BY_CONFIG',
+      reason: 'ID_CARD_EMAIL_DISABLED',
+      message: 'ID Card email skipped: Flow disabled by Super Admin configuration.',
+    };
+  }
+
+  // Super Admin Email Address Verification Guard
+  if (cfg?.emailVerificationControl?.emailVerification !== false && trainee.email && !trainee.emailVerified) {
+    console.log(`[ID CARD EMAIL DEFERRED] Trainee email ${trainee.email} is unverified and Email Verification is enabled.`);
+    return {
+      ok: false,
+      status: 'UNVERIFIED_EMAIL',
+      reason: 'EMAIL_NOT_VERIFIED',
+      message: 'ID Card email deferred: Trainee email address has not been verified.',
+    };
+  }
   const idCardTpl = isUpdated
     ? { ...DEFAULT_EMAIL_TEMPLATES.idCardUpdated, ...(cfg?.emailTemplates?.idCardUpdated || {}) }
     : { ...DEFAULT_EMAIL_TEMPLATES.idCard, ...(cfg?.emailTemplates?.idCard || {}) };
@@ -2018,6 +2082,13 @@ ${footerText}
  */
 export async function sendRegistrationOtpEmail({ email, otp }) {
   const cfg = await safeGetConfig();
+  if (cfg?.emailVerificationControl?.registrationOtp === false) {
+    return {
+      ok: false,
+      status: 'SKIPPED_BY_CONFIG',
+      error: 'Registration OTP is disabled by Super Admin configuration.',
+    };
+  }
   const orgName = cfg?.orgBranding?.orgName || 'Apollo Tyres Ltd';
   const rendered = renderEmailOtpTemplate({
     otp,
@@ -2135,6 +2206,15 @@ export async function sendRegistrationConfirmationEmail({ trainee, force = false
   }
 
   const cfg = await safeGetConfig();
+  if (cfg?.emailVerificationControl?.registrationCompleteEmail === false) {
+    console.log(`[REGISTRATION COMPLETE EMAIL SKIPPED] Flow disabled by Super Admin configuration for ${trainee.traineeId || trainee.qrId}`);
+    return {
+      ok: true,
+      status: 'SKIPPED_BY_CONFIG',
+      reason: 'REGISTRATION_COMPLETE_EMAIL_DISABLED',
+      message: 'Registration confirmation email skipped: Flow disabled by Super Admin configuration.',
+    };
+  }
   const regTpl = {
     ...DEFAULT_EMAIL_TEMPLATES.registrationConfirmation,
     ...(cfg?.emailTemplates?.registrationConfirmation || {}),
@@ -2318,6 +2398,17 @@ export async function sendApprovalRequestNotification({ trainee, force = false }
   }
 
   const cfg = await safeGetConfig();
+
+  // Super Admin Email Flow Controls
+  if (cfg?.emailVerificationControl?.approvalEmail === false) {
+    console.log(`[APPROVAL REQUEST EMAIL SKIPPED] Approval request email flow disabled by Super Admin configuration for ${trainee.traineeId || trainee.qrId}`);
+    return {
+      ok: true,
+      status: 'SKIPPED_BY_CONFIG',
+      reason: 'APPROVAL_EMAIL_DISABLED',
+      message: 'Approval request email skipped: Flow disabled by Super Admin configuration.',
+    };
+  }
 
   // Requirement 6: Bypass email dispatch if Approval Workflow is Disabled
   if (cfg?.approvalConfig && cfg.approvalConfig.enabled === false) {

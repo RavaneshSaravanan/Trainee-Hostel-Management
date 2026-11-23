@@ -55,6 +55,7 @@ export default function RegistrationForm({
   submitText = 'Submit Registration',
   note,
   busy = false,
+  emailVerificationControl,
 }) {
   const [values, setValues] = useState({
     traineeId: '',
@@ -82,6 +83,25 @@ export default function RegistrationForm({
   const [traineeIdSuccess, setTraineeIdSuccess] = useState('');
   const [traineeIdChecking, setTraineeIdChecking] = useState(false);
   const checkTimeoutRef = useRef(null);
+
+  // Email verification control setting (from Super Admin Settings)
+  const [control, setControl] = useState(emailVerificationControl || null);
+
+  useEffect(() => {
+    if (emailVerificationControl) {
+      setControl(emailVerificationControl);
+    } else {
+      api('/api/public', { auth: false })
+        .then((res) => {
+          if (res?.emailVerificationControl) {
+            setControl(res.emailVerificationControl);
+          }
+        })
+        .catch(() => {});
+    }
+  }, [emailVerificationControl]);
+
+  const registrationOtpEnabled = control ? control.registrationOtp !== false : true;
 
   // Email verification state
   const [emailVerified, setEmailVerified] = useState(false);
@@ -147,7 +167,7 @@ export default function RegistrationForm({
       case 'email':
         if (!value.trim()) return ERROR_MESSAGES.REQUIRED;
         if (!isValidEmail(value.trim())) return ERROR_MESSAGES.EMAIL_INVALID;
-        if (!isVerified) return ERROR_MESSAGES.EMAIL_UNVERIFIED;
+        if (registrationOtpEnabled && !isVerified) return ERROR_MESSAGES.EMAIL_UNVERIFIED;
         return '';
 
       case 'mobile':
@@ -319,7 +339,7 @@ export default function RegistrationForm({
   const isFormValid =
     values.name.trim().length > 0 &&
     isValidEmail(values.email.trim()) &&
-    emailVerified &&
+    (!registrationOtpEnabled || emailVerified) &&
     isValidMobile(values.mobile.trim()) &&
     values.guardianName.trim().length > 0 &&
     isValidGuardianContact(values.guardianContact.trim()) &&
@@ -363,7 +383,7 @@ export default function RegistrationForm({
 
     mandatoryFields.forEach((f) => {
       allTouched[f] = true;
-      const err = validateField(f, values[f], values, emailVerified);
+      const err = validateField(f, values[f], values, registrationOtpEnabled ? emailVerified : true);
       if (err) currentErrors[f] = err;
     });
 
@@ -510,41 +530,47 @@ export default function RegistrationForm({
                 disabled={emailVerified || (otpSent && otpCooldown > 0)}
                 required
               />
-              {emailVerified ? (
-                <span className="verified-badge">
-                  <Icon name="check" size={13} /> Email Verified
-                </span>
-              ) : otpSent ? (
-                <button
-                  type="button"
-                  className="btn btn-ghost btn-sm"
-                  onClick={() => {
-                    setOtpSent(false);
-                    setOtp('');
-                    setOtpMessage('');
-                    setOtpError('');
-                    setOtpTargetEmail('');
-                  }}
-                  style={{ whiteSpace: 'nowrap' }}
-                  title="Click to change email address"
-                >
-                  Change Email
-                </button>
+              {registrationOtpEnabled ? (
+                emailVerified ? (
+                  <span className="verified-badge">
+                    <Icon name="check" size={13} /> Email Verified
+                  </span>
+                ) : otpSent ? (
+                  <button
+                    type="button"
+                    className="btn btn-ghost btn-sm"
+                    onClick={() => {
+                      setOtpSent(false);
+                      setOtp('');
+                      setOtpMessage('');
+                      setOtpError('');
+                      setOtpTargetEmail('');
+                    }}
+                    style={{ whiteSpace: 'nowrap' }}
+                    title="Click to change email address"
+                  >
+                    Change Email
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    className="btn btn-ghost btn-sm"
+                    onClick={handleSendOtp}
+                    disabled={otpSending}
+                    style={{ whiteSpace: 'nowrap' }}
+                  >
+                    {otpSending ? 'Sending…' : 'Send OTP'}
+                  </button>
+                )
               ) : (
-                <button
-                  type="button"
-                  className="btn btn-ghost btn-sm"
-                  onClick={handleSendOtp}
-                  disabled={otpSending}
-                  style={{ whiteSpace: 'nowrap' }}
-                >
-                  {otpSending ? 'Sending…' : 'Send OTP'}
-                </button>
+                <span className="chip chip-gray" style={{ fontSize: 11, whiteSpace: 'nowrap' }}>
+                  OTP Disabled
+                </span>
               )}
             </div>
 
-            {/* OTP Entry Row */}
-            {otpSent && !emailVerified && (
+            {/* OTP Entry Row (Only shown when Registration OTP is enabled) */}
+            {registrationOtpEnabled && otpSent && !emailVerified && (
               <div className="otp-wrap">
                 <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--gray-800)' }}>
                   Enter the 4-digit OTP sent to {otpTargetEmail || values.email}:

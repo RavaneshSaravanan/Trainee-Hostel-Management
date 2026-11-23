@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useStore } from '../store.jsx';
 import { Card, Icon, Table } from '../components/ui.jsx';
 import { PAGES } from '../data/defaults.js';
+import { EmailVerificationControl } from './Console.jsx';
 
 export default function Settings() {
   const { db, session, roleName, roles, logout, changePassword, notify, isSuper, navigate } = useStore();
@@ -40,6 +41,14 @@ export default function Settings() {
           </form>
         </Card>
       </div>
+
+      {/* Super Admin Settings – Email & Verification Control */}
+      {isSuper && (
+        <div style={{ marginTop: 20, marginBottom: 20 }}>
+          <EmailVerificationControl />
+        </div>
+      )}
+
       <Card title="Role Permissions">
         <div className="perm-grid">
           {roles.map((r) => (

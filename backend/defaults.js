@@ -201,6 +201,17 @@ export const DEFAULT_EMAIL_TEMPLATES = {
 
 export const DEFAULT_EMAIL_RECIPIENTS = [];
 
+export const DEFAULT_EMAIL_VERIFICATION_CONTROL = {
+  welcomeEmail: true,
+  idCardEmail: true,
+  registrationCompleteEmail: true,
+  approvalEmail: true,
+  registrationOtp: true,
+  emailVerification: true,
+  configuredAt: null,
+  configuredBy: '',
+};
+
 export const DEFAULT_CONFIG = {
   appName: 'Trainee Hostel',
   appSub: 'Management System',
@@ -243,6 +254,10 @@ export const withDefaults = (c = {}) => ({
     ...(c.emailTemplates || {}),
   },
   emailRecipients: Array.isArray(c.emailRecipients) ? c.emailRecipients : DEFAULT_EMAIL_RECIPIENTS,
+  emailVerificationControl: {
+    ...DEFAULT_EMAIL_VERIFICATION_CONTROL,
+    ...(c.emailVerificationControl || {}),
+  },
   adminNotificationEmail: c.adminNotificationEmail || '',
   theme: { ...DEFAULT_CONFIG.theme, ...(c.theme || {}) },
   widgets: { ...DEFAULT_CONFIG.widgets, ...(c.widgets || {}) },

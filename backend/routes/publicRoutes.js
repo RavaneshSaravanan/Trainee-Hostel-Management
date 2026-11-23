@@ -94,6 +94,10 @@ router.get('/public', async (req, res) => {
       theme: config.theme,
       customFields: config.customFields,
       registrationOpen: config.registrationOpen,
+      emailVerificationControl: {
+        registrationOtp: config.emailVerificationControl?.registrationOtp !== false,
+        emailVerification: config.emailVerificationControl?.emailVerification !== false,
+      },
     });
   } catch (err) {
     console.warn('[Public Route Error] Gracefully falling back to default config:', err.message);
@@ -104,6 +108,10 @@ router.get('/public', async (req, res) => {
       theme: DEFAULT_CONFIG.theme,
       customFields: DEFAULT_CONFIG.customFields,
       registrationOpen: DEFAULT_CONFIG.registrationOpen,
+      emailVerificationControl: {
+        registrationOtp: DEFAULT_CONFIG.emailVerificationControl?.registrationOtp !== false,
+        emailVerification: DEFAULT_CONFIG.emailVerificationControl?.emailVerification !== false,
+      },
     });
   }
 });
@@ -263,6 +271,15 @@ router.post('/public/check-trainee-id', checkTraineeIdHandler);
 // ---------------- Send Registration Email OTP ----------------
 router.post('/public/send-otp', otpLimiter, async (req, res) => {
   try {
+    const config = await getConfig();
+    if (config.emailVerificationControl?.registrationOtp === false) {
+      return res.status(400).json({
+        ok: false,
+        error: 'Registration OTP authentication is currently disabled by Super Admin configuration.',
+        code: 'OTP_DISABLED',
+      });
+    }
+
     const { email } = req.body || {};
     const cleanEmail = String(email || '').trim().toLowerCase();
 
@@ -448,9 +465,15 @@ router.post('/public/register', registerLimiter, async (req, res) => {
       return res.status(400).json({ error: 'Please enter a valid email address.', field: 'email' });
     }
 
-    // Verification token check (strict cryptographic verification)
+    const registrationOtpEnabled = config.emailVerificationControl?.registrationOtp !== false;
+    const emailVerificationEnabled = config.emailVerificationControl?.emailVerification !== false;
+
+    let emailVerified = false;
+    let emailVerifiedAt = null;
+
+    // Verification token check (strict cryptographic verification when OTP is ON)
     const verificationToken = String(d.verificationToken || '').trim();
-    if (process.env.NODE_ENV !== 'test' || verificationToken) {
+    if (registrationOtpEnabled) {
       if (!verificationToken) {
         return res.status(400).json({ error: 'Please verify your email before registration.', field: 'email' });
       }
@@ -460,9 +483,20 @@ router.post('/public/register', registerLimiter, async (req, res) => {
         if (!decoded.verified || decoded.email !== email || decoded.purpose !== 'trainee-registration') {
           return res.status(400).json({ error: 'Please verify your email before registration.', field: 'email' });
         }
+        emailVerified = true;
+        emailVerifiedAt = new Date();
       } catch {
         return res.status(400).json({ error: 'Please verify your email before registration.', field: 'email' });
       }
+    } else if (verificationToken) {
+      // If OTP is OFF but user provided a valid verification token, respect verified status
+      try {
+        const decoded = jwt.verify(verificationToken, getSecret());
+        if (decoded.verified && decoded.email === email && decoded.purpose === 'trainee-registration') {
+          emailVerified = true;
+          emailVerifiedAt = new Date();
+        }
+      } catch {}
     }
 
     // Check duplicate email
@@ -649,18 +683,29 @@ router.post('/public/register', registerLimiter, async (req, res) => {
       joiningDate,
       freeStayExpiryDate,
       paymentStatus: 'FREE',
+      emailVerified,
+      emailVerifiedAt,
+      aadhaarVerificationStatus: rawAadhar ? 'FORMAT_VALIDATED' : 'UNVERIFIED',
     });
 
-    // 1. Dispatch Email 2: Trainee Registration Confirmation
-    sendRegistrationConfirmationEmail({ trainee: newTrainee }).catch((err) =>
-      console.warn('[Registration Confirmation Dispatch Error]', err.message)
-    );
-
-    // 2. Dispatch Email 3: Admin AND Warden Approval Request Notification (Only if approval workflow is enabled)
-    if (config?.approvalConfig?.enabled !== false) {
-      sendApprovalRequestNotification({ trainee: newTrainee }).catch((err) =>
-        console.warn('[Admin/Warden Approval Notification Dispatch Error]', err.message)
+    // 1. Dispatch Email 2: Trainee Registration Confirmation (if enabled)
+    if (config?.emailVerificationControl?.registrationCompleteEmail !== false) {
+      sendRegistrationConfirmationEmail({ trainee: newTrainee }).catch((err) =>
+        console.warn('[Registration Confirmation Dispatch Error]', err.message)
       );
+    } else {
+      console.log(`[REGISTRATION CONFIRMATION EMAIL DISABLED] Skipped for ${finalTraineeId} by Super Admin configuration.`);
+    }
+
+    // 2. Dispatch Email 3: Admin AND Warden Approval Request Notification (Only if approval workflow AND approval emails are enabled)
+    if (config?.approvalConfig?.enabled !== false) {
+      if (config?.emailVerificationControl?.approvalEmail !== false) {
+        sendApprovalRequestNotification({ trainee: newTrainee }).catch((err) =>
+          console.warn('[Admin/Warden Approval Notification Dispatch Error]', err.message)
+        );
+      } else {
+        console.log(`[APPROVAL EMAIL DISABLED] Skipped approval notification email for ${finalTraineeId} by Super Admin configuration.`);
+      }
     } else {
       console.log(`[APPROVAL WORKFLOW DISABLED] Auto-approved trainee ${finalTraineeId} without sending approval request emails.`);
     }

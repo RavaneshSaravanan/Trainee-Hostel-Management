@@ -263,8 +263,12 @@ router.put('/trainees/:id', auth, async (req, res) => {
       updatedFieldsList.push('mobile');
     }
     if (body.email !== undefined) {
-      trainee.email = cleanEmail;
-      updatedFieldsList.push('email');
+      if (cleanEmail !== (trainee.email || '').toLowerCase()) {
+        trainee.email = cleanEmail;
+        trainee.emailVerified = false;
+        trainee.emailVerifiedAt = null;
+        updatedFieldsList.push('email', 'emailVerified');
+      }
     }
     if (body.dob !== undefined) {
       trainee.dob = cleanDob;
@@ -323,7 +327,8 @@ router.put('/trainees/:id', auth, async (req, res) => {
       trainee.aadhar = masked;
       trainee.aadharEncrypted = encryptAadhaar(newAadhaarDigits);
       trainee.aadharHash = hashAadhaar(newAadhaarDigits);
-      updatedFieldsList.push('aadhar');
+      trainee.aadhaarVerificationStatus = 'FORMAT_VALIDATED';
+      updatedFieldsList.push('aadhar', 'aadhaarVerificationStatus');
     }
     // If changeAadhaar is false, existing aadhar, aadharMasked, aadharEncrypted, aadharHash are preserved 100%!
 
