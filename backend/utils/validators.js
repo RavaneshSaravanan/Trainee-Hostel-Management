@@ -67,6 +67,13 @@ export function isValidEmail(email) {
   return /^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/.test(clean);
 }
 
+/** Trainee Gmail validation: valid RFC 5322 format ending with @gmail.com */
+export function isValidGmail(email) {
+  if (!email || typeof email !== 'string') return false;
+  const clean = email.trim().toLowerCase();
+  return /^[a-zA-Z0-9._%+-]+@gmail\.com$/.test(clean);
+}
+
 /** Password validation: min 8 chars, 1 uppercase, 1 lowercase, 1 number, 1 special char */
 export function isValidPassword(password) {
   if (!password || typeof password !== 'string') return false;

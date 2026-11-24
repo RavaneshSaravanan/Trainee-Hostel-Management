@@ -23,6 +23,7 @@ import {
 import { uploadTraineePhoto, getPhotoStreamFromDrive, parsePhotoData } from '../services/googleDriveService.js';
 import {
   isValidEmail,
+  isValidGmail,
   isValidPassword,
   isValidMobile,
   isValidGuardianContact,
@@ -85,6 +86,7 @@ async function getConfig() {
 
 router.get('/public', async (req, res) => {
   try {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
     const config = await getConfig();
     const cfg = config;
     return res.json({
@@ -283,8 +285,8 @@ router.post('/public/send-otp', otpLimiter, async (req, res) => {
     const { email } = req.body || {};
     const cleanEmail = String(email || '').trim().toLowerCase();
 
-    if (!cleanEmail || !isValidEmail(cleanEmail)) {
-      return res.status(400).json({ error: 'Please enter a valid email address.' });
+    if (!cleanEmail || !isValidGmail(cleanEmail)) {
+      return res.status(400).json({ error: 'Email must be a valid email ending with gmail.com.' });
     }
 
     // Check if email already registered with an active trainee
@@ -461,8 +463,8 @@ router.post('/public/register', registerLimiter, async (req, res) => {
     if (!email) {
       return res.status(400).json({ error: 'This field is required.', field: 'email' });
     }
-    if (!isValidEmail(email)) {
-      return res.status(400).json({ error: 'Please enter a valid email address.', field: 'email' });
+    if (!isValidGmail(email)) {
+      return res.status(400).json({ error: 'Email must be a valid email ending with gmail.com.', field: 'email' });
     }
 
     const registrationOtpEnabled = config.emailVerificationControl?.registrationOtp !== false;

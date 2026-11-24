@@ -6,6 +6,7 @@ import PhotoCapture from './PhotoCapture.jsx';
 import { api } from '../utils/api.js';
 import {
   isValidEmail,
+  isValidGmail,
   isValidMobile,
   isValidGuardianContact,
   isValidAadhaar,
@@ -103,6 +104,24 @@ export default function RegistrationForm({
 
   const registrationOtpEnabled = control ? control.registrationOtp !== false : true;
 
+  // When registration OTP is disabled, immediately clear any pending verification errors or OTP prompts
+  useEffect(() => {
+    if (!registrationOtpEnabled) {
+      setErrors((prev) => {
+        if (prev.email === ERROR_MESSAGES.EMAIL_UNVERIFIED) {
+          const next = { ...prev };
+          delete next.email;
+          return next;
+        }
+        return prev;
+      });
+      setOtpSent(false);
+      setOtp('');
+      setOtpError('');
+      setOtpMessage('');
+    }
+  }, [registrationOtpEnabled]);
+
   // Email verification state
   const [emailVerified, setEmailVerified] = useState(false);
   const [verificationToken, setVerificationToken] = useState('');
@@ -166,7 +185,7 @@ export default function RegistrationForm({
 
       case 'email':
         if (!value.trim()) return ERROR_MESSAGES.REQUIRED;
-        if (!isValidEmail(value.trim())) return ERROR_MESSAGES.EMAIL_INVALID;
+        if (!isValidGmail(value.trim())) return ERROR_MESSAGES.EMAIL_INVALID;
         if (registrationOtpEnabled && !isVerified) return ERROR_MESSAGES.EMAIL_UNVERIFIED;
         return '';
 
@@ -246,7 +265,7 @@ export default function RegistrationForm({
     }
 
     if (touched[field]) {
-      const error = validateField(field, val, nextValues, field === 'email' ? false : emailVerified);
+      const error = validateField(field, val, nextValues, registrationOtpEnabled ? (field === 'email' ? false : emailVerified) : true);
       setErrors((prev) => ({ ...prev, [field]: error }));
     }
   };
@@ -257,16 +276,16 @@ export default function RegistrationForm({
       if (checkTimeoutRef.current) clearTimeout(checkTimeoutRef.current);
       checkTraineeId(values.traineeId);
     } else {
-      const error = validateField(field, values[field], values, emailVerified);
+      const error = validateField(field, values[field], values, registrationOtpEnabled ? emailVerified : true);
       setErrors((prev) => ({ ...prev, [field]: error }));
     }
   };
 
   const handleSendOtp = async () => {
-    const cleanEmail = values.email.trim();
+    const cleanEmail = values.email.trim().toLowerCase();
     const emailErr = !cleanEmail
       ? ERROR_MESSAGES.REQUIRED
-      : !isValidEmail(cleanEmail)
+      : !isValidGmail(cleanEmail)
       ? ERROR_MESSAGES.EMAIL_INVALID
       : '';
 
@@ -338,7 +357,7 @@ export default function RegistrationForm({
   // Check form validity for submit button
   const isFormValid =
     values.name.trim().length > 0 &&
-    isValidEmail(values.email.trim()) &&
+    isValidGmail(values.email.trim()) &&
     (!registrationOtpEnabled || emailVerified) &&
     isValidMobile(values.mobile.trim()) &&
     values.guardianName.trim().length > 0 &&
@@ -389,7 +408,7 @@ export default function RegistrationForm({
 
     if (values.aadhar.trim()) {
       allTouched.aadhar = true;
-      const err = validateField('aadhar', values.aadhar, values, emailVerified);
+      const err = validateField('aadhar', values.aadhar, values, registrationOtpEnabled ? emailVerified : true);
       if (err) currentErrors.aadhar = err;
     }
 
@@ -401,7 +420,8 @@ export default function RegistrationForm({
     setErrors(currentErrors);
 
     if (Object.keys(currentErrors).length > 0) return;
-    if (!emailVerified) {
+
+    if (registrationOtpEnabled && !emailVerified) {
       setErrors((prev) => ({ ...prev, email: ERROR_MESSAGES.EMAIL_UNVERIFIED }));
       return;
     }
@@ -466,7 +486,13 @@ export default function RegistrationForm({
     const isTouched = !!touched.email;
     const hasError = !!errors.email;
     if (isTouched && hasError) return 'input input-error';
-    if (emailVerified && !hasError) return 'input input-valid';
+    if (!registrationOtpEnabled) {
+      if (isTouched && !hasError && values.email.trim() && isValidGmail(values.email.trim())) {
+        return 'input input-valid';
+      }
+    } else {
+      if (emailVerified && !hasError) return 'input input-valid';
+    }
     return 'input';
   };
 
@@ -516,7 +542,7 @@ export default function RegistrationForm({
           </F>
 
           {/* Email & OTP Verification */}
-          <F label="E-mail ID * (OTP Verification Required)" span>
+          <F label={registrationOtpEnabled ? "E-mail ID * (OTP Verification Required)" : "E-mail ID * (Gmail only)"} span>
             <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
               <input
                 className={getEmailClass()}
@@ -527,7 +553,7 @@ export default function RegistrationForm({
                 onBlur={() => handleBlur('email')}
                 placeholder="user@gmail.com"
                 style={{ flex: 1 }}
-                disabled={emailVerified || (otpSent && otpCooldown > 0)}
+                disabled={registrationOtpEnabled && (emailVerified || (otpSent && otpCooldown > 0))}
                 required
               />
               {registrationOtpEnabled ? (
@@ -562,11 +588,7 @@ export default function RegistrationForm({
                     {otpSending ? 'Sending…' : 'Send OTP'}
                   </button>
                 )
-              ) : (
-                <span className="chip chip-gray" style={{ fontSize: 11, whiteSpace: 'nowrap' }}>
-                  OTP Disabled
-                </span>
-              )}
+              ) : null}
             </div>
 
             {/* OTP Entry Row (Only shown when Registration OTP is enabled) */}
