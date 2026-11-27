@@ -280,11 +280,11 @@ router.post('/approval/decision', auth, async (req, res) => {
         trainee.hostelStatus = 'APPROVED';
         trainee.approvedBy = req.user.name;
 
-        // Automatically calculate Free-Stay Validity (3 calendar months from joining date)
+        // Keep Free vs Paid classification strictly based on actual payment status
         if (trainee.joiningDate) {
-          const val = computeValidity(trainee.joiningDate, trainee.paymentStatus || 'FREE');
+          const val = computeValidity(trainee.joiningDate, trainee.paymentStatus || 'FREE', undefined, trainee.paymentHistory);
           trainee.freeStayExpiryDate = val.expiryDate;
-          trainee.paymentStatus = val.status;
+          trainee.paymentStatus = val.isPaid ? 'PAID' : 'FREE';
         }
 
         if (req.body?.hostel && req.body?.roomNo) {

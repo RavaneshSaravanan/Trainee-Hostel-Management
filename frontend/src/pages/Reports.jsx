@@ -31,7 +31,6 @@ function buildReportLocally(type, db, trainees, from, to, hostelFilter, classifi
     let totalOccupiedSum = 0;
     let totalFreeSum = 0;
     let totalPaidSum = 0;
-    let totalExpiredSum = 0;
     let totalAvailableSum = 0;
     const rows = [];
 
@@ -43,15 +42,10 @@ function buildReportLocally(type, db, trainees, from, to, hostelFilter, classifi
 
       let free = 0;
       let paid = 0;
-      let expired = 0;
       for (const t of occupied) {
         const c = classifyTrainee(t, targetDate);
         if (c.isPaid) {
           paid++;
-        } else if (c.isFree) {
-          free++;
-        } else if (c.isExpired) {
-          expired++;
         } else {
           free++;
         }
@@ -62,25 +56,22 @@ function buildReportLocally(type, db, trainees, from, to, hostelFilter, classifi
 
       if (classification === 'FREE' && free === 0 && occ > 0) continue;
       if (classification === 'PAID' && paid === 0 && occ > 0) continue;
-      if ((classification === 'EXPIRED' || classification === 'EXPIRED_DUE') && expired === 0 && occ > 0) continue;
 
       totalOccupiedSum += occ;
       totalFreeSum += free;
       totalPaidSum += paid;
-      totalExpiredSum += expired;
       totalAvailableSum += avail;
-      rows.push([h.name, occ, free, paid, expired, avail]);
+      rows.push([h.name, occ, free, paid, avail]);
     }
 
     return {
-      headers: ['Hostel Name', 'Total Occupied', 'Free Trainees', 'Paid Trainees', 'Expired / Due', 'Available Beds'],
+      headers: ['Hostel Name', 'Total Occupied', 'Free Trainees', 'Paid Trainees', 'Available Beds'],
       rows,
       extraStats: {
         totalHostels: targetHostels.length,
         totalOccupiedTrainees: totalOccupiedSum,
         totalFreeTrainees: totalFreeSum,
         totalPaidTrainees: totalPaidSum,
-        totalExpiredTrainees: totalExpiredSum,
         totalAvailableBeds: totalAvailableSum,
       },
     };
@@ -312,7 +303,6 @@ export default function Reports() {
                   <option value="ALL">All Occupancy</option>
                   <option value="FREE">Free Trainees</option>
                   <option value="PAID">Paid Trainees</option>
-                  <option value="EXPIRED_DUE">Expired / Payment Due</option>
                 </select>
               </div>
             )}
@@ -363,10 +353,6 @@ export default function Reports() {
           <div className="card kpi-card" style={{ borderLeft: '4px solid #2563eb' }}>
             <div className="kpi-label" style={{ color: '#2563eb' }}>Total Paid Trainees</div>
             <div className="kpi-value" style={{ color: '#2563eb' }}>{extraStats.totalPaidTrainees ?? 0}</div>
-          </div>
-          <div className="card kpi-card" style={{ borderLeft: '4px solid #dc2626' }}>
-            <div className="kpi-label" style={{ color: '#dc2626' }}>Expired / Payment Due</div>
-            <div className="kpi-value" style={{ color: '#dc2626' }}>{extraStats.totalExpiredTrainees ?? 0}</div>
           </div>
           <div className="card kpi-card" style={{ borderLeft: '4px solid #9333ea' }}>
             <div className="kpi-label" style={{ color: '#9333ea' }}>Total Available Beds</div>

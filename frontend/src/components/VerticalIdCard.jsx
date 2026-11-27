@@ -4,37 +4,115 @@ import jsPDF from 'jspdf';
 import { useStore } from '../store.jsx';
 import { Icon, Modal } from './ui.jsx';
 import { fmtDate } from '../utils/dates.js';
-import { getToken } from '../utils/api.js';
+import { getToken, BASE_URL, resolveMediaUrl, api } from '../utils/api.js';
 import { DEFAULT_IDCARD_TEMPLATE, DEFAULT_ORG_BRANDING } from '../data/defaults.js';
 
+function sniffBase64ImageMime(b64 = '') {
+  const head = b64.slice(0, 16);
+  if (head.startsWith('iVBOR')) return 'image/png';
+  if (head.startsWith('UklGR')) return 'image/webp';
+  if (head.startsWith('R0lGOD')) return 'image/gif';
+  return 'image/jpeg';
+}
+
+function normalizeImageDataUrl(src) {
+  if (!src || typeof src !== 'string') return '';
+  const trimmed = src.trim();
+  if (!trimmed) return '';
+
+  if (trimmed.startsWith('data:')) {
+    const b64Idx = trimmed.indexOf(';base64,');
+    if (b64Idx !== -1) {
+      const header = trimmed.slice(0, b64Idx);
+      const payload = trimmed.slice(b64Idx + 8).replace(/\s+/g, '');
+      if (header === 'data:application/octet-stream' || !header.startsWith('data:image/')) {
+        return `data:${sniffBase64ImageMime(payload)};base64,${payload}`;
+      }
+      return `${header};base64,${payload}`;
+    }
+    if (trimmed.startsWith('data:image/')) return trimmed;
+    return '';
+  }
+
+  // Handle raw base64 image payloads stored without a data: prefix
+  if (/^(\/9j\/|iVBORw0KGgo|UklGR|R0lGOD)/.test(trimmed)) {
+    const cleanB64 = trimmed.replace(/\s+/g, '');
+    return `data:${sniffBase64ImageMime(cleanB64)};base64,${cleanB64}`;
+  }
+
+  return '';
+}
+
+function imageElementToDataUrl(img) {
+  if (!img || !img.complete || !(img.naturalWidth > 0 || img.width > 0)) return '';
+  try {
+    const w = img.naturalWidth || img.width;
+    const h = img.naturalHeight || img.height;
+    const tmp = document.createElement('canvas');
+    tmp.width = w;
+    tmp.height = h;
+    tmp.getContext('2d').drawImage(img, 0, 0, w, h);
+    return tmp.toDataURL('image/png');
+  } catch {
+    return '';
+  }
+}
+
 /**
- * Converts any image URL (local relative path, remote URL, or blob)
+ * Converts any image URL (local relative path, API route, remote URL, or blob)
  * into a safe base64 Data URL so it never taints HTML5 Canvas or triggers CORS errors.
+ * Returns '' if conversion fails so callers can try fallback sources cleanly.
  */
 async function toDataUrlSafe(src) {
   if (!src || typeof src !== 'string') return '';
-  if (src.startsWith('data:image/')) return src;
+  const directData = normalizeImageDataUrl(src);
+  if (directData) return directData;
+
+  const trimmed = src.trim();
+  const resolvedUrl = resolveMediaUrl(trimmed);
+  if (!resolvedUrl) return '';
 
   try {
     const token = getToken();
     const headers = {};
-    if (token && (src.startsWith('/') || src.includes(window.location.host))) {
+    const isPublicEndpoint = trimmed.includes('/api/public/') || resolvedUrl.includes('/api/public/');
+    const isProtectedApi =
+      !isPublicEndpoint &&
+      (trimmed.startsWith('/api/') ||
+        resolvedUrl.includes(window.location.host) ||
+        (BASE_URL && resolvedUrl.startsWith(BASE_URL)));
+    if (token && isProtectedApi) {
       headers.Authorization = `Bearer ${token}`;
     }
 
-    const response = await fetch(src, { headers, mode: 'cors' });
+    const response = await fetch(resolvedUrl, {
+      headers,
+      mode: 'cors',
+      cache: 'no-store',
+    });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     const blob = await response.blob();
+    if (!blob || blob.size === 0) throw new Error('Empty image response');
+    if (blob.type && !blob.type.startsWith('image/') && blob.type !== 'application/octet-stream') {
+      throw new Error(`Unexpected content-type: ${blob.type}`);
+    }
 
-    return await new Promise((resolve, reject) => {
+    const rawDataUrl = await new Promise((resolve, reject) => {
       const reader = new FileReader();
-      reader.onloadend = () => resolve(reader.result);
+      reader.onloadend = () => resolve(typeof reader.result === 'string' ? reader.result : '');
       reader.onerror = reject;
       reader.readAsDataURL(blob);
     });
+    const normalized = normalizeImageDataUrl(rawDataUrl);
+    if (normalized) return normalized;
+    throw new Error('Invalid data URL generated');
   } catch (err) {
-    console.warn(`[ID Card] Could not convert image to safe Data URL: ${err.message}. Using source as-is.`);
-    return src;
+    // Fallback: try loading directly as a CORS-enabled Image and reading pixels
+    const corsImg = await preloadImage(resolvedUrl);
+    const fromImg = imageElementToDataUrl(corsImg);
+    if (fromImg) return fromImg;
+    console.warn(`[ID Card] Could not convert image to safe Data URL: ${err.message}`);
+    return '';
   }
 }
 
@@ -48,13 +126,73 @@ function preloadImage(src) {
     if (!src.startsWith('data:')) {
       img.crossOrigin = 'anonymous';
     }
-    img.onload = () => resolve(img);
+    img.onload = async () => {
+      try {
+        if (typeof img.decode === 'function') {
+          await img.decode();
+        }
+      } catch {
+        // Ignore decode rejection if image already loaded
+      }
+      resolve(img.naturalWidth > 0 || img.width > 0 ? img : null);
+    };
     img.onerror = () => {
       console.warn(`[ID Card] Image failed to load: ${src.slice(0, 50)}…`);
       resolve(null);
     };
     img.src = src;
   });
+}
+
+/**
+ * Attempts to resolve a trainee's photo into a guaranteed embedded base64 Data URL,
+ * trying trainee.photo first, then loaded DOM preview img, then backend photo endpoints.
+ */
+async function resolveTraineePhotoDataUrl(trainee, cardEl = null) {
+  if (!trainee) return '';
+
+  const candidates = [];
+  if (trainee.photo && typeof trainee.photo === 'string') {
+    candidates.push(trainee.photo);
+  }
+
+  const idForPhoto = trainee.traineeId || trainee.qrId || trainee.hostelId;
+  if (idForPhoto) {
+    for (const apiPath of [
+      `/api/public/photo/${encodeURIComponent(idForPhoto)}`,
+      `/api/trainees/${encodeURIComponent(idForPhoto)}/photo`,
+    ]) {
+      if (!candidates.includes(apiPath)) {
+        candidates.push(apiPath);
+      }
+    }
+  }
+
+  for (const candidate of candidates) {
+    const dataUrl = await toDataUrlSafe(candidate);
+    if (dataUrl) return dataUrl;
+  }
+
+  // Check if the preview <img> already rendered cleanly in the DOM (same-origin / data URL)
+  const domImg = cardEl?.querySelector?.('.id-card-photo');
+  const fromDom = imageElementToDataUrl(domImg);
+  if (fromDom) return fromDom;
+
+  // Last resort: fetch trainee public verification record in case passed trainee object omitted photo
+  if (!trainee.photo && idForPhoto) {
+    try {
+      const res = await api(`/api/public/verify/${encodeURIComponent(idForPhoto)}`, { auth: false });
+      const fetchedPhoto = res?.trainee?.photo;
+      if (fetchedPhoto) {
+        const dataUrl = await toDataUrlSafe(fetchedPhoto);
+        if (dataUrl) return dataUrl;
+      }
+    } catch {
+      // Ignore fallback error
+    }
+  }
+
+  return '';
 }
 
 /**
@@ -71,6 +209,7 @@ export default function VerticalIdCard({ trainee, onClose, embedded = false, cus
   const cardRef = useRef(null);
   const [downloading, setDownloading] = useState(false);
   const [photoDataUrl, setPhotoDataUrl] = useState('');
+  const [photoError, setPhotoError] = useState(false);
 
   const tpl = customTemplate || config.idCardTemplate || DEFAULT_IDCARD_TEMPLATE;
   const branding = config.orgBranding || DEFAULT_ORG_BRANDING;
@@ -81,28 +220,31 @@ export default function VerticalIdCard({ trainee, onClose, embedded = false, cus
   const accentColor = tpl.accentColor || '#8B5CF6';
   const footerText = tpl.footerText || `Authorized Trainee ID Card · ${companyName}`;
   const showLogo = tpl.showLogo !== false;
-  const effectiveLogo = showLogo ? (tpl.customLogo || branding.logo || config.logo || '') : '';
+  const effectiveLogo = showLogo ? resolveMediaUrl(tpl.customLogo || branding.logo || config.logo || '') : '';
   const photoRadius = tpl.photoShape === 'square' ? '18px' : '50%';
 
   if (!trainee) return null;
 
   // Public verification URL encoded in the QR code
-  const verifyUrl = `${window.location.origin}${window.location.pathname}#/verify/${encodeURIComponent(trainee.traineeId)}`;
+  const verifyUrl = `${window.location.origin}${window.location.pathname}#/verify/${encodeURIComponent(trainee.traineeId || trainee.qrId || '')}`;
+  const fallbackPreviewPhoto =
+    normalizeImageDataUrl(trainee.photo) ||
+    resolveMediaUrl(
+      trainee.photo || ((trainee.photoDriveId || trainee.traineeId || trainee.qrId) ? `/api/public/photo/${encodeURIComponent(trainee.traineeId || trainee.qrId)}` : '')
+    );
 
-  // Pre-convert trainee photo and logo to safe base64 Data URLs so they are ready for instant canvas draw
+  // Pre-convert trainee photo to safe base64 Data URL so it is ready for instant canvas draw
   useEffect(() => {
     let active = true;
-    if (trainee.photo) {
-      toDataUrlSafe(trainee.photo).then((dataUrl) => {
-        if (active && dataUrl) setPhotoDataUrl(dataUrl);
-      });
-    } else {
-      setPhotoDataUrl('');
-    }
+    setPhotoDataUrl('');
+    setPhotoError(false);
+    resolveTraineePhotoDataUrl(trainee, cardRef.current).then((dataUrl) => {
+      if (active && dataUrl) setPhotoDataUrl(dataUrl);
+    });
     return () => {
       active = false;
     };
-  }, [trainee.photo]);
+  }, [trainee?.photo, trainee?.photoDriveId, trainee?.traineeId, trainee?.qrId]);
 
   // Clean, isolated print handler: prints ONLY the ID card
   const handlePrint = () => {
@@ -142,10 +284,17 @@ export default function VerticalIdCard({ trainee, onClose, embedded = false, cus
     ctx.fillStyle = accentColor;
     ctx.fillRect(0, 185, canvas.width, 8);
 
-    // 4. Preload Assets
+    // 4. Preload Assets as embedded Data URLs so Canvas is never tainted
+    const [safeLogoSrc, safePhotoSrc] = await Promise.all([
+      effectiveLogo ? toDataUrlSafe(effectiveLogo) : Promise.resolve(''),
+      photoDataUrl && photoDataUrl.startsWith('data:')
+        ? Promise.resolve(photoDataUrl)
+        : resolveTraineePhotoDataUrl(trainee, cardRef.current),
+    ]);
+
     const [logoImg, photoImg] = await Promise.all([
-      effectiveLogo ? preloadImage(await toDataUrlSafe(effectiveLogo)) : Promise.resolve(null),
-      (photoDataUrl || trainee.photo) ? preloadImage(photoDataUrl || await toDataUrlSafe(trainee.photo)) : Promise.resolve(null),
+      safeLogoSrc ? preloadImage(safeLogoSrc) : Promise.resolve(null),
+      safePhotoSrc ? preloadImage(safePhotoSrc) : Promise.resolve(null),
     ]);
 
     // Draw Company Logo if available
@@ -182,8 +331,13 @@ export default function VerticalIdCard({ trainee, onClose, embedded = false, cus
     ctx.closePath();
     ctx.clip();
 
-    if (photoImg && photoImg.width > 0) {
-      ctx.drawImage(photoImg, photoBoxX, photoBoxY, photoSize, photoSize);
+    if (photoImg && (photoImg.naturalWidth > 0 || photoImg.width > 0)) {
+      const iw = photoImg.naturalWidth || photoImg.width;
+      const ih = photoImg.naturalHeight || photoImg.height;
+      const sSize = Math.min(iw, ih);
+      const sx = Math.max(0, (iw - sSize) / 2);
+      const sy = Math.max(0, (ih - sSize) / 2);
+      ctx.drawImage(photoImg, sx, sy, sSize, sSize, photoBoxX, photoBoxY, photoSize, photoSize);
     } else {
       // Clean fallback avatar with violet background
       ctx.fillStyle = '#EDE9FE';
@@ -373,7 +527,7 @@ export default function VerticalIdCard({ trainee, onClose, embedded = false, cus
         {/* Card Header */}
         <div className="id-card-header" style={{ background: `linear-gradient(135deg, ${headerBgStart} 0%, ${headerBgEnd} 100%)` }}>
           {effectiveLogo ? (
-            <img src={effectiveLogo} alt="Company Logo" className="id-card-logo" crossOrigin="anonymous" />
+            <img src={effectiveLogo} alt="Company Logo" className="id-card-logo" />
           ) : (
             <div className="id-card-header-icon">
               <Icon name="home" size={24} />
@@ -391,13 +545,13 @@ export default function VerticalIdCard({ trainee, onClose, embedded = false, cus
         {/* Card Body */}
         <div className="id-card-body">
           <div className="id-card-photo-box" style={{ borderRadius: photoRadius, borderColor: accentColor }}>
-            {photoDataUrl || trainee.photo ? (
+            {(photoDataUrl || fallbackPreviewPhoto) && !photoError ? (
               <img
-                src={photoDataUrl || trainee.photo}
+                src={photoDataUrl || fallbackPreviewPhoto}
                 alt={trainee.name}
                 className="id-card-photo"
                 style={{ borderRadius: photoRadius }}
-                crossOrigin="anonymous"
+                onError={() => setPhotoError(true)}
               />
             ) : (
               <div className="id-card-photo-fallback" style={{ borderRadius: photoRadius }}>

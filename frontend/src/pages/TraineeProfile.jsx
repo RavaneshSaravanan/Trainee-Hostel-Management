@@ -39,8 +39,6 @@ function Overview({ t }) {
   const val = classifyTrainee(t);
   const info = [
     ['Stay Classification', val.label],
-    ['Free Stay Expiry Date', fmtDate(val.expiryDate) || '—'],
-    ['Days Remaining in Free Stay', val.daysRemaining !== null ? (val.daysRemaining >= 0 ? `${val.daysRemaining} days` : `Expired (${Math.abs(val.daysRemaining)} days ago)`) : '—'],
     ['Trainee ID', t.traineeId || '—'], ['Hostel ID', t.hostelId || '—'], ['Mobile', t.mobile],
     ['E-mail', t.email ? (
       <span>
@@ -893,9 +891,9 @@ export default function TraineeProfile() {
             <span className="chip">Employment: {t.employmentStatus}</span>
             <span className="chip">QR: {t.qrStatus}</span>
             <span className="chip" style={{
-              background: classifyTrainee(t).isFree ? '#F3E8FF' : classifyTrainee(t).isPaid ? '#DCFCE7' : '#FEE2E2',
-              color: classifyTrainee(t).isFree ? '#6D28D9' : classifyTrainee(t).isPaid ? '#15803D' : '#B91C1C',
-              borderColor: classifyTrainee(t).isFree ? '#DDD6FE' : classifyTrainee(t).isPaid ? '#BBF7D0' : '#FECACA',
+              background: classifyTrainee(t).isPaid ? '#DCFCE7' : '#F3E8FF',
+              color: classifyTrainee(t).isPaid ? '#15803D' : '#6D28D9',
+              borderColor: classifyTrainee(t).isPaid ? '#BBF7D0' : '#DDD6FE',
             }}>
               Stay: {classifyTrainee(t).label}
             </span>

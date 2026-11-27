@@ -187,8 +187,19 @@ const serveTraineePhoto = async (req, res) => {
     if (!rawId) return res.status(400).send('Trainee ID is required.');
 
     const cleanId = rawId.toUpperCase();
+    const rx = new RegExp(`^${escapeRegex(rawId)}$`, 'i');
     const trainee = await Trainee.findOne({
-      $or: [{ traineeId: cleanId }, { qrId: cleanId }, { hostelId: cleanId }],
+      $or: [
+        { traineeId: rawId },
+        { traineeId: cleanId },
+        { qrId: rawId },
+        { qrId: cleanId },
+        { hostelId: rawId },
+        { hostelId: cleanId },
+        { traineeId: rx },
+        { qrId: rx },
+        { hostelId: rx },
+      ],
     }).lean();
 
     if (!trainee) return res.status(404).send('Trainee not found.');
@@ -196,6 +207,7 @@ const serveTraineePhoto = async (req, res) => {
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
     res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+    res.setHeader('Vary', 'Origin');
     res.setHeader('Cache-Control', 'public, max-age=86400');
 
     // 1. If photo is stored in Google Drive
@@ -207,12 +219,49 @@ const serveTraineePhoto = async (req, res) => {
       }
     }
 
-    // 2. If photo is stored as base64 in MongoDB
-    if (trainee.photo && trainee.photo.startsWith('data:')) {
-      const parsed = parsePhotoData(trainee.photo);
-      if (parsed) {
+    // 2. If photo is stored as base64 in MongoDB (with or without data: prefix)
+    if (trainee.photo && (trainee.photo.startsWith('data:') || /^(\/9j\/|iVBORw0KGgo|UklGR|R0lGOD)/.test(trainee.photo.trim()))) {
+      const parsed = parsePhotoData(trainee.photo.trim());
+      if (parsed && parsed.buffer?.length > 0) {
         res.setHeader('Content-Type', parsed.mimeType || 'image/jpeg');
         return res.send(parsed.buffer);
+      }
+    }
+
+    // 3. If photo is a Google Drive URL or external HTTP(S) URL, proxy safely so frontend canvas export is never blocked by CORS
+    const urlCandidate = (trainee.photo && /^https?:\/\//i.test(trainee.photo))
+      ? trainee.photo
+      : (trainee.photoDriveUrl && /^https?:\/\//i.test(trainee.photoDriveUrl) ? trainee.photoDriveUrl : '');
+
+    if (urlCandidate) {
+      const driveMatch = urlCandidate.match(/(?:\/d\/|[?&]id=)([a-zA-Z0-9_-]{10,})/);
+      if (driveMatch && driveMatch[1]) {
+        const stream = await getPhotoStreamFromDrive(driveMatch[1]);
+        if (stream) {
+          res.setHeader('Content-Type', trainee.photoDriveMimeType || 'image/jpeg');
+          return stream.pipe(res);
+        }
+      }
+      const fetchTarget = driveMatch?.[1]
+        ? `https://drive.google.com/uc?export=download&id=${driveMatch[1]}`
+        : urlCandidate;
+      try {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), 8000);
+        const upstream = await fetch(fetchTarget, { signal: controller.signal });
+        clearTimeout(timer);
+        if (upstream.ok) {
+          const ct = upstream.headers.get('content-type') || 'image/jpeg';
+          if (ct.startsWith('image/') || ct === 'application/octet-stream') {
+            const buf = Buffer.from(await upstream.arrayBuffer());
+            if (buf.length > 0) {
+              res.setHeader('Content-Type', ct === 'application/octet-stream' ? 'image/jpeg' : ct);
+              return res.send(buf);
+            }
+          }
+        }
+      } catch {
+        // Fall through to 404
       }
     }
 

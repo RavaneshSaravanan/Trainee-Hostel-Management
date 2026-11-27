@@ -47,31 +47,17 @@ export function daysBetween(d1, d2) {
 }
 
 /**
- * Computes Free-Stay validity status based on joining date and payment record.
- * Statuses:
- * - 'FREE'          : Within the 3 calendar months free period (> 15 days remaining)
- * - 'EXPIRING_SOON' : Within 15 days of free stay expiry (still active free stay)
- * - 'EXPIRED_DUE'   : Free 3 months expired and payment not yet confirmed
- * - 'PAID'          : Confirmed payment recorded
- * - 'PENDING_DETAILS': Missing or invalid joining date
+ * Computes Trainee Stay Category based strictly on registration/payment status.
+ * Business Rule:
+ * - Only two categories exist: 'FREE' (Free Trainees) and 'PAID' (Paid Trainees).
+ * - Trainees who are not part of the paid category remain classified as Free Trainees
+ *   and are never classified as expired, payment due, or unpaid paid trainees.
  */
 export function computeValidity(joiningDate, paymentStatus = 'FREE', currentDate = todayStr(), paymentHistory = []) {
   const cleanDate = typeof joiningDate === 'string' ? joiningDate.trim().slice(0, 10) : '';
-  if (!cleanDate || !/^\d{4}-\d{2}-\d{2}$/.test(cleanDate)) {
-    return {
-      expiryDate: '',
-      status: 'PENDING_DETAILS',
-      daysRemaining: null,
-      isExpired: false,
-      isFree: false,
-      isPaid: false,
-      isPending: true,
-      label: 'Details Pending',
-    };
-  }
-
-  const expiryDate = addThreeCalendarMonths(cleanDate);
+  const expiryDate = cleanDate && /^\d{4}-\d{2}-\d{2}$/.test(cleanDate) ? addThreeCalendarMonths(cleanDate) : '';
   const hasPaid = paymentStatus === 'PAID' || (Array.isArray(paymentHistory) && paymentHistory.length > 0);
+
   if (hasPaid) {
     return {
       expiryDate,
@@ -80,44 +66,16 @@ export function computeValidity(joiningDate, paymentStatus = 'FREE', currentDate
       isExpired: false,
       isFree: false,
       isPaid: true,
+      isExpiringSoon: false,
       isPending: false,
       label: 'Paid Trainee',
-    };
-  }
-
-  const remaining = daysBetween(currentDate, expiryDate);
-
-  if (remaining < 0) {
-    return {
-      expiryDate,
-      status: 'EXPIRED_DUE',
-      daysRemaining: remaining,
-      isExpired: true,
-      isFree: false,
-      isPaid: false,
-      isPending: false,
-      label: 'Expired Free Stay (Payment Due)',
-    };
-  }
-
-  if (remaining <= 15) {
-    return {
-      expiryDate,
-      status: 'EXPIRING_SOON',
-      daysRemaining: remaining,
-      isExpired: false,
-      isFree: true,
-      isPaid: false,
-      isExpiringSoon: true,
-      isPending: false,
-      label: 'Free Stay (Expiring Soon)',
     };
   }
 
   return {
     expiryDate,
     status: 'FREE',
-    daysRemaining: remaining,
+    daysRemaining: null,
     isExpired: false,
     isFree: true,
     isPaid: false,
@@ -129,20 +87,22 @@ export function computeValidity(joiningDate, paymentStatus = 'FREE', currentDate
 
 /**
  * Centralized Trainee Stay Classifier reusing computeValidity.
- * Single source of truth for Dashboard, Reports, Validity Monitoring, Exports.
+ * Single source of truth for Dashboard, Reports, and Exports.
  */
 export function classifyTrainee(trainee, currentDate = todayStr()) {
   if (!trainee || typeof trainee !== 'object') {
     return {
-      category: 'UNKNOWN',
-      validityStatus: 'UNKNOWN',
+      category: 'FREE',
+      status: 'FREE',
+      validityStatus: 'FREE',
       expiryDate: '',
       daysRemaining: null,
-      isFree: false,
+      isFree: true,
       isPaid: false,
       isExpired: false,
-      isPending: true,
-      label: 'Unknown',
+      isExpiringSoon: false,
+      isPending: false,
+      label: 'Free Trainee',
     };
   }
 
@@ -153,13 +113,9 @@ export function classifyTrainee(trainee, currentDate = todayStr()) {
     trainee.paymentHistory
   );
 
-  let category = val.status;
-  if (val.status === 'EXPIRING_SOON') {
-    category = 'FREE'; // Active Free Stay (within 3 calendar months)
-  }
-
   return {
     ...val,
-    category, // 'FREE' | 'PAID' | 'EXPIRED_DUE' | 'PENDING_DETAILS'
+    category: val.status, // 'FREE' | 'PAID'
+    validityStatus: val.status,
   };
 }

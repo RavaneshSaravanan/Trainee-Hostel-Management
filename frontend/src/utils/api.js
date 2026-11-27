@@ -24,6 +24,19 @@ export function getBaseUrl() {
 
 export const BASE_URL = getBaseUrl();
 
+export function resolveMediaUrl(src) {
+  if (!src || typeof src !== 'string') return '';
+  const clean = src.trim();
+  if (!clean) return '';
+  if (clean.startsWith('data:') || clean.startsWith('blob:') || /^https?:\/\//i.test(clean)) {
+    return clean;
+  }
+  if (clean.startsWith('/') && BASE_URL) {
+    return `${BASE_URL}${clean}`;
+  }
+  return clean;
+}
+
 export const getToken = () => { try { return localStorage.getItem(KEY) || ''; } catch { return ''; } };
 export const setToken = (t) => { try { t ? localStorage.setItem(KEY, t) : localStorage.removeItem(KEY); } catch { /* private mode */ } };
 

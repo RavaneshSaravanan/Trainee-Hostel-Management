@@ -16,6 +16,7 @@ import TraineeReview from './pages/TraineeReview.jsx';
 import ValidityReport from './pages/ValidityReport.jsx';
 import TraineeCardVerify from './pages/TraineeCardVerify.jsx';
 import ModernLoader from './components/ModernLoader.jsx';
+import ErrorBoundary from './components/ErrorBoundary.jsx';
 import ResetPassword from './pages/ResetPassword.jsx';
 import { api } from './utils/api.js';
 
@@ -154,7 +155,9 @@ export default function App() {
     if (session) {
       return (
         <Layout>
-          <TraineeReview traineeId={reviewTraineeId} />
+          <ErrorBoundary key={reviewTraineeId}>
+            <TraineeReview traineeId={reviewTraineeId} />
+          </ErrorBoundary>
         </Layout>
       );
     }
@@ -169,7 +172,13 @@ export default function App() {
     <>
       {mustChange && <ForcePasswordChangeModal onComplete={() => setMustChange(false)} />}
       {session ? (
-        view ? <Layout><Page key={route.params.id || view} /></Layout> : <div className="boot">Your role has no pages assigned. Ask the Super Admin.</div>
+        view ? (
+          <Layout>
+            <ErrorBoundary key={route.params.id || view}>
+              <Page key={route.params.id || view} />
+            </ErrorBoundary>
+          </Layout>
+        ) : <div className="boot">Your role has no pages assigned. Ask the Super Admin.</div>
       ) : (
         <Login />
       )}

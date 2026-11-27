@@ -45,10 +45,7 @@ export default function ValidityReport() {
       'Room No',
       'Mobile',
       'Joining Date',
-      'Free Stay Expiry Date',
-      'Days Remaining',
-      'Validity Status',
-      'Classification',
+      'Category',
     ];
 
     const rows = (report.trainees || []).map((t) => [
@@ -58,14 +55,11 @@ export default function ValidityReport() {
       t.roomNo,
       t.mobile,
       t.joiningDate,
-      t.freeStayExpiryDate,
-      t.daysRemaining,
-      t.validityStatus,
-      t.validityStatus === 'FREE' ? 'Free Trainee' : t.validityStatus === 'EXPIRING_SOON' ? 'Expiring Soon' : t.validityStatus === 'PAID' ? 'Paid Trainee' : 'Expired Trainee',
+      t.validityStatus === 'PAID' ? 'Paid Trainee' : 'Free Trainee',
     ]);
 
     const qv = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
-    const titleHeader = `"APOLLO TYRES LTD - Trainee Stay Validity Report (${todayStr()})"`;
+    const titleHeader = `"APOLLO TYRES LTD - Trainee Category Report (${todayStr()})"`;
     const csv = [titleHeader, '', headers.map(qv).join(','), ...rows.map((r) => r.map(qv).join(','))].join('\n');
     const blob = new Blob([csv], { type: 'text/csv' });
     const a = document.createElement('a');
@@ -78,16 +72,14 @@ export default function ValidityReport() {
   const totalLiving = s.totalLivingTrainees ?? s.totalResiding ?? 0;
   const freeCount = s.freeTrainees ?? s.freeStay ?? s.freeCount ?? 0;
   const paidCount = s.paidTrainees ?? s.paid ?? s.paidCount ?? 0;
-  const expiringSoonCount = s.expiringSoon ?? s.expiringSoonCount ?? 0;
-  const expiredCount = s.expiredTrainees ?? s.expiredDue ?? s.expiredDueCount ?? 0;
 
   return (
     <>
       <div className="page-head no-print">
         <div>
-          <h2 style={{ margin: 0, fontSize: 20 }}>Hostel Stay Validity & Free-Period Monitoring</h2>
+          <h2 style={{ margin: 0, fontSize: 20 }}>Hostel Trainee Category Monitoring</h2>
           <p className="muted" style={{ margin: '4px 0 0', fontSize: 13 }}>
-            3-calendar-month free accommodation tracking, stay expiry alerts, and living trainee monitoring.
+            Living trainee classification across Free Trainees and Paid Trainees.
           </p>
         </div>
         <button className="btn btn-ghost" onClick={exportCsv} disabled={loading || !report.trainees?.length}>
@@ -95,7 +87,7 @@ export default function ValidityReport() {
         </button>
       </div>
 
-      {/* 5 KPI Summary Cards */}
+      {/* 3 KPI Summary Cards */}
       <div className="kpi-grid" style={{ marginBottom: 16 }}>
         <div className="card kpi-card" style={{ borderLeft: '4px solid var(--primary, #7c3aed)' }}>
           <div className="kpi-label">Total Living Trainees</div>
@@ -109,14 +101,6 @@ export default function ValidityReport() {
           <div className="kpi-label" style={{ color: '#2563eb' }}>Paid Trainees</div>
           <div className="kpi-value" style={{ color: '#2563eb' }}>{paidCount}</div>
         </div>
-        <div className="card kpi-card" style={{ borderLeft: '4px solid #ea580c' }}>
-          <div className="kpi-label" style={{ color: '#ea580c' }}>Expiring Soon</div>
-          <div className="kpi-value" style={{ color: '#ea580c' }}>{expiringSoonCount}</div>
-        </div>
-        <div className="card kpi-card" style={{ borderLeft: '4px solid #dc2626' }}>
-          <div className="kpi-label" style={{ color: '#dc2626' }}>Expired Trainees</div>
-          <div className="kpi-value" style={{ color: '#dc2626' }}>{expiredCount}</div>
-        </div>
       </div>
 
       {/* Search & Filter Bar */}
@@ -129,10 +113,8 @@ export default function ValidityReport() {
             onChange={(e) => setQ(e.target.value)}
           />
           <select className="input" value={status} onChange={(e) => setStatus(e.target.value)}>
-            <option value="">All Validity Statuses</option>
-            <option value="FREE">Free Stay Active</option>
-            <option value="EXPIRING_SOON">Expiring Soon (≤ 15 Days)</option>
-            <option value="EXPIRED_DUE">Expired Free Period</option>
+            <option value="">All Categories</option>
+            <option value="FREE">Free Trainees</option>
             <option value="PAID">Paid Trainees</option>
           </select>
           <select className="input" value={hostel} onChange={(e) => setHostel(e.target.value)}>
@@ -158,8 +140,8 @@ export default function ValidityReport() {
         </div>
       </div>
 
-      {/* Trainees Validity Table (Monitoring & Reporting strictly, no payment actions) */}
-      <Card title={`Validity Monitoring (${report.trainees?.length || 0} trainees)`} noPad>
+      {/* Trainees Table */}
+      <Card title={`Living Trainees (${report.trainees?.length || 0} trainees)`} noPad>
         <Table
           headers={[
             'Trainee ID',
@@ -167,12 +149,10 @@ export default function ValidityReport() {
             'Hostel',
             'Room',
             'Joining Date',
-            'Free Stay Expiry',
-            'Days Left',
-            'Validity Status',
+            'Category',
             'Actions',
           ]}
-          empty={loading ? 'Loading validity records…' : 'No trainee records found matching the filters.'}
+          empty={loading ? 'Loading records…' : 'No trainee records found matching the filters.'}
           rows={(report.trainees || []).map((t) => [
             <a className="link" onClick={() => navigate('trainee-profile', { id: t.traineeId })}>
               {t.traineeId}
@@ -181,42 +161,10 @@ export default function ValidityReport() {
             t.hostel,
             t.roomNo,
             fmtDate(t.joiningDate),
-            fmtDate(t.freeStayExpiryDate),
             <span
-              style={{
-                fontWeight: 600,
-                color:
-                  t.validityStatus === 'EXPIRED_DUE'
-                    ? 'var(--red, #dc2626)'
-                    : t.validityStatus === 'EXPIRING_SOON'
-                    ? 'var(--orange, #ea580c)'
-                    : 'inherit',
-              }}
+              className={`chip ${t.validityStatus === 'PAID' ? 'chip-blue' : 'chip-green'}`}
             >
-              {t.validityStatus === 'PAID'
-                ? 'PAID'
-                : t.daysRemaining < 0
-                ? `${Math.abs(t.daysRemaining)}d overdue`
-                : `${t.daysRemaining}d left`}
-            </span>,
-            <span
-              className={`chip ${
-                t.validityStatus === 'FREE'
-                  ? 'chip-green'
-                  : t.validityStatus === 'EXPIRING_SOON'
-                  ? 'chip-orange'
-                  : t.validityStatus === 'EXPIRED_DUE'
-                  ? 'chip-red'
-                  : 'chip-blue'
-              }`}
-            >
-              {t.validityStatus === 'FREE'
-                ? 'FREE'
-                : t.validityStatus === 'EXPIRING_SOON'
-                ? 'EXPIRING SOON'
-                : t.validityStatus === 'EXPIRED_DUE'
-                ? 'EXPIRED'
-                : 'PAID'}
+              {t.validityStatus === 'PAID' ? 'PAID' : 'FREE'}
             </span>,
             <div className="row-actions">
               <button

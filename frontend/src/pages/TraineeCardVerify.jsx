@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { api } from '../utils/api.js';
+import { api, resolveMediaUrl } from '../utils/api.js';
 import { Icon } from '../components/ui.jsx';
 import { fmtDate } from '../utils/dates.js';
 
@@ -41,7 +41,7 @@ export default function TraineeCardVerify({ traineeId }) {
         {/* Header */}
         <div style={{ background: 'linear-gradient(135deg, #1e293b 0%, #0f172a 100%)', color: '#fff', padding: '18px 20px', display: 'flex', alignItems: 'center', gap: 14 }}>
           {data?.logo ? (
-            <img src={data.logo} alt="" style={{ height: 42, maxWidth: 90, objectFit: 'contain', background: '#fff', borderRadius: 6, padding: 3 }} />
+            <img src={resolveMediaUrl(data.logo)} alt="" style={{ height: 42, maxWidth: 90, objectFit: 'contain', background: '#fff', borderRadius: 6, padding: 3 }} />
           ) : (
             <div style={{ width: 40, height: 40, borderRadius: 8, background: 'rgba(255,255,255,0.15)', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
               <Icon name="home" size={22} />
@@ -77,7 +77,7 @@ export default function TraineeCardVerify({ traineeId }) {
             <div style={{ padding: '24px 22px 18px', textAlign: 'center' }}>
               <div style={{ width: 104, height: 104, borderRadius: '50%', border: '3px solid #e2e8f0', margin: '0 auto 12px', overflow: 'hidden', background: '#f8fafc', boxShadow: '0 4px 6px -1px rgba(0,0,0,0.08)' }}>
                 {data.trainee.photo ? (
-                  <img src={data.trainee.photo} alt={data.trainee.name} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                  <img src={resolveMediaUrl(data.trainee.photo)} alt={data.trainee.name} style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
                 ) : (
                   <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 30, fontWeight: 700, color: '#64748b' }}>
                     {data.trainee.name.slice(0, 2).toUpperCase()}

@@ -18,6 +18,7 @@ import {
 } from '../defaults.js';
 import { fmtDate } from '../utils/dates.js';
 import { addThreeCalendarMonths } from '../utils/validity.js';
+import { getPhotoStreamFromDrive, parsePhotoData } from './googleDriveService.js';
 import {
   isGmailConfigured,
   sendMailViaGmail,
@@ -1619,12 +1620,52 @@ export async function sendDecisionNotificationEmail({ trainee, decision, rejecti
   });
 }
 
+async function resolveTraineePhotoBuffer(trainee) {
+  if (!trainee) return null;
+  try {
+    if (trainee.photo && typeof trainee.photo === 'string' && trainee.photo.startsWith('data:image/')) {
+      const parsed = parsePhotoData(trainee.photo);
+      if (parsed?.buffer?.length > 0 && !parsed.mimeType.includes('webp')) {
+        return parsed.buffer;
+      }
+    }
+    if (trainee.photoDriveId) {
+      const stream = await getPhotoStreamFromDrive(trainee.photoDriveId);
+      if (stream) {
+        const chunks = [];
+        for await (const chunk of stream) {
+          chunks.push(chunk);
+        }
+        const buf = Buffer.concat(chunks);
+        if (buf.length > 0) return buf;
+      }
+    }
+    if (trainee.photo && typeof trainee.photo === 'string' && /^https?:\/\//i.test(trainee.photo)) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 5000);
+      const res = await fetch(trainee.photo, { signal: controller.signal });
+      clearTimeout(timer);
+      if (res.ok) {
+        const ct = res.headers.get('content-type') || '';
+        if (ct.startsWith('image/') && !ct.includes('webp')) {
+          const buf = Buffer.from(await res.arrayBuffer());
+          if (buf.length > 0) return buf;
+        }
+      }
+    }
+  } catch {
+    // Graceful fallback to initials avatar
+  }
+  return null;
+}
+
 /**
  * Generates a high-resolution, vector-crisp CR80 vertical ID Card PDF buffer.
  * Incorporates Apollo Tyres violet & deep purple theme, company branding,
  * trainee photo/initials avatar, trainee details, and actual scannable QR code.
  */
 export async function generateIdCardPdf({ trainee, branding = {}, idCardTemplate = {}, qrBuffer, verifyUrl = '' }) {
+  const preloadedPhotoBuf = await resolveTraineePhotoBuffer(trainee);
   return new Promise((resolve, reject) => {
     try {
       const tpl = idCardTemplate || {};
@@ -1679,17 +1720,11 @@ export async function generateIdCardPdf({ trainee, branding = {}, idCardTemplate
 
       // Trainee Photo or Avatar
       let photoRendered = false;
-      if (trainee.photo && typeof trainee.photo === 'string') {
+      if (preloadedPhotoBuf) {
         try {
-          if (trainee.photo.startsWith('data:image/')) {
-            const base64Data = trainee.photo.split(',')[1];
-            if (base64Data) {
-              const photoBuf = Buffer.from(base64Data, 'base64');
-              doc.image(photoBuf, 88, 70, { fit: [64, 64], align: 'center', valign: 'center' });
-              doc.rect(88, 70, 64, 64).lineWidth(1.5).stroke('#7C3AED');
-              photoRendered = true;
-            }
-          }
+          doc.image(preloadedPhotoBuf, 88, 70, { fit: [64, 64], align: 'center', valign: 'center' });
+          doc.rect(88, 70, 64, 64).lineWidth(1.5).stroke('#7C3AED');
+          photoRendered = true;
         } catch {
           photoRendered = false;
         }

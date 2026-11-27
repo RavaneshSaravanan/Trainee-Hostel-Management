@@ -1,15 +1,16 @@
 import { useEffect, useState } from 'react';
 import { QRCodeCanvas } from 'qrcode.react';
 import { useStore } from '../store.jsx';
-import { HOSTEL_STATUSES } from '../data/constants.js';
-import { Avatar, Badge, Card, Icon, Table } from '../components/ui.jsx';
+import { HOSTEL_STATUSES, QUALIFICATIONS } from '../data/constants.js';
+import { Avatar, Badge, Card, Icon, Modal, Table } from '../components/ui.jsx';
 import { ApproveModal, ChangeRoomModal, RoomOccupantsModal } from '../components/RoomModals.jsx';
 import VerticalIdCard from '../components/VerticalIdCard.jsx';
 import { fmtDate } from '../utils/dates.js';
 import { occupantsOf } from '../utils/summary.js';
 import { isComplete, missingDetails } from '../utils/details.js';
 import { classifyTrainee } from '../utils/validity.js';
-import { getToken, BASE_URL } from '../utils/api.js';
+import { isValidAadhaar, isValidEmail } from '../utils/validators.js';
+import { api, getToken, BASE_URL } from '../utils/api.js';
 
 // Printable sheet of QR cards (one per trainee) — stick them on ID cards / room doors.
 function QrSheet({ list, onClose }) {
@@ -51,9 +52,7 @@ function Master({ initialQ, initialDetails }) {
     (!details || (details === 'pending') === !isComplete(t, config.customFields)) &&
     (!stayCategory || (
       stayCategory === 'FREE' ? classifyTrainee(t).isFree :
-      stayCategory === 'PAID' ? classifyTrainee(t).isPaid :
-      stayCategory === 'EXPIRING_SOON' ? classifyTrainee(t).isExpiringSoon :
-      stayCategory === 'EXPIRED_DUE' ? classifyTrainee(t).isExpired : true
+      stayCategory === 'PAID' ? classifyTrainee(t).isPaid : true
     ))
   );
 
@@ -70,11 +69,9 @@ function Master({ initialQ, initialDetails }) {
           <option value="">All Hostel Status</option>{HOSTEL_STATUSES.map((s) => <option key={s}>{s}</option>)}
         </select>
         <select className="input" value={stayCategory} onChange={(e) => setStayCategory(e.target.value)}>
-          <option value="">All Stay Types</option>
-          <option value="FREE">Free Stay (Active)</option>
-          <option value="EXPIRING_SOON">Expiring Soon (≤15 Days)</option>
-          <option value="PAID">Paid Stay (Verified)</option>
-          <option value="EXPIRED_DUE">Expired Free Stay (Payment Due)</option>
+          <option value="">All Categories</option>
+          <option value="FREE">Free Trainees</option>
+          <option value="PAID">Paid Trainees</option>
         </select>
         <select className="input" value={details} onChange={(e) => setDetails(e.target.value)}>
           <option value="">All Details</option><option value="pending">Details pending (red)</option><option value="complete">Details complete (green)</option>
@@ -227,22 +224,36 @@ function Rooms() {
 
 
 /* ---------------- Warden Partial Trainee Completion View ---------------- */
+function isIncompleteTraineeRecord(t) {
+  if (!t) return false;
+  if (['PERMANENT VACATE', 'RESIGNED', 'INACTIVE', 'REJECTED'].includes(t.hostelStatus)) return false;
+  if (t.approvalStatus === 'REJECTED') return false;
+  return (
+    ['PARTIAL', 'INCOMPLETE', 'PENDING_DETAILS'].includes(t.completionStatus) ||
+    (Array.isArray(t.missingFields) && t.missingFields.length > 0) ||
+    !t.roomNo
+  );
+}
+
 function CompleteTraineeModal({ trainee, hostels, onClose, onCompleted }) {
-  const { notify } = useStore();
+  const { db, notify, navigate } = useStore();
+  const initialHostel = trainee.hostel || (hostels[0]?.name || '');
+  const existingMaskedAadhaar = trainee.aadharMasked || (trainee.aadhar && (String(trainee.aadhar).includes('X') || String(trainee.aadhar).includes('•')) ? trainee.aadhar : '');
   const [f, setF] = useState({
     name: trainee.name || '',
-    mobile: trainee.mobile || '',
+    mobile: trainee.mobile ? String(trainee.mobile).replace(/\D/g, '') : '',
     email: trainee.email || '',
     dob: trainee.dob ? String(trainee.dob).slice(0, 10) : '',
-    gender: trainee.gender || 'MALE',
+    gender: (trainee.gender || 'MALE').toUpperCase(),
     joiningDate: trainee.joiningDate ? String(trainee.joiningDate).slice(0, 10) : new Date().toISOString().slice(0, 10),
     guardianName: trainee.guardianName || '',
-    guardianContact: trainee.guardianContact || '',
-    aadhar: trainee.aadhar || '',
-    qualification: trainee.qualification || '',
-    bloodGroup: trainee.bloodGroup || '',
-    emergencyContact: trainee.emergencyContact || '',
-    hostel: trainee.hostel || (hostels[0]?.name || ''),
+    guardianContact: trainee.guardianContact ? String(trainee.guardianContact).replace(/\D/g, '') : '',
+    aadhar: existingMaskedAadhaar ? '' : (trainee.aadhar ? String(trainee.aadhar).replace(/\D/g, '') : ''),
+    qualification: trainee.qualification || QUALIFICATIONS[0] || '',
+    food: (trainee.food || 'VEG').toUpperCase(),
+    address1: trainee.address1 || '',
+    state: trainee.state || '',
+    hostel: initialHostel,
     roomNo: trainee.roomNo || '',
     sendWelcomeEmail: true,
   });
@@ -251,37 +262,101 @@ function CompleteTraineeModal({ trainee, hostels, onClose, onCompleted }) {
 
   const selectedHostelObj = hostels.find((h) => h.name === f.hostel) || hostels[0];
   const availableRooms = selectedHostelObj?.rooms || [];
+  const targetId = trainee.traineeId || trainee.qrId || trainee.hostelId || trainee._id;
 
-  const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
+  const set = (k) => (e) => {
+    const val = e.target.value;
+    setError('');
+    if (k === 'hostel') {
+      setF((prev) => ({ ...prev, hostel: val, roomNo: '' }));
+    } else {
+      setF((prev) => ({ ...prev, [k]: val }));
+    }
+  };
 
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-    if (!f.name.trim()) { setError('Trainee name is required.'); return; }
-    if (!f.mobile.trim() || !/^[6-9]\d{9}$/.test(f.mobile.trim())) {
+  const handleSubmit = async () => {
+    if (loading) return;
+    if (!targetId) {
+      setError('Unable to identify trainee record.');
+      return;
+    }
+
+    const cleanName = f.name.trim();
+    const cleanMobile = f.mobile.replace(/\D/g, '');
+    const cleanEmail = f.email.trim().toLowerCase();
+    const cleanGuardianContact = f.guardianContact.replace(/\D/g, '');
+    const cleanAadhaar = f.aadhar.replace(/\D/g, '');
+
+    if (!cleanName || cleanName.length < 2) { setError('Trainee name is required (at least 2 characters).'); return; }
+    if (!cleanMobile || !/^[6-9]\d{9}$/.test(cleanMobile)) {
       setError('A valid 10-digit mobile number starting with 6-9 is required.');
+      return;
+    }
+    if (cleanEmail && !isValidEmail(cleanEmail)) {
+      setError('Please enter a valid email address.');
       return;
     }
     if (!f.dob) { setError('Date of birth is required.'); return; }
     if (!f.joiningDate) { setError('Joining date is required.'); return; }
+    if (!f.qualification.trim()) { setError('Qualification / Trade is required.'); return; }
+    if (!existingMaskedAadhaar) {
+      if (!cleanAadhaar || cleanAadhaar.length !== 12 || !isValidAadhaar(cleanAadhaar, true)) {
+        setError('A valid 12-digit Aadhaar number is required.');
+        return;
+      }
+    } else if (cleanAadhaar) {
+      if (cleanAadhaar.length !== 12 || !isValidAadhaar(cleanAadhaar, true)) {
+        setError('Please enter a valid 12-digit Aadhaar number.');
+        return;
+      }
+    }
+    if (!f.address1.trim()) { setError('Address is required.'); return; }
+    if (!f.state.trim()) { setError('State is required.'); return; }
     if (!f.guardianName.trim()) { setError('Guardian name is required.'); return; }
-    if (!f.guardianContact.trim() || !/^\d{10}$/.test(f.guardianContact.trim())) {
+    if (!cleanGuardianContact || !/^\d{10}$/.test(cleanGuardianContact)) {
       setError('A valid 10-digit guardian contact number is required.');
       return;
     }
+    if (!f.hostel) { setError('Please select a hostel.'); return; }
     if (!f.roomNo) { setError('Please allocate a hostel room to finalize.'); return; }
 
     setLoading(true);
     setError('');
     try {
-      const res = await api(`/api/warden/complete-trainee/${trainee.traineeId || trainee._id}`, {
+      const payload = {
+        ...f,
+        name: cleanName,
+        mobile: cleanMobile,
+        email: cleanEmail,
+        guardianName: f.guardianName.trim(),
+        guardianContact: cleanGuardianContact,
+        qualification: f.qualification.trim(),
+        address1: f.address1.trim(),
+        state: f.state.trim(),
+      };
+      if (cleanAadhaar) {
+        payload.aadhar = cleanAadhaar;
+      } else {
+        delete payload.aadhar;
+      }
+
+      const res = await api(`/api/warden/complete-trainee/${encodeURIComponent(targetId)}`, {
         method: 'PUT',
-        body: f,
+        body: payload,
       });
       notify(res.message || '✓ Trainee details completed and finalized successfully.');
-      onCompleted(res.trainee);
+      if (onCompleted) {
+        await onCompleted(res);
+      }
       onClose();
+      if (res.isFullyComplete && res.trainee) {
+        const nextId = res.trainee.traineeId || res.trainee.qrId || targetId;
+        navigate('trainee-profile', { id: nextId });
+      }
     } catch (err) {
-      setError(err.message || 'Failed to complete trainee registration.');
+      const msg = err.message || 'Failed to complete trainee registration.';
+      setError(msg);
+      notify(msg);
     } finally {
       setLoading(false);
     }
@@ -290,129 +365,157 @@ function CompleteTraineeModal({ trainee, hostels, onClose, onCompleted }) {
   const missing = Array.isArray(trainee.missingFields) ? trainee.missingFields : [];
 
   return (
-    <Modal title={`Complete & Finalize Trainee — ${trainee.name}`} onClose={onClose}>
-      <form onSubmit={handleSubmit}>
-        {missing.length > 0 && (
-          <div style={{ background: '#fffbeb', border: '1px solid #fef3c7', borderRadius: 8, padding: '10px 14px', marginBottom: 14, fontSize: 13, color: '#92400e' }}>
-            <strong>Pending Requirements:</strong> {missing.join(', ')}
-          </div>
-        )}
-        {error && (
-          <div style={{ background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 8, padding: '10px 14px', marginBottom: 14, fontSize: 13, color: '#991b1b' }}>
-            {error}
-          </div>
-        )}
+    <Modal
+      title={`Complete & Finalize Trainee — ${trainee.name}`}
+      onClose={onClose}
+      onSubmit={handleSubmit}
+      submitLabel={loading ? 'Finalizing…' : 'Finalize & Activate Trainee'}
+      submitDisabled={loading}
+    >
+      {missing.length > 0 && (
+        <div style={{ background: '#fffbeb', border: '1px solid #fef3c7', borderRadius: 8, padding: '10px 14px', marginBottom: 14, fontSize: 13, color: '#92400e' }}>
+          <strong>Pending Requirements:</strong> {missing.join(', ')}
+        </div>
+      )}
+      {error && (
+        <div style={{ background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 8, padding: '10px 14px', marginBottom: 14, fontSize: 13, color: '#991b1b' }}>
+          {error}
+        </div>
+      )}
 
+      <div className="two-col">
+        <div>
+          <label className="field-label">Trainee Name *</label>
+          <input className="input" value={f.name} onChange={set('name')} required />
+        </div>
+        <div>
+          <label className="field-label">Mobile Number (10 digits) *</label>
+          <input className="input" type="tel" maxLength={10} value={f.mobile} onChange={set('mobile')} placeholder="e.g. 9876543210" required />
+        </div>
+      </div>
+
+      <div className="two-col" style={{ marginTop: 12 }}>
+        <div>
+          <label className="field-label">Email ID (for ID card delivery)</label>
+          <input className="input" type="email" value={f.email} onChange={set('email')} placeholder="trainee@gmail.com" />
+        </div>
+        <div>
+          <label className="field-label">Date of Birth *</label>
+          <input className="input" type="date" value={f.dob} max={new Date().toISOString().slice(0, 10)} onChange={set('dob')} required />
+        </div>
+      </div>
+
+      <div className="two-col" style={{ marginTop: 12 }}>
+        <div>
+          <label className="field-label">Gender *</label>
+          <select className="input" value={f.gender} onChange={set('gender')} required>
+            <option value="MALE">Male</option>
+            <option value="FEMALE">Female</option>
+            <option value="OTHER">Other</option>
+          </select>
+        </div>
+        <div>
+          <label className="field-label">Joining Date *</label>
+          <input className="input" type="date" value={f.joiningDate} onChange={set('joiningDate')} required />
+        </div>
+      </div>
+
+      <div className="two-col" style={{ marginTop: 12 }}>
+        <div>
+          <label className="field-label">Guardian Name *</label>
+          <input className="input" value={f.guardianName} onChange={set('guardianName')} placeholder="Parent or Guardian" required />
+        </div>
+        <div>
+          <label className="field-label">Guardian Contact (10 digits) *</label>
+          <input className="input" type="tel" maxLength={10} value={f.guardianContact} onChange={set('guardianContact')} placeholder="e.g. 9876543210" required />
+        </div>
+      </div>
+
+      <div className="two-col" style={{ marginTop: 12 }}>
+        <div>
+          <label className="field-label">
+            Aadhaar Number (12 digits) {existingMaskedAadhaar ? `(Saved: ${existingMaskedAadhaar})` : '*'}
+          </label>
+          <input
+            className="input"
+            maxLength={12}
+            value={f.aadhar}
+            onChange={set('aadhar')}
+            placeholder={existingMaskedAadhaar ? 'Leave blank to keep existing' : '12-digit UID'}
+          />
+        </div>
+        <div>
+          <label className="field-label">Qualification / Trade *</label>
+          <input className="input" value={f.qualification} onChange={set('qualification')} placeholder="e.g. ITI / Diploma" required />
+        </div>
+      </div>
+
+      <div className="two-col" style={{ marginTop: 12 }}>
+        <div>
+          <label className="field-label">Food Preference *</label>
+          <select className="input" value={f.food} onChange={set('food')} required>
+            <option value="VEG">VEG</option>
+            <option value="NON-VEG">NON-VEG</option>
+          </select>
+        </div>
+        <div>
+          <label className="field-label">State *</label>
+          <input className="input" value={f.state} onChange={set('state')} placeholder="e.g. Tamil Nadu" required />
+        </div>
+      </div>
+
+      <div style={{ marginTop: 12 }}>
+        <label className="field-label">Address *</label>
+        <input className="input" value={f.address1} onChange={set('address1')} placeholder="Street / Village / City" required />
+      </div>
+
+      <div style={{ marginTop: 14, paddingTop: 14, borderTop: '1px solid var(--border)' }}>
+        <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 8, color: 'var(--purple-900)' }}>
+          🛏️ Hostel & Room Allocation
+        </div>
         <div className="two-col">
           <div>
-            <label className="field-label">Trainee Name *</label>
-            <input className="input" value={f.name} onChange={set('name')} required />
-          </div>
-          <div>
-            <label className="field-label">Mobile Number (10 digits) *</label>
-            <input className="input" type="tel" maxLength={10} value={f.mobile} onChange={set('mobile')} placeholder="e.g. 9876543210" required />
-          </div>
-        </div>
-
-        <div className="two-col" style={{ marginTop: 12 }}>
-          <div>
-            <label className="field-label">Email ID (for ID card delivery)</label>
-            <input className="input" type="email" value={f.email} onChange={set('email')} placeholder="trainee@example.com" />
-          </div>
-          <div>
-            <label className="field-label">Date of Birth *</label>
-            <input className="input" type="date" value={f.dob} max={new Date().toISOString().slice(0, 10)} onChange={set('dob')} required />
-          </div>
-        </div>
-
-        <div className="two-col" style={{ marginTop: 12 }}>
-          <div>
-            <label className="field-label">Gender *</label>
-            <select className="input" value={f.gender} onChange={set('gender')} required>
-              <option value="MALE">Male</option>
-              <option value="FEMALE">Female</option>
-              <option value="OTHER">Other</option>
+            <label className="field-label">Hostel *</label>
+            <select className="input" value={f.hostel} onChange={set('hostel')} required>
+              <option value="">-- Select Hostel --</option>
+              {hostels.map((h) => <option key={h.name} value={h.name}>{h.name}</option>)}
             </select>
           </div>
           <div>
-            <label className="field-label">Joining Date *</label>
-            <input className="input" type="date" value={f.joiningDate} onChange={set('joiningDate')} required />
-          </div>
-        </div>
-
-        <div className="two-col" style={{ marginTop: 12 }}>
-          <div>
-            <label className="field-label">Guardian Name *</label>
-            <input className="input" value={f.guardianName} onChange={set('guardianName')} placeholder="Parent or Guardian" required />
-          </div>
-          <div>
-            <label className="field-label">Guardian Contact (10 digits) *</label>
-            <input className="input" type="tel" maxLength={10} value={f.guardianContact} onChange={set('guardianContact')} placeholder="e.g. 9876543210" required />
-          </div>
-        </div>
-
-        <div className="two-col" style={{ marginTop: 12 }}>
-          <div>
-            <label className="field-label">Aadhaar Number (12 digits)</label>
-            <input className="input" maxLength={12} value={f.aadhar} onChange={set('aadhar')} placeholder="12-digit UID" />
-          </div>
-          <div>
-            <label className="field-label">Qualification / Trade</label>
-            <input className="input" value={f.qualification} onChange={set('qualification')} placeholder="e.g. ITI Fitter / Diploma" />
-          </div>
-        </div>
-
-        <div style={{ marginTop: 14, paddingTop: 14, borderTop: '1px solid var(--border)' }}>
-          <div style={{ fontWeight: 700, fontSize: 14, marginBottom: 8, color: 'var(--purple-900)' }}>
-            🛏️ Hostel & Room Allocation
-          </div>
-          <div className="two-col">
-            <div>
-              <label className="field-label">Hostel *</label>
-              <select className="input" value={f.hostel} onChange={set('hostel')} required>
-                {hostels.map((h) => <option key={h.name} value={h.name}>{h.name}</option>)}
-              </select>
-            </div>
-            <div>
-              <label className="field-label">Room Number *</label>
-              <select className="input" value={f.roomNo} onChange={set('roomNo')} required>
-                <option value="">-- Select Room --</option>
-                {availableRooms.map((r) => (
-                  <option key={r.no} value={r.no}>
-                    Room {r.no} ({r.capacity} beds)
+            <label className="field-label">Room Number *</label>
+            <select className="input" value={f.roomNo} onChange={set('roomNo')} required>
+              <option value="">-- Select Room --</option>
+              {availableRooms.map((r) => {
+                const occ = occupantsOf(db, f.hostel, r.no).filter((o) => o.traineeId !== trainee.traineeId).length;
+                const cap = r.capacity || 1;
+                const full = occ >= cap;
+                return (
+                  <option key={r.no} value={r.no} disabled={full}>
+                    Room {r.no} ({occ}/{cap} occupied){full ? ' — FULL' : ''}
                   </option>
-                ))}
-              </select>
-            </div>
+                );
+              })}
+            </select>
           </div>
         </div>
+      </div>
 
-        <div style={{ marginTop: 14 }}>
-          <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, cursor: 'pointer' }}>
-            <input
-              type="checkbox"
-              checked={f.sendWelcomeEmail}
-              onChange={(e) => setF({ ...f, sendWelcomeEmail: e.target.checked })}
-            />
-            <span>Dispatch Welcome Email with printable ID Card PDF and QR code immediately</span>
-          </label>
-        </div>
-
-        <div style={{ marginTop: 18, display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
-          <button type="button" className="btn btn-ghost" onClick={onClose} disabled={loading}>
-            Cancel
-          </button>
-          <button type="submit" className="btn btn-primary" disabled={loading}>
-            <Icon name="check" size={14} /> {loading ? 'Finalizing…' : 'Finalize & Activate Trainee'}
-          </button>
-        </div>
-      </form>
+      <div style={{ marginTop: 14 }}>
+        <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, cursor: 'pointer' }}>
+          <input
+            type="checkbox"
+            checked={f.sendWelcomeEmail}
+            onChange={(e) => setF({ ...f, sendWelcomeEmail: e.target.checked })}
+          />
+          <span>Dispatch Welcome Email with printable ID Card PDF and QR code immediately</span>
+        </label>
+      </div>
     </Modal>
   );
 }
 
 function IncompleteDetails() {
-  const { db, notify, setDb } = useStore();
+  const { db, refreshState } = useStore();
   const [data, setData] = useState({ trainees: [], summary: {} });
   const [loading, setLoading] = useState(true);
   const [completingTrainee, setCompletingTrainee] = useState(null);
@@ -421,12 +524,20 @@ function IncompleteDetails() {
     setLoading(true);
     try {
       const res = await api('/api/warden/incomplete-trainees');
-      setData(res);
+      const list = res.trainees || res.incompleteTrainees || [];
+      const rawSummary = res.summary || res.metrics || {};
+      setData({
+        trainees: list,
+        summary: {
+          totalIncomplete: rawSummary.totalIncomplete ?? list.length,
+          missingDetailsCount: rawSummary.missingDetailsCount ?? list.filter((t) => Array.isArray(t.missingFields) && t.missingFields.length > 0).length,
+          pendingRoomCount: rawSummary.pendingRoomCount ?? rawSummary.pendingRoomAllocation ?? list.filter((t) => !t.roomNo).length,
+          readyForFinalizationCount: rawSummary.readyForFinalizationCount ?? rawSummary.readyForFinalization ?? list.filter((t) => (!t.missingFields || t.missingFields.length === 0) && !t.roomNo).length,
+        },
+      });
     } catch (err) {
       // Fallback to local store filtering
-      const list = db.trainees.filter(
-        (t) => t.completionStatus === 'PARTIAL' || (Array.isArray(t.missingFields) && t.missingFields.length > 0) || !t.roomNo
-      );
+      const list = db.trainees.filter(isIncompleteTraineeRecord);
       setData({
         trainees: list,
         summary: {
@@ -445,8 +556,11 @@ function IncompleteDetails() {
     fetchIncomplete();
   }, [db.trainees]);
 
-  const handleCompleted = (updatedTrainee) => {
-    fetchIncomplete();
+  const handleCompleted = async () => {
+    if (refreshState) {
+      await refreshState();
+    }
+    await fetchIncomplete();
   };
 
   const { summary = {}, trainees = [] } = data;
@@ -483,9 +597,9 @@ function IncompleteDetails() {
       >
         <Table
           headers={['Trainee ID', 'Name', 'Hostel', 'Missing Fields', 'Room Status', 'Action']}
-          empty="✓ No incomplete trainee records pending for your assigned hostels."
+          empty={loading ? 'Loading incomplete trainees…' : '✓ No incomplete trainee records pending for your assigned hostels.'}
           rows={trainees.map((t) => [
-            <strong>{t.traineeId || '—'}</strong>,
+            <strong>{t.traineeId || t.qrId || '—'}</strong>,
             <div>
               <div style={{ fontWeight: 700 }}>{t.name}</div>
               <div className="muted" style={{ fontSize: 12 }}>{t.mobile || 'No mobile'} · {t.email || 'No email'}</div>
@@ -494,8 +608,8 @@ function IncompleteDetails() {
             <div>
               {(t.missingFields || []).length > 0 ? (
                 <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
-                  {t.missingFields.map((f) => (
-                    <span key={f} className="chip chip-amber" style={{ fontSize: 11 }}>{f}</span>
+                  {t.missingFields.map((fld) => (
+                    <span key={fld} className="chip chip-amber" style={{ fontSize: 11 }}>{fld}</span>
                   ))}
                 </div>
               ) : (
@@ -535,7 +649,7 @@ export default function Trainees() {
   const [exporting, setExporting] = useState(false);
   const tab = route.params.tab || 'all';
   const pendingCount = db.trainees.filter((t) => t.hostelStatus === 'PENDING REVIEW').length;
-  const incompleteCount = db.trainees.filter((t) => t.completionStatus === 'PARTIAL' || (Array.isArray(t.missingFields) && t.missingFields.length > 0) || !t.roomNo).length;
+  const incompleteCount = db.trainees.filter(isIncompleteTraineeRecord).length;
   const tabs = [
     ['all', 'All Trainees'],
     ['incomplete', 'Incomplete Details'],

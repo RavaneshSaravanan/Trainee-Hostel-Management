@@ -1,5 +1,6 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { STATUS_COLOR } from '../data/constants.js';
+import { resolveMediaUrl } from '../utils/api.js';
 
 const ICONS = {
   grid: '<rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/>',
@@ -60,11 +61,15 @@ export function Badge({ status }) {
 /** Trainee photo with a purple initial fallback (works offline / if the photo URL breaks). */
 export function Avatar({ trainee, size = 'sm' }) {
   const [broken, setBroken] = useState(false);
+  const photoSrc = resolveMediaUrl(trainee?.photo);
+  useEffect(() => {
+    setBroken(false);
+  }, [photoSrc]);
   const cls = `avatar-${size}`;
-  if (!trainee.photo || broken) {
-    return <div className={`${cls} avatar-fallback`}>{(trainee.name || '?').charAt(0)}</div>;
+  if (!photoSrc || broken) {
+    return <div className={`${cls} avatar-fallback`}>{(trainee?.name || '?').charAt(0)}</div>;
   }
-  return <img className={cls} src={trainee.photo} alt="" onError={() => setBroken(true)} />;
+  return <img className={cls} src={photoSrc} alt="" onError={() => setBroken(true)} />;
 }
 
 export function Table({ headers, rows, empty = 'No records found.', rowClass }) {
@@ -103,7 +108,7 @@ export function Card({ title, sub, action, children, noPad }) {
   );
 }
 
-export function Modal({ title, onClose, onSubmit, submitLabel = 'Save', action, actions, children }) {
+export function Modal({ title, onClose, onSubmit, submitLabel = 'Save', submitDisabled = false, action, actions, children }) {
   const extraAction = action || actions;
   return (
     <div className="modal-overlay" onMouseDown={(e) => e.target === e.currentTarget && onClose()}>
@@ -111,19 +116,19 @@ export function Modal({ title, onClose, onSubmit, submitLabel = 'Save', action, 
         className="modal"
         onSubmit={(e) => {
           e.preventDefault();
-          if (onSubmit) onSubmit(e);
+          if (onSubmit && !submitDisabled) onSubmit(e);
         }}
       >
         <div className="modal-head">
           <div className="modal-title">{title}</div>
-          <button type="button" className="icon-btn" onClick={onClose}><Icon name="x" size={18} /></button>
+          <button type="button" className="icon-btn" onClick={onClose} disabled={submitDisabled}><Icon name="x" size={18} /></button>
         </div>
         <div className="modal-body">{children}</div>
         <div className="modal-foot">
           {extraAction}
-          <button type="button" className="btn btn-ghost" onClick={onClose}>{onSubmit ? 'Cancel' : 'Close'}</button>
+          <button type="button" className="btn btn-ghost" onClick={onClose} disabled={submitDisabled}>{onSubmit ? 'Cancel' : 'Close'}</button>
           {onSubmit && (
-            <button type="submit" className="btn btn-primary"><Icon name="check" size={15} /> {submitLabel}</button>
+            <button type="submit" className="btn btn-primary" disabled={submitDisabled}><Icon name="check" size={15} /> {submitLabel}</button>
           )}
         </div>
       </form>

@@ -90,9 +90,9 @@ export function HostelOccupancyChart({ data = [] }) {
   );
 }
 
-// ---------------- Chart 2: Free vs Paid Stay Distribution (Donut Chart) ----------------
-export function FreeVsPaidDonutChart({ free = 0, paid = 0, expired = 0 }) {
-  const total = free + paid + expired;
+// ---------------- Chart 2: Free vs Paid Trainees Distribution (Donut Chart) ----------------
+export function FreeVsPaidDonutChart({ free = 0, paid = 0 }) {
+  const total = free + paid;
   const [hovered, setHovered] = useState(null);
 
   if (total === 0) {
@@ -100,8 +100,7 @@ export function FreeVsPaidDonutChart({ free = 0, paid = 0, expired = 0 }) {
   }
 
   const freePct = Math.round((free / total) * 100);
-  const paidPct = Math.round((paid / total) * 100);
-  const expiredPct = Math.max(0, 100 - freePct - paidPct);
+  const paidPct = Math.max(0, 100 - freePct);
 
   const r = 60;
   const cx = 90;
@@ -110,28 +109,11 @@ export function FreeVsPaidDonutChart({ free = 0, paid = 0, expired = 0 }) {
   const circum = 2 * Math.PI * r;
   const freeStroke = (free / total) * circum;
   const paidStroke = (paid / total) * circum;
-  const expiredStroke = (expired / total) * circum;
 
   return (
     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-around', gap: 14, flexWrap: 'wrap' }}>
       <svg width="180" height="180" viewBox="0 0 180 180">
         <circle cx={cx} cy={cy} r={r} fill="none" stroke="#F3E8FF" strokeWidth={strokeW} />
-        {/* Expired Slice */}
-        {expired > 0 && (
-          <circle
-            cx={cx}
-            cy={cy}
-            r={r}
-            fill="none"
-            stroke={THEME.red}
-            strokeWidth={strokeW}
-            strokeDasharray={`${expiredStroke} ${circum}`}
-            strokeDashoffset={-(freeStroke + paidStroke)}
-            style={{ transition: 'stroke-width .2s', cursor: 'pointer' }}
-            onMouseEnter={() => setHovered('EXPIRED')}
-            onMouseLeave={() => setHovered(null)}
-          />
-        )}
         {/* Paid Slice */}
         {paid > 0 && (
           <circle
@@ -177,23 +159,15 @@ export function FreeVsPaidDonutChart({ free = 0, paid = 0, expired = 0 }) {
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <span style={{ width: 12, height: 12, borderRadius: 3, background: THEME.purple600 }} />
           <div>
-            <strong>Free Stay:</strong> {free} ({freePct}%)
+            <strong>Free Trainees:</strong> {free} ({freePct}%)
           </div>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           <span style={{ width: 12, height: 12, borderRadius: 3, background: THEME.green }} />
           <div>
-            <strong>Paid Stay:</strong> {paid} ({paidPct}%)
+            <strong>Paid Trainees:</strong> {paid} ({paidPct}%)
           </div>
         </div>
-        {expired > 0 && (
-          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-            <span style={{ width: 12, height: 12, borderRadius: 3, background: THEME.red }} />
-            <div>
-              <strong>Expired / Due:</strong> {expired} ({expiredPct}%)
-            </div>
-          </div>
-        )}
       </div>
     </div>
   );

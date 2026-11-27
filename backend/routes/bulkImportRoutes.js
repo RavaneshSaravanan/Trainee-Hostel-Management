@@ -1,4 +1,5 @@
 import express from 'express';
+import mongoose from 'mongoose';
 import XLSX from 'xlsx';
 import crypto from 'node:crypto';
 import { Trainee } from '../models/Trainee.js';
@@ -832,33 +833,63 @@ router.get('/trainees/bulk-report/:batchId/:type', auth, requireSuper, async (re
 });
 
 // ---------------- 5. Warden Partial Records & Completion Workflow ----------------
+function sanitizeIncompleteTrainee(t) {
+  if (!t) return null;
+  const doc = typeof t.toObject === 'function' ? t.toObject() : { ...t };
+  delete doc.aadharEncrypted;
+  delete doc.aadharHash;
+  delete doc.passwordHash;
+  if (doc.aadharMasked) doc.aadhar = doc.aadharMasked;
+  return doc;
+}
+
 router.get('/warden/incomplete-trainees', auth, async (req, res) => {
   try {
     const u = req.user;
     const isSuper = u.roleId === 'superadmin' || u.roleId === 'admin';
 
-    // If warden has assigned hostels, filter by those hostels; otherwise superadmin sees all
     const query = {
-      completionStatus: { $in: ['INCOMPLETE', 'PENDING_DETAILS'] },
+      hostelStatus: { $nin: ['PERMANENT VACATE', 'RESIGNED', 'INACTIVE', 'REJECTED'] },
+      approvalStatus: { $ne: 'REJECTED' },
+      $or: [
+        { completionStatus: { $in: ['INCOMPLETE', 'PENDING_DETAILS', 'PARTIAL'] } },
+        { missingFields: { $exists: true, $not: { $size: 0 } } },
+        { roomNo: { $in: ['', null] } },
+        { roomNo: { $exists: false } },
+      ],
     };
 
     if (!isSuper && Array.isArray(u.assignedHostels) && u.assignedHostels.length > 0) {
-      query.$or = [
-        { hostel: { $in: u.assignedHostels } },
-        { hostel: '' }, // Allow viewing unallocated trainees to place in warden's hostel
+      query.$and = [
+        {
+          $or: [
+            { hostel: { $in: u.assignedHostels } },
+            { hostel: '' },
+            { hostel: { $exists: false } },
+          ],
+        },
       ];
     }
 
-    const list = await Trainee.find(query).sort({ createdAt: -1 }).lean();
+    const rawList = await Trainee.find(query).sort({ createdAt: -1 }).lean();
+    const list = rawList.map(sanitizeIncompleteTrainee);
 
-    // Compute metrics
     const totalIncomplete = list.length;
-    const pendingRoomAllocation = list.filter((t) => !t.roomNo || t.roomAllocationStatus === 'PENDING').length;
+    const missingDetailsCount = list.filter((t) => Array.isArray(t.missingFields) && t.missingFields.length > 0).length;
+    const pendingRoomAllocation = list.filter((t) => !t.roomNo || t.roomAllocationStatus === 'PENDING' || t.roomAllocationStatus === 'UNALLOCATED').length;
     const readyForFinalization = list.filter(
-      (t) => (t.missingFields || []).length === 0 && t.roomNo && t.roomAllocationStatus === 'ALLOCATED'
+      (t) => (!t.missingFields || t.missingFields.length === 0) && (!t.roomNo || t.roomAllocationStatus !== 'ALLOCATED')
     ).length;
 
     return res.json({
+      ok: true,
+      trainees: list,
+      summary: {
+        totalIncomplete,
+        missingDetailsCount,
+        pendingRoomCount: pendingRoomAllocation,
+        readyForFinalizationCount: readyForFinalization,
+      },
       incompleteTrainees: list,
       metrics: {
         totalIncomplete,
@@ -876,11 +907,24 @@ router.put('/warden/complete-trainee/:traineeId', auth, async (req, res) => {
   try {
     const rawId = req.params.traineeId || '';
     const cleanId = String(rawId).trim();
+    if (!cleanId) {
+      return res.status(400).json({ error: 'Trainee identifier is required.' });
+    }
     const d = req.body || {};
 
-    const trainee = await Trainee.findOne({
-      $or: [{ traineeId: cleanId }, { qrId: cleanId }, { hostelId: cleanId }],
-    });
+    const matchClauses = [
+      { traineeId: cleanId },
+      { qrId: cleanId },
+      { hostelId: cleanId },
+      { traineeId: cleanId.toUpperCase() },
+      { qrId: cleanId.toUpperCase() },
+      { hostelId: cleanId.toUpperCase() },
+    ];
+    if (mongoose.Types.ObjectId.isValid(cleanId)) {
+      matchClauses.unshift({ _id: cleanId });
+    }
+
+    const trainee = await Trainee.findOne({ $or: matchClauses });
 
     if (!trainee) {
       return res.status(404).json({ error: 'Trainee not found.' });
@@ -898,84 +942,186 @@ router.put('/warden/complete-trainee/:traineeId', auth, async (req, res) => {
 
     const updatedFields = [];
 
-    if (d.name && d.name !== trainee.name) {
-      trainee.name = d.name.trim();
-      updatedFields.push('name');
+    if (d.name !== undefined) {
+      const cleanName = String(d.name || '').trim();
+      if (!cleanName || cleanName.length < 2) {
+        return res.status(400).json({ error: 'Trainee name is required (at least 2 characters).' });
+      }
+      if (cleanName !== trainee.name) {
+        trainee.name = cleanName;
+        updatedFields.push('name');
+      }
     }
-    if (d.mobile) {
-      const cleanMobile = String(d.mobile).replace(/\D/g, '');
-      if (isValidMobile(cleanMobile)) {
+
+    if (d.mobile !== undefined) {
+      const cleanMobile = String(d.mobile || '').replace(/\D/g, '');
+      if (!cleanMobile || !isValidMobile(cleanMobile)) {
+        return res.status(400).json({ error: 'Mobile number must contain exactly 10 digits starting with 6, 7, 8, or 9.' });
+      }
+      if (cleanMobile !== trainee.mobile) {
         trainee.mobile = cleanMobile;
         updatedFields.push('mobile');
       }
     }
-    if (d.email) {
-      const cleanEmail = String(d.email).trim().toLowerCase();
-      if (isValidEmail(cleanEmail)) {
+
+    if (d.email !== undefined) {
+      const cleanEmail = String(d.email || '').trim().toLowerCase();
+      if (cleanEmail && !isValidEmail(cleanEmail)) {
+        return res.status(400).json({ error: 'Please enter a valid email address.' });
+      }
+      if (cleanEmail !== (trainee.email || '').toLowerCase()) {
         trainee.email = cleanEmail;
         updatedFields.push('email');
       }
     }
-    if (d.dob) {
+
+    if (d.dob !== undefined) {
       const cleanDob = parseExcelDate(d.dob);
-      if (isValidDob(cleanDob)) {
+      if (!cleanDob || !isValidDob(cleanDob)) {
+        return res.status(400).json({ error: 'Please enter a valid Date of Birth (cannot be in the future).' });
+      }
+      if (cleanDob !== trainee.dob) {
         trainee.dob = cleanDob;
         updatedFields.push('dob');
       }
     }
-    if (d.gender && ['MALE', 'FEMALE', 'OTHER'].includes(d.gender.toUpperCase())) {
-      trainee.gender = d.gender.toUpperCase();
-      updatedFields.push('gender');
+
+    if (d.joiningDate !== undefined) {
+      const cleanJoining = parseExcelDate(d.joiningDate);
+      if (!cleanJoining || isNaN(new Date(cleanJoining).getTime())) {
+        return res.status(400).json({ error: 'Please enter a valid Joining Date.' });
+      }
+      if (cleanJoining !== trainee.joiningDate) {
+        trainee.joiningDate = cleanJoining;
+        trainee.freeStayExpiryDate = addThreeCalendarMonths(cleanJoining);
+        updatedFields.push('joiningDate', 'freeStayExpiryDate');
+      }
     }
-    if (d.qualification) {
-      trainee.qualification = d.qualification.trim();
-      updatedFields.push('qualification');
+
+    if (d.gender && ['MALE', 'FEMALE', 'OTHER'].includes(String(d.gender).toUpperCase())) {
+      const g = String(d.gender).toUpperCase();
+      if (g !== trainee.gender) {
+        trainee.gender = g;
+        updatedFields.push('gender');
+      }
     }
-    if (d.designation) {
-      trainee.designation = d.designation.trim();
+
+    if (d.qualification !== undefined && String(d.qualification).trim()) {
+      const qVal = String(d.qualification).trim();
+      if (qVal !== trainee.qualification) {
+        trainee.qualification = qVal;
+        updatedFields.push('qualification');
+      }
+    }
+
+    if (d.designation !== undefined && String(d.designation).trim()) {
+      trainee.designation = String(d.designation).trim();
       updatedFields.push('designation');
     }
-    if (d.food && ['VEG', 'NON-VEG'].includes(d.food.toUpperCase())) {
-      trainee.food = d.food.toUpperCase();
-      updatedFields.push('food');
+
+    if (d.food && ['VEG', 'NON-VEG'].includes(String(d.food).toUpperCase())) {
+      const foodVal = String(d.food).toUpperCase();
+      if (foodVal !== trainee.food) {
+        trainee.food = foodVal;
+        updatedFields.push('food');
+      }
     }
-    if (d.address1) {
-      trainee.address1 = d.address1.trim();
-      updatedFields.push('address1');
+
+    if (d.address1 !== undefined && String(d.address1).trim()) {
+      const addr = String(d.address1).trim();
+      if (addr !== trainee.address1) {
+        trainee.address1 = addr;
+        updatedFields.push('address1');
+      }
     }
-    if (d.state) {
-      trainee.state = d.state.trim();
-      updatedFields.push('state');
+
+    if (d.state !== undefined && String(d.state).trim()) {
+      const st = String(d.state).trim();
+      if (st !== trainee.state) {
+        trainee.state = st;
+        updatedFields.push('state');
+      }
     }
-    if (d.guardianName) {
-      trainee.guardianName = d.guardianName.trim();
-      updatedFields.push('guardianName');
+
+    if (d.guardianName !== undefined) {
+      const gName = String(d.guardianName || '').trim();
+      if (!gName) {
+        return res.status(400).json({ error: 'Guardian name is required.' });
+      }
+      if (gName !== trainee.guardianName) {
+        trainee.guardianName = gName;
+        updatedFields.push('guardianName');
+      }
     }
-    if (d.guardianContact) {
-      const cleanContact = String(d.guardianContact).replace(/\D/g, '');
-      if (isValidGuardianContact(cleanContact)) {
+
+    if (d.guardianContact !== undefined) {
+      const cleanContact = String(d.guardianContact || '').replace(/\D/g, '');
+      if (!cleanContact || !isValidGuardianContact(cleanContact)) {
+        return res.status(400).json({ error: 'Guardian contact must contain exactly 10 digits.' });
+      }
+      if (cleanContact !== trainee.guardianContact) {
         trainee.guardianContact = cleanContact;
         updatedFields.push('guardianContact');
       }
     }
+
+    if (d.emergencyContact !== undefined && String(d.emergencyContact).trim()) {
+      const cleanEmerg = String(d.emergencyContact).replace(/\D/g, '');
+      if (cleanEmerg) {
+        trainee.emergencyContact = cleanEmerg;
+        updatedFields.push('emergencyContact');
+      }
+    }
+
+    // Aadhaar update (only if a raw 12-digit number is entered, not an unchanged masked value)
+    if (d.aadhar !== undefined) {
+      const rawAadhaarStr = String(d.aadhar || '').trim();
+      if (rawAadhaarStr && !rawAadhaarStr.includes('X') && !rawAadhaarStr.includes('•')) {
+        const rawAadhaarDigits = rawAadhaarStr.replace(/\D/g, '');
+        if (rawAadhaarDigits.length !== 12 || !isValidAadhaar(rawAadhaarDigits, true)) {
+          return res.status(400).json({ error: 'Please enter a valid 12-digit Aadhaar number.' });
+        }
+        const aHash = hashAadhaar(rawAadhaarDigits);
+        const dupAadhaar = await Trainee.findOne({
+          aadharHash: aHash,
+          _id: { $ne: trainee._id },
+        }).lean();
+        if (dupAadhaar) {
+          return res.status(409).json({
+            error: `Aadhaar number is already registered for ${dupAadhaar.name} (${dupAadhaar.traineeId || dupAadhaar.qrId}).`,
+          });
+        }
+        const masked = maskAadhaar(rawAadhaarDigits);
+        trainee.aadharMasked = masked;
+        trainee.aadhar = masked;
+        trainee.aadharEncrypted = encryptAadhaar(rawAadhaarDigits);
+        trainee.aadharHash = aHash;
+        trainee.aadhaarVerificationStatus = 'FORMAT_VALIDATED';
+        updatedFields.push('aadhar');
+      }
+    }
+
     if (d.photo) {
       trainee.photo = d.photo;
       updatedFields.push('photo');
     }
 
-    // Room Allocation Update
-    if (d.hostel && d.roomNo && (d.hostel !== trainee.hostel || d.roomNo !== trainee.roomNo)) {
+    // Room Allocation Update (or confirming existing room allocation)
+    const targetHostelInput = d.hostel !== undefined ? String(d.hostel).trim() : trainee.hostel;
+    const targetRoomInput = d.roomNo !== undefined ? String(d.roomNo).trim() : trainee.roomNo;
+
+    if (targetHostelInput && targetRoomInput && (targetHostelInput !== trainee.hostel || targetRoomInput !== trainee.roomNo || trainee.roomAllocationStatus !== 'ALLOCATED')) {
       const foundHostel = await Hostel.findOne({
-        $or: [{ name: d.hostel }, { id: d.hostel }],
+        $or: [{ name: targetHostelInput }, { id: targetHostelInput }],
       });
 
       if (!foundHostel) {
-        return res.status(400).json({ error: `Hostel "${d.hostel}" does not exist.` });
+        return res.status(400).json({ error: `Hostel "${targetHostelInput}" does not exist.` });
       }
 
-      const foundRoom = (foundHostel.rooms || []).find((rm) => String(rm.no) === String(d.roomNo));
+      const foundRoom = (foundHostel.rooms || []).find((rm) => String(rm.no) === String(targetRoomInput));
       if (!foundRoom) {
-        return res.status(400).json({ error: `Room "${d.roomNo}" not found in hostel "${foundHostel.name}".` });
+        return res.status(400).json({ error: `Room "${targetRoomInput}" not found in hostel "${foundHostel.name}".` });
       }
 
       // Check capacity
@@ -994,27 +1140,30 @@ router.put('/warden/complete-trainee/:traineeId', auth, async (req, res) => {
 
       const prevHostel = trainee.hostel;
       const prevRoom = trainee.roomNo;
+      const roomChanged = foundHostel.name !== prevHostel || String(foundRoom.no) !== String(prevRoom);
       trainee.hostel = foundHostel.name;
       trainee.roomNo = String(foundRoom.no);
       trainee.roomAllocationStatus = 'ALLOCATED';
       updatedFields.push('room_allocation');
 
-      await RoomHistory.create({
-        traineeId: trainee.traineeId || trainee.qrId,
-        changeDate: todayStr(),
-        prevHostel: prevHostel || '',
-        prevRoom: prevRoom || '',
-        newHostel: trainee.hostel,
-        newRoom: trainee.roomNo,
-        changedBy: `${u.name} (${u.roleId})`,
-      });
+      if (roomChanged) {
+        await RoomHistory.create({
+          traineeId: trainee.traineeId || trainee.qrId,
+          changeDate: todayStr(),
+          prevHostel: prevHostel || '',
+          prevRoom: prevRoom || '',
+          newHostel: trainee.hostel,
+          newRoom: trainee.roomNo,
+          changedBy: `${u.name} (${u.roleId})`,
+        });
+      }
     }
 
     // Recalculate missing required fields
     const newMissing = REQUIRED_FIELDS.filter((f) => isFieldEmpty(trainee[f.key])).map((f) => f.label);
     trainee.missingFields = newMissing;
 
-    const isFullyComplete = newMissing.length === 0 && trainee.roomNo && trainee.roomAllocationStatus === 'ALLOCATED';
+    const isFullyComplete = newMissing.length === 0 && Boolean(trainee.roomNo) && trainee.roomAllocationStatus === 'ALLOCATED';
 
     let emailResult = null;
 
@@ -1024,8 +1173,8 @@ router.put('/warden/complete-trainee/:traineeId', auth, async (req, res) => {
       trainee.approvalStatus = 'APPROVED';
       if (!trainee.approvedBy) trainee.approvedBy = `${u.name} (${u.roleId})`;
 
-      // Trigger Welcome and ID card email if not yet sent
-      if (!trainee.welcomeEmailSent && trainee.email && isValidEmail(trainee.email)) {
+      // Trigger Welcome and ID card email if requested and not yet sent
+      if (d.sendWelcomeEmail !== false && !trainee.welcomeEmailSent && trainee.email && isValidEmail(trainee.email)) {
         try {
           emailResult = await sendTraineeWelcomeEmail({
             trainee,
@@ -1056,13 +1205,17 @@ router.put('/warden/complete-trainee/:traineeId', auth, async (req, res) => {
     return res.json({
       ok: true,
       message: isFullyComplete
-        ? `✓ Trainee ${trainee.name} successfully completed and finalized! Room allocated & Welcome email triggered.`
-        : `Trainee details updated. ${newMissing.length} fields still pending.`,
-      trainee,
+        ? `✓ Trainee ${trainee.name} successfully completed and finalized!`
+        : `Trainee details updated. ${newMissing.length} field(s) still pending: ${newMissing.join(', ')}.`,
+      trainee: sanitizeIncompleteTrainee(trainee),
       isFullyComplete,
+      missingFields: newMissing,
       emailResult,
     });
   } catch (err) {
+    if (err.code === 11000) {
+      return res.status(409).json({ error: 'Duplicate field value detected. Please verify Trainee ID, Mobile, or Aadhaar.' });
+    }
     return res.status(500).json({ error: err.message });
   }
 });

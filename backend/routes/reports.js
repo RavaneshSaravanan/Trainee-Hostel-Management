@@ -83,13 +83,12 @@ router.get('/reports', auth, requireReports, async (req, res) => {
       const targetHostels = hostel ? db.hostels.filter((h) => h.name === hostel) : db.hostels;
       const classFilter = String(req.query.classification || req.query.occupancyClassification || 'ALL').toUpperCase();
 
-      headers = ['Hostel Name', 'Total Occupied', 'Free Trainees', 'Paid Trainees', 'Expired / Due', 'Available Beds'];
+      headers = ['Hostel Name', 'Total Occupied', 'Free Trainees', 'Paid Trainees', 'Available Beds'];
       rows = [];
 
       let totalOccupiedSum = 0;
       let totalFreeSum = 0;
       let totalPaidSum = 0;
-      let totalExpiredSum = 0;
       let totalAvailableSum = 0;
 
       for (const h of targetHostels) {
@@ -100,16 +99,11 @@ router.get('/reports', auth, requireReports, async (req, res) => {
 
         let freeCount = 0;
         let paidCount = 0;
-        let expiredCount = 0;
 
         for (const t of occupiedTrainees) {
           const c = classifyTrainee(t, targetDate);
           if (c.isPaid) {
             paidCount++;
-          } else if (c.isFree) {
-            freeCount++;
-          } else if (c.isExpired) {
-            expiredCount++;
           } else {
             freeCount++;
           }
@@ -120,15 +114,13 @@ router.get('/reports', auth, requireReports, async (req, res) => {
 
         if (classFilter === 'FREE' && freeCount === 0 && totalOccupied > 0) continue;
         if (classFilter === 'PAID' && paidCount === 0 && totalOccupied > 0) continue;
-        if ((classFilter === 'EXPIRED' || classFilter === 'EXPIRED_DUE') && expiredCount === 0 && totalOccupied > 0) continue;
 
         totalOccupiedSum += totalOccupied;
         totalFreeSum += freeCount;
         totalPaidSum += paidCount;
-        totalExpiredSum += expiredCount;
         totalAvailableSum += availableBeds;
 
-        rows.push([h.name, totalOccupied, freeCount, paidCount, expiredCount, availableBeds]);
+        rows.push([h.name, totalOccupied, freeCount, paidCount, availableBeds]);
       }
 
       extraStats = {
@@ -136,7 +128,6 @@ router.get('/reports', auth, requireReports, async (req, res) => {
         totalOccupiedTrainees: totalOccupiedSum,
         totalFreeTrainees: totalFreeSum,
         totalPaidTrainees: totalPaidSum,
-        totalExpiredTrainees: totalExpiredSum,
         totalAvailableBeds: totalAvailableSum,
       };
     } else if (type === 'hostel') {
@@ -327,13 +318,12 @@ router.get('/reports/hostel-occupancy', auth, requireReports, async (req, res) =
     ]);
 
     const targetHostels = hostel ? hostels.filter((h) => h.name === hostel) : hostels;
-    const headers = ['Hostel Name', 'Total Occupied', 'Free Trainees', 'Paid Trainees', 'Expired / Due', 'Available Beds'];
+    const headers = ['Hostel Name', 'Total Occupied', 'Free Trainees', 'Paid Trainees', 'Available Beds'];
     const rows = [];
 
     let totalOccupiedSum = 0;
     let totalFreeSum = 0;
     let totalPaidSum = 0;
-    let totalExpiredSum = 0;
     let totalAvailableSum = 0;
 
     for (const h of targetHostels) {
@@ -344,16 +334,11 @@ router.get('/reports/hostel-occupancy', auth, requireReports, async (req, res) =
 
       let freeCount = 0;
       let paidCount = 0;
-      let expiredCount = 0;
 
       for (const t of occupiedTrainees) {
         const c = classifyTrainee(t, targetDate);
         if (c.isPaid) {
           paidCount++;
-        } else if (c.isFree) {
-          freeCount++;
-        } else if (c.isExpired) {
-          expiredCount++;
         } else {
           freeCount++;
         }
@@ -364,15 +349,13 @@ router.get('/reports/hostel-occupancy', auth, requireReports, async (req, res) =
 
       if (classFilter === 'FREE' && freeCount === 0 && totalOccupied > 0) continue;
       if (classFilter === 'PAID' && paidCount === 0 && totalOccupied > 0) continue;
-      if ((classFilter === 'EXPIRED' || classFilter === 'EXPIRED_DUE') && expiredCount === 0 && totalOccupied > 0) continue;
 
       totalOccupiedSum += totalOccupied;
       totalFreeSum += freeCount;
       totalPaidSum += paidCount;
-      totalExpiredSum += expiredCount;
       totalAvailableSum += availableBeds;
 
-      rows.push([h.name, totalOccupied, freeCount, paidCount, expiredCount, availableBeds]);
+      rows.push([h.name, totalOccupied, freeCount, paidCount, availableBeds]);
     }
 
     const summary = {
@@ -380,7 +363,6 @@ router.get('/reports/hostel-occupancy', auth, requireReports, async (req, res) =
       totalOccupiedTrainees: totalOccupiedSum,
       totalFreeTrainees: totalFreeSum,
       totalPaidTrainees: totalPaidSum,
-      totalExpiredTrainees: totalExpiredSum,
       totalAvailableBeds: totalAvailableSum,
     };
 

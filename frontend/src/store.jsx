@@ -45,15 +45,28 @@ export function StoreProvider({ children }) {
   const setConfig = (f) => { dirty.current = true; setConfigRaw(f); };
   const setRoles = (f) => { dirty.current = true; setRolesRaw(f); };
 
-  const applyServer = (s) => {
+  const applyServer = useCallback((s) => {
     rev.current = s.rev;
     setDbRaw({ ...EMPTY_DB, ...s.db });
     setConfigRaw(withDefaults(s.config));
     setRolesRaw(s.roles);
     setUsers(s.users || []);
-  };
+  }, []);
 
   const dropSession = useCallback(() => { setToken(''); setSession(null); setRoute({ view: 'dashboard', params: {} }); }, []);
+
+  const refreshState = useCallback(async () => {
+    if (!getToken()) return false;
+    try {
+      const s = await api('/api/state');
+      if (!dirty.current && !saving.current) applyServer(s);
+      setSyncError('');
+      return true;
+    } catch (e) {
+      if (e.status === 401) dropSession();
+      return false;
+    }
+  }, [applyServer, dropSession]);
 
   // ---------- boot: restore login, or load public look (for the login screen) ----------
   useEffect(() => {
@@ -724,7 +737,7 @@ export function StoreProvider({ children }) {
 
   const value = {
     db, config, roles, users, session, route, toast, booting, syncError, setSyncError, isSuper, roleName, can,
-    setConfig, setRoles,
+    setConfig, setRoles, refreshState,
     login, logout, navigate, notify,
     getTrainee, actor,
     addTrainee, updateTrainee, saveTraineeProfile, approveTrainee, rejectTrainee, deleteTrainee, changeRoom,
