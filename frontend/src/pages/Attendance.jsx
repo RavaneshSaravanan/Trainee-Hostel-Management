@@ -4,6 +4,7 @@ import { ATT_CODES, ATT_LABELS, SHIFTS, SHIFT_OPTIONS } from '../data/constants.
 
 const getShiftLabel = (s) => (s === 'WO' ? 'Week Off' : s === 'L' ? 'Leave' : `${s} Shift`);
 import { Avatar, Badge, Card, Icon, Table } from '../components/ui.jsx';
+import ErrorBoundary from '../components/ErrorBoundary.jsx';
 import QrScanner from '../components/QrScanner.jsx';
 import { fmtDate, todayStr } from '../utils/dates.js';
 import { dayCounts } from '../utils/summary.js';
@@ -526,6 +527,7 @@ function HostelTracker() {
   const [manualQuery, setManualQuery] = useState('');
   const [submitting, setSubmitting] = useState(false);
   const [lastResult, setLastResult] = useState(null);
+  const [viewType, setViewType] = useState(() => (typeof window !== 'undefined' && window.innerWidth < 768 ? 'card' : 'table'));
 
   const inputRef = useRef(null);
 
@@ -967,7 +969,9 @@ export default function Attendance() {
           <Icon name="bar" size={15} /> Daily Summary
         </button>
       </div>
-      {tab === 'hostel-tracker' ? <HostelTracker /> : tab === 'scan' ? <Scan /> : <Summary />}
+      <ErrorBoundary fallbackTitle="Attendance Tab View Error">
+        {tab === 'hostel-tracker' ? <HostelTracker /> : tab === 'scan' ? <Scan /> : <Summary />}
+      </ErrorBoundary>
     </>
   );
 }
